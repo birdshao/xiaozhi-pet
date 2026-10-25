@@ -24,8 +24,8 @@
 
 ## 2. 尚未解决、不能跳过的关卡
 
-1. **确认活动 OTA 槽**：从本地备份检查 `otadata` 两份条目的 CRC、序号和 `ota_state`，并对照当前 ESP-IDF 6.1 Bootloader 算法。原始值显示 `0x21/0x22`、状态 `0x02`，但未检查 CRC，不能仅凭“较大的序号”立即决定烧录。
-2. **芯片安全配置**：只读检查 Flash 加密、Secure Boot 等状态。若启用安全功能，拒绝未经匹配签名的测试 app。
+1. **运行态确认活动 OTA 槽**：已使用 ESP-IDF 6.1 对应 CRC32 算法验证 otadata 两条记录 CRC 正确，原始序号为 `0x21/0x22`，两条状态都是 `0x02`。按 ESP-IDF 启动选择规则，序号最大的 `0x22` 对应 **ota_1**（`(34-1)%2=1`），但仍需与实际启动固件日志或运行态信息交叉核对。
+2. **芯片安全配置**：已使用 esptool `get_security_info` 只读确认当前 Secure Boot 和 Flash Encryption 均为 **Disabled**，SPI_BOOT_CRYPT_CNT=0。保留变更检查，避免今后在安全配置变化后误刷。
 3. **区分 app-only 与 merged 镜像**：必须使用 `build/xiaozhi.bin` 这一应用镜像（记录精确 SHA256），不可直接使用包含引导程序/分区表等内容的 `merged-binary.bin` 做整片覆盖。
 4. **保护 NVS 和 assets**：不擦除 `0x9000` NVS、`0x800000` assets；现有 `ota_1`/ `ota_0` 至少保留一份经过验证的可启动旧 app。实际写入目标由上一步 CRC 校验确定。
 5. **升级与回滚方式**：优先通过 ESP-IDF 的 OTA 接口完成写入和切换，或者使用经过校验的分区写入与官方 OTA 工具操作，**不要手工猜测写入 otadata 的字节**。
@@ -60,6 +60,18 @@
 
 - 已有完整的可执行源代码与 CI 编译产物。
 - 真正设备的静态硬件信息、Flash 分区和备份已核实。
-- **但 OTA CRC、安全配置、活动槽与回滚尚未验证，暂不执行写入。**
+- OTA CRC 和芯片安全配置**已经只读确认**；理论活动槽为 **ota_1**，但仍需运行态交叉验证，回滚机制和目标写入/启动方式尚未验证，因此**暂不执行写入**。
 
 后续不能用本地备份“存在”来取代这些安全门禁。
+
+## 6. 补充的实测证据（2026-10-25）
+
+[Windows Runner OTA CRC + 芯片安全检查成功记录](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40192776739)：
+
+- OTA 条目 0：`ota_seq=0x21`、`ota_state=0x02`、ESP-IDF CRC **有效**。
+- OTA 条目 1：`ota_seq=0x22`、`ota_state=0x02`、ESP-IDF CRC **有效**。
+- 当前通常启动的分区应为 **ota_1**（依据 ESP-IDF v6.1 `bootloader_common_get_active_otadata` 的 OTA 选择规则，未排除异常 bootloader 或运行态差异）。
+- Secure Boot：**Disabled**；Flash Encryption：**Disabled**。
+- **此工作流没有改写 Flash，也没有将备份上传 GitHub。**
+
+从安全角度，后续优先研究使用已验证的 OTA 接口将新 app 安装到非活动槽、保留原有可启动分区，并预先验证失败后的回退路径，而不是整片擦除或覆盖 assets/NVS。
