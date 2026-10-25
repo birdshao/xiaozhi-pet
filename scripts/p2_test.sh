@@ -29,3 +29,16 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_event_executor.cc" \
   "$ROOT/tests/cpp/test_pet_event_executor.cc" -o "$BUILD/test_pet_event_executor"
 "$BUILD/test_pet_event_executor"
+
+# Device-independent serial event pump with bounded queue and storage retry.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_event_executor.cc" \
+  "$ROOT/tests/cpp/test_pet_event_runtime.cc" -o "$BUILD/test_pet_event_runtime"
+"$BUILD/test_pet_event_runtime"
+
+# Local input IDs share durable checkpoint generation, not volatile boot counter.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/tests/cpp/test_pet_local_event_id.cc" -o "$BUILD/test_pet_local_event_id"
+"$BUILD/test_pet_local_event_id"
