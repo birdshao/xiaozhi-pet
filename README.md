@@ -67,6 +67,13 @@
 - [手动分区写入工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-manual-stage-ota0.yml)：只写目前非活动的 `ota_0`、读回校验、保留当前 `ota_1`；需要 `birdshao` 登录后手动确认。**未触发，不代表设备已经换上宠物固件。**
 - [详细安全步骤与当前实际状态](docs/hardware/STAGING_INSTRUCTIONS.md)。
 
+## P1 最新真机状态：OTA0 已烧录，等待短时启动验收
+
+- [OTA0 真实烧录及读回成功](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40195232072)，日志含 `STAGE_SUCCESS`，确认 OTA1 和当前启动选择记录均未改变。
+- 预发布应用 `2.5.2` 已位于 OTA0，旧版 `2.2.38` 位于 OTA1；尚未让新固件实际启动。
+- [50 秒临时启动 OTA0 + 自动恢复 OTA1 工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota-trial.yml) 已部署，必须登录 GitHub 手动选择确认；另有独立的 `RESTORE_ORIGINAL_OTA1` 救援模式。
+- [使用说明、安全限制与验收事项](docs/hardware/TRIAL_BOOT_INSTRUCTIONS.md)。**新固件首次启动仍有跨版本 NVS 数据迁移风险；即使自动切回也不保证配置完全不变。**
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
