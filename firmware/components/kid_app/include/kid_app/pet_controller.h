@@ -39,13 +39,24 @@ struct PetEffects {
     bool persist = false;
 };
 
+// Checkpoint holds all data needed to prevent event replay after reboot.
+struct PetCheckpoint {
+    static constexpr size_t kSeenCapacity = 128;
+    PetSnapshot snapshot{};
+    std::array<uint64_t, kSeenCapacity> seen{};
+    uint16_t seen_count = 0;
+    uint16_t next_slot = 0;
+};
+
 class PetController {
 public:
-    // In-memory last-128 event deduplication; durable journal follows in P2-05.
-    static constexpr size_t kSeenCapacity = 128;
+    static constexpr size_t kSeenCapacity = PetCheckpoint::kSeenCapacity;
     PetResult Apply(const PetEvent& event, PetEffects* out);
     const PetSnapshot& Snapshot() const { return state_; }
     void ResetForTest();
+    PetCheckpoint ExportCheckpoint() const;
+    // Validate atomically; false leaves in-memory state unchanged.
+    bool RestoreCheckpoint(const PetCheckpoint& checkpoint);
 
 private:
     bool WasSeen(uint64_t id) const;
