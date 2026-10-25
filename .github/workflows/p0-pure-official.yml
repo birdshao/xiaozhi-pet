@@ -1,0 +1,124 @@
+name: Pure upstream Waveshare ePaper 3.97 firmware
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/p0-pure-official.yml'
+      - 'version-lock.json'
+      - 'scripts/p0_checkout.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/p0-pure-official.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-official-unmodified:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch EXACT official upstream tag and verify SHA
+        shell: bash
+        run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Prove official source remains untouched
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "49b4380b3faa0ceadd28a3e78aaf0f311c46c57e"
+          echo "PURE_OFFICIAL_SOURCE_OK: no pet overlay, no local patch"
+      - name: Compile official ESP-IDF 6.1 Waveshare board
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+      - name: Record app image and optional assets with manifest
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os, shutil
+          root=Path(os.environ["GITHUB_WORKSPACE"])
+          upstream=root/".upstream/xiaozhi-esp32"
+          output=root/"release"/"pure-official"
+          output.mkdir(parents=True,exist_ok=True)
+          app=upstream/"build/xiaozhi.bin"
+          if not app.is_file():
+              raise SystemExit("OFFICIAL BUILD ERROR: application image missing")
+          if app.read_bytes()[:1] != bytes([0xE9]):
+              raise SystemExit("OFFICIAL BUILD ERROR: not a valid ESP application header")
+          size=app.stat().st_size
+          slot=4032*1024
+          if not 100000<size<=slot:
+              raise SystemExit(f"OFFICIAL BUILD ERROR: app size {size} exceeds 4032 KiB OTA slot")
+          out_app=output/"xiaozhi-official-v2.5.2-waveshare-397-app.bin"
+          shutil.copyfile(app,out_app)
+          sha=hashlib.sha256(out_app.read_bytes()).hexdigest()
+          sdkconfig=(upstream/"sdkconfig").read_text(encoding="utf-8")
+          asset_mode={key:sdkconfig.find(key+"=y")>=0 for key in
+            ["CONFIG_FLASH_DEFAULT_ASSETS","CONFIG_FLASH_CUSTOM_ASSETS",
+             "CONFIG_FLASH_EXPRESSION_ASSETS","CONFIG_FLASH_NONE_ASSETS"]}
+          assets=[]
+          candidate=upstream/"build/generated_assets.bin"
+          if candidate.is_file():
+              target=output/"xiaozhi-official-v2.5.2-assets-NOT_FOR_AUTO_FLASH.bin"
+              shutil.copyfile(candidate,target)
+              assets.append({"filename":target.name,"size":target.stat().st_size,
+                             "sha256":hashlib.sha256(target.read_bytes()).hexdigest(),
+                             "do_not_flash_without_compatibility_review":True})
+          manifest={
+            "schema_version":1,
+            "purpose":"official_upstream_baseline_for_safe_device_trial",
+            "image_kind":"application_only",
+            "board":"waveshare/esp32-s3-epaper-3.97",
+            "chip":"ESP32-S3",
+            "firmware_repo":"78/xiaozhi-esp32",
+            "firmware_commit":"49b4380b3faa0ceadd28a3e78aaf0f311c46c57e",
+            "firmware_tag":"v2.5.2",
+            "source_modifications":False,
+            "firmware_filename":out_app.name,
+            "firmware_size":size,
+            "firmware_sha256":sha,
+            "single_ota_partition_size":slot,
+            "assets_modes":asset_mode,
+            "optional_built_assets":assets,
+            "no_automatic_flash":True,
+            "no_bootloader_or_partition_table":True,
+            "does_not_embed_current_device_nvs":True,
+            "repository_workflow_commit":os.environ["GITHUB_SHA"]
+          }
+          (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+          print(f"PURE_OFFICIAL_APP_READY: bytes={size} sha256={sha}")
+          print("ASSET_MODE: "+json.dumps(asset_mode))
+          print("INDEPENDENT_ASSETS: "+json.dumps(assets))
+          PY
+      - name: Attach build-only artifacts to review
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-397-pure-official-v2.5.2-review
+          path: release/pure-official/*
+          retention-days: 14
+          if-no-files-found: error
+      - name: Publish prerelease on trusted main only
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: official-waveshare397-v2.5.2-20261025
+          name: Pure official Waveshare 3.97 firmware v2.5.2 (no pet modifications)
+          prerelease: true
+          make_latest: false
+          files: release/pure-official/*
+          body: |
+            Official upstream firmware built unmodified from pinned upstream
+            Git SHA 49b4380b3faa0ceadd28a3e78aaf0f311c46c57e.
+            APP-ONLY IMAGE. Not intended for whole-chip flashing.
+            NEVER erase existing NVS/assets/partition/bootloader to install this app.
+            The separate generated_assets binary, if present, is FOR REVIEW ONLY.
+            Flash requires verified inactive OTA slot, private backup and compatible assets.
