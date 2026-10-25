@@ -47,3 +47,21 @@ GitHub CI：`.github/workflows/p1-integrated-firmware.yml`，只编译不烧录�
 此实验性适配只针对微雪板卡的 `CustomEpdDisplay` 与按键回调，Pet Scene 数据模型不依赖小智内部类。后续可把这一临时 Demo 变成正常的 `PetController` / `RefreshScheduler`，并将 C++ patch 缩减成稳定的适配 Hook，方便合并上游新版本。
 
 相关： [P1 原型](P1_SCENE_PROTOTYPE.md)、[系统架构](ARCHITECTURE.md)、[P0 真机基线](hardware/BOARD_BASELINE.md)。
+
+## 5. CI 集成编译结果（2026-10-25）
+
+[PR #9](https://github.com/birdshao/xiaozhi-pet/pull/9) 已合并到 `main`。
+
+[GitHub Actions 完整构建成功](https://github.com/birdshao/xiaozhi-pet/actions/runs/40191850961)：
+
+- 工具链：`espressif/idf:v6.1`
+- 原始小智固件：`v2.5.2` / Git SHA `49b4380b3faa0ceadd28a3e78aaf0f311c46c57e`
+- 集成：`kid_app` 组件 + 微雪 `CustomEpdDisplay` + BOOT 演示事件
+- 应用镜像 `build/xiaozhi.bin`：**2,851,232 B**
+- 实测 `ota_0/ota_1` 单槽：**4,128,768 B**
+- 剩余容量：**1,277,536 B**（未扣除将来其他功能）
+- 应用固件 SHA-256：`034e4640bffbf184094ece9dfaefd021d1011e50ccd9076a43291f71eff69e89`
+- CI Artifact 名：`pet-preview-epd-buildonly`（`merged-binary.bin`，仅限测试，7 天保留）。
+- **CI 仅证明代码能完整编译，尚未证明硬件可运行。**
+
+切忌直接把 `merged-binary.bin` 整片覆盖到现有设备：该文件可能包含 bootloader、分区表或默认资源，而现有分区内已存储用户数据和两套可启动固件。第一次写入必须遵守 [首次受控烧录计划](hardware/FIRST_FLASH_PLAN.md)。
