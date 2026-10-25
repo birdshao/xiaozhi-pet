@@ -69,4 +69,6 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 
 已完成：锁定 GitHub 上游版本、核对板卡源码/构建方式、提交自动预检与官方固件 CI 构建定义。
 
-尚未完成：在 GitHub 实际跑出 CI 成功结果（以 workflow 状态为准）、原版硬件刷写、测量电子纸/音频/IMU/SD、选择最终源码集成方式、构建自己的儿童固件。
+已经通过：[P0 GitHub Actions](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187425730) 的 host 单测、静态校验和**未修改官方原版微雪固件的编译**；CI 已上传七天保留的固件产物。
+
+尚未完成：原版硬件刷写、测量电子纸/音频/IMU/SD、选择最终源码集成方式、构建自己的儿童固件。
