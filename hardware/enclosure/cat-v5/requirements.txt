@@ -2,3 +2,5 @@ cadquery
 trimesh
 shapely
 numpy
+networkx
+lxml
