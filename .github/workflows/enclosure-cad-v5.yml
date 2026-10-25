@@ -1,0 +1,61 @@
+name: Build cat enclosure V5 CAD
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/enclosure-cad-v5.yml
+      - hardware/enclosure/cat-v5/generate.py
+      - hardware/enclosure/cat-v5/requirements.txt
+
+permissions:
+  contents: write
+
+jobs:
+  generate-and-store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CAD stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r hardware/enclosure/cat-v5/requirements.txt
+      - name: Build 3MF, STL, STEP and BREP
+        run: python -u hardware/enclosure/cat-v5/generate.py
+      - name: Check generated artifacts
+        run: |
+          python - <<'PY'
+          import pathlib, trimesh
+          p=pathlib.Path('hardware/enclosure/cat-v5/output')
+          for part in ('front','back'):
+              stem='Waveshare_3.97_cat_v5_original_openings_'+part
+              for ext in ('3mf','stl','step','brep'):
+                  assert (p/(stem+'.'+ext)).stat().st_size > 1000
+              mesh=trimesh.load(p/(stem+'.stl'),force='mesh')
+              assert mesh.is_watertight and mesh.is_winding_consistent
+          print('CAD artifact files and meshes validated')
+          PY
+      - name: Commit model binaries to main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f hardware/enclosure/cat-v5/output/*.3mf
+          git add -f hardware/enclosure/cat-v5/output/*.stl
+          git add -f hardware/enclosure/cat-v5/output/*.step
+          git add -f hardware/enclosure/cat-v5/output/*.brep
+          if ! git diff --cached --quiet; then
+            git commit -m "hardware: store generated V5 enclosure 3D models"
+            git push origin HEAD:main
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-cat-v5-cad
+          path: hardware/enclosure/cat-v5/output/
+          if-no-files-found: error
