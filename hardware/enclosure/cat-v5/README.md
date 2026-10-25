@@ -7,7 +7,8 @@
 
 - [generate.py](generate.py)：可复现的**前壳 + 后壳参数化 CAD 源码**（无需原始 FreeCAD 工程；生成 3MF、STL、STEP、BREP）。
 - [requirements.txt](requirements.txt)：Python 构建依赖。
-- [reference-manifest.json](reference-manifest.json)：本次实物打样版本 V5 的二进制文件 SHA-256，可用于和最初生成的模型核对。
+- [output/](output/)：已提交的前后壳 **3MF / STL / STEP / BREP** 实体模型（共 8 个文件）。
+- [reference-manifest.json](reference-manifest.json)：初始 V5 本地导出文件的 SHA-256 参考值；不同建模环境可能产生等价但非字节一致的文件。
 
 运行命令：
 
@@ -18,7 +19,7 @@ python hardware/enclosure/cat-v5/generate.py
 
 输出位于 `hardware/enclosure/cat-v5/output/`，单位 **mm**。STEP/BREP 保存共同装配坐标系；3MF/STL 已分别平放到 Z=0，可在切片软件中检查后打印。
 
-**注意：本提交存入了精确建模参数和可重建 CAD 源码；3MF/STEP 二进制成品未随这次 Git 提交入库。** 可在当前设计对话下载 V5 完整工程包，或使用源码重新生成打印文件。
+**前后壳实际 3MF、STL、STEP、BREP 已随自动建模工作流提交入库**，详见 [output/](output/)。源码可复建和继续修改。
 
 ## 硬约束 / 改动记录
 
