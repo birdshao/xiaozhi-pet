@@ -6,10 +6,7 @@ mkdir -p "$BUILD"
 INC="$ROOT/firmware/components/kid_app/include"
 SRC="$ROOT/firmware/components/kid_app/src/pet_controller.cc"
 CXX="${CXX:-g++}"
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
-  "$SRC" "$ROOT/tests/cpp/test_pet_controller.cc" -o "$BUILD/test_pet_controller"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" "$SRC" "$ROOT/tests/cpp/test_pet_controller.cc" -o "$BUILD/test_pet_controller"
 "$BUILD/test_pet_controller"
-
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \\
-  "$SRC" "$ROOT/tests/cpp/test_pet_event_queue.cc" -o "$BUILD/test_pet_event_queue"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" "$SRC" "$ROOT/tests/cpp/test_pet_event_queue.cc" -o "$BUILD/test_pet_event_queue"
 "$BUILD/test_pet_event_queue"
