@@ -163,16 +163,9 @@ bool PetController::RestoreCheckpoint(const PetCheckpoint& checkpoint) {
         }
     }
 
-    PetSnapshot restored = s;
-    // Listening / Speaking are ephemeral; do not re-enter a dead voice
-    // session after reboot without a fresh microphone consent/event.
-    if (restored.mode == PetMode::Listening ||
-        restored.mode == PetMode::Speaking) {
-        restored.mode = PetMode::Idle;
-        restored.mood = PetMood::Neutral;
-    }
-
-    state_ = restored;
+    // Exact in-memory restore is also used to abort a failed event commit.
+    // Reboot-only normalization belongs to PetPersistence::Load().
+    state_ = s;
     seen_ = checkpoint.seen;
     seen_count_ = checkpoint.seen_count;
     next_slot_ = checkpoint.next_slot;
