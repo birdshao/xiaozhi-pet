@@ -52,6 +52,14 @@
 - **验证状态**：[P0 固件 CI](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187425730) 和 [P1 C++ 主机测试](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187855638) 均通过。**实物烧录/墨水屏测试尚未完成**；不将 CI 成功当作真机通过。
 - **P1 原型**：[独立黑白宠物场景设计](docs/P1_SCENE_PROTOTYPE.md)，可在本机执行 `bash scripts/p1_preview.sh` 生成 PBM 预览。
 
+## P1 固件集成与硬件状态（2026-10-25）
+
+- [P1 宠物画面固件集成 PR #9](https://github.com/birdshao/xiaozhi-pet/pull/9) 已合并；[云端 ESP-IDF 6.1 构建](https://github.com/birdshao/xiaozhi-pet/actions/runs/40191850961) 已通过。
+- 集成镜像应用大小 **2,851,232 B**，实测 OTA 槽 **4,128,768 B**。可用的手动演示设计是待机长按 BOOT 进入/退出宠物预览，短按切换表情。
+- 真实 ESP32-S3 已由 Windows Self-hosted Runner 只读识别，**原 16 MiB Flash 已本地备份并独立校验**；没有把镜像上传 GitHub。
+- 备份中 OTA 两条记录的 CRC 已验证，芯片 Secure Boot / Flash Encryption 均关闭；**新宠物固件尚未烧录到实物**。
+- [P1 设备显示集成设计](docs/P1_EPD_INTEGRATION.md) · [首次受控刷写与回滚检查](docs/hardware/FIRST_FLASH_PLAN.md)。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
