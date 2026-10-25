@@ -110,3 +110,14 @@ NO_APP_NVS_ASSETS_WRITE: only first 4096B OTADATA sector was targeted
 - **仍待确认**：原版 OTA1 运行时是否正常启动，屏幕/语音是否正常；这次仅确认了选择记录，不证明应用完整健康或 NVS 未被 2.5.2 临时启动修改。
 
 **下一步**：先用现有设备正常启动、监测非敏感串口启动状态，并在现场确认原 UI、语音；确认原版本可用后，再重新设计宠物屏幕的受控试验，不急于切换到 OTA0。
+
+## 官方未修改固件基线（2026-10-25 新增）
+
+用户明确指出：设备原有的 OTA1 `2.2.38` 并非官方未修改固件，因此不把它作为“原版小智”最终验证基线。它只作为当前**可回退的旧设备状态**保留。
+
+- [官方 v2.5.2 固件构建 PR #14](https://github.com/birdshao/xiaozhi-pet/pull/14) 已合并：直接克隆锁定 `78/xiaozhi-esp32@49b4380b3faa0ceadd28a3e78aaf0f311c46c57e`、ESP-IDF 6.1、微雪 `esp32-s3-epaper-3.97` 板型，**不应用 PetDisplay/kid_app 补丁**。输出 app-only 二进制、SHA256 清单和测试预发布。
+- [官方基线 CI](https://github.com/birdshao/xiaozhi-pet/actions/runs/40204407387)：以实际 CI 运行状态为准，不得在其仍编译时标记成功。
+- [组织 Runner 准备工作 PR #22](https://github.com/smoothRobot/orpa-agent-runner/pull/22)：严格 SHA 锁定、真实备份验证、原 OTA1 保留、非活动 OTA0 app-only 写入+读回；代码中的固件哈希占位符没有替换为成功构建的真实哈希前**不会执行写入**。
+- **部署顺序**：官方镜像成功构建→ 固定镜像 SHA→ Runner 安全测试→ 用户明确手动发起 OTA0 app-only 写入→读回确认→另行可恢复地切换启动槽→观察官方界面、语音、按键。
+- 风险：现有 8MiB `assets` 分区和 NVS 配置可能出自非官方旧版程序。只刷官方 app 不能保证资源兼容；不得因此擅自擦除配置或资源。在资源来源确认之前，不能宣称完成真正的官方出厂整套固件恢复。
+- **后续宠物开发**：以此次纯官方固件作为“语音+屏幕硬件基线”；自行开发的 PetDisplay/PetController 保持独立，必要时再次写到备用槽，不直接把上游原版和儿童应用混成一个不可维护的 fork。
