@@ -1,0 +1,30 @@
+name: P2 audio arbitration model tests
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/components/kid_app/include/kid_app/audio_coordinator.h'
+      - 'firmware/components/kid_app/src/audio_coordinator.cc'
+      - 'tests/cpp/test_audio_coordinator.cc'
+      - '.github/workflows/p2-audio-coordinator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and verify audio policy (no hardware)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/audio
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I firmware/components/kid_app/include \
+            firmware/components/kid_app/src/audio_coordinator.cc \
+            tests/cpp/test_audio_coordinator.cc \
+            -o build/audio/test_audio_coordinator
+          build/audio/test_audio_coordinator
