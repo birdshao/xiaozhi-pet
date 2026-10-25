@@ -72,3 +72,43 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 已经通过：[P0 GitHub Actions](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187425730) 的 host 单测、静态校验和**未修改官方原版微雪固件的编译**；CI 已上传七天保留的固件产物。
 
 尚未完成：原版硬件刷写、测量电子纸/音频/IMU/SD、选择最终源码集成方式、构建自己的儿童固件。
+
+## 6. Windows Self-hosted Runner 真机只读检查（2026-10-25）
+
+本节来自真实 Windows GitHub Runner 对接入 USB 的开发板执行的 **PnP 枚举**、`esptool flash_id` 和分区表扇区只读检查。未调用擦除、写 Flash、固件 OTA 或上传 Flash 镜像。本次设备被 esptool 短暂复位。
+
+| 实测对象 | 结果 | 备注 |
+|---|---|---|
+| 操作系统 | Windows x64 自托管 GitHub Runner | 运行环境归属私人/组织管理，不在本仓库发布敏感运行器配置 |
+| 串口 | COM10 | 是本次探测的端口，重连后可能变化 |
+| USB | VID 0x303A / PID 0x1001 | Espressif USB-Serial/JTAG；执行前确认端口对应设备 |
+| 芯片 | ESP32-S3 QFN56, revision v0.2 | `esptool flash_id` 确认 |
+| PSRAM | 8 MiB (embedded AP_3v3) | 由芯片探测报告 |
+| 外部 Flash | 16 MiB | JEDEC `Manufacturer: 46, Device: 4018`，esptool 自动判定 |
+| 晶振 | 40 MHz | 芯片探测报告 |
+| 诊断工具 | Python 3.13.4 / esptool 4.8.1 / pyserial 已安装 | 自托管 Windows Runner；未发现 `idf.py` 命令 |
+
+**实测分区表**：从偏移 `0x8000` 只读 4096B，识别 6 项。临时分区表文件在任务结束前删除，未上传到 CI artifact。
+
+| 分区标签 | 偏移 | 长度 |
+|---|---|---|
+| nvs | 0x009000 | 16 KiB |
+| otadata | 0x00D000 | 8 KiB |
+| phy_init | 0x00F000 | 4 KiB |
+| ota_0 | 0x020000 | 4032 KiB |
+| ota_1 | 0x410000 | 4032 KiB |
+| assets | 0x800000 | 8192 KiB |
+
+### 对架构的影响
+
+- **每个 OTA app 槽仅 4032 KiB**。P1/P2 添加 C++、字形和渲染资产后应使用构建尺寸报告预检；不能只用 16 MiB Flash 总量预测单个固件是否放得下。
+- **存在双 OTA app 槽位**，具备设计固件更新/回滚的空间基础；但没有验证当前 OTA 配置、签名、实际回滚能否工作。
+- **assets 占 8 MiB**，不能将其当成任意空闲区域；原厂应用可能依赖现有资源。大绘本/故事音频优先使用经过验证的 SD 内容包。
+- NVS 仅 16 KiB，不适合作为长期成长流水和图像缓存；保持最小状态快照。
+- Windows Runner 自带 esptool，**无需本地 ESP-IDF 即可做探测或未来受控烧录**；ESP-IDF 6.1 的完整编译继续由 GitHub 云端构建负责。
+
+### 剩余安全门禁
+
+在任何固件写入前，先确认现有固件的备份与恢复策略，不要把整片 Flash 备份（可能含 Wi-Fi 密码、API 令牌或其他敏感配置）上传到 GitHub Actions artifact、公开仓库或日志。烧录命令必须经过明确的型号、COM 端口、镜像 digest、分区匹配和审批条件校验；先在可恢复环境进行非生产演练。
+
+**尚未实测**：物理拨轮和按钮、IMU、SD 文件系统、音频收录/播放、LCD/EPD 刷新、当前固件版本、实际 OTA 回滚、家长安全交互。此记录是部分 P0 硬件验证，不能把整个 P0 阶段标为完成。
