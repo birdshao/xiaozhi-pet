@@ -17,13 +17,26 @@ BlobReadStatus NvsPetBlobStore::Read(unsigned slot,
     if (opened == ESP_ERR_NVS_NOT_FOUND) return BlobReadStatus::NotFound;
     if (opened != ESP_OK) return BlobReadStatus::Error;
 
-    size_t len = out->size();
+    size_t len = 0;
+    const esp_err_t queried = nvs_get_blob(handle, kKeys[slot], nullptr, &len);
+    if (queried == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        return BlobReadStatus::NotFound;
+    }
+    if (queried != ESP_OK) {
+        nvs_close(handle);
+        return BlobReadStatus::Error;
+    }
+    // Wrong-length entries are corrupt, not I/O errors. Return invalid
+    // encoded bytes so Load() can recover from the other valid slot.
+    if (len != out->size()) {
+        nvs_close(handle);
+        out->fill(0);
+        return BlobReadStatus::Ok;
+    }
     const esp_err_t result = nvs_get_blob(handle, kKeys[slot], out->data(), &len);
     nvs_close(handle);
-    if (result == ESP_ERR_NVS_NOT_FOUND) return BlobReadStatus::NotFound;
     if (result != ESP_OK) return BlobReadStatus::Error;
-    // Treat wrong-sized blobs as invalid/corrupt so the other slot can win.
-    if (len != out->size()) out->fill(0);
     return BlobReadStatus::Ok;
 }
 
