@@ -1,0 +1,98 @@
+name: P0 official upstream ESP32 app-only baseline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/p0-official-app.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-official:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exact official v2.5.2 source
+        shell: bash
+        run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Verify no pet overlays in upstream source
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          test -z "$(git status --porcelain)"
+          test ! -e components/kid_app
+      - name: Build official board binary without any project changes
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+      - name: Package app-only image with SHA256 and original commit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,shutil
+          root=Path(os.environ["GITHUB_WORKSPACE"])
+          source=root/".upstream/xiaozhi-esp32"
+          app=source/"build/xiaozhi.bin"
+          if not app.is_file(): raise SystemExit("Missing official app image")
+          size=app.stat().st_size
+          if not 100000<size<=4032*1024: raise SystemExit(f"Wrong app size {size}")
+          if app.read_bytes()[:1]!=bytes([0xE9]): raise SystemExit("Not ESP image")
+          sha=hashlib.sha256(app.read_bytes()).hexdigest()
+          dest=root/"release-official"; dest.mkdir(exist_ok=True)
+          filename="xiaozhi-official-v2.5.2-esp32s3-app.bin"
+          shutil.copyfile(app,dest/filename)
+          manifest={
+            "schema_version":1,
+            "firmware_type":"official_upstream_unmodified",
+            "chip":"ESP32-S3",
+            "board":"waveshare/esp32-s3-epaper-3.97",
+            "upstream_repository":"78/xiaozhi-esp32",
+            "upstream_commit":"49b4380b3faa0ceadd28a3e78aaf0f311c46c57e",
+            "upstream_tag":"v2.5.2",
+            "esp_idf":"6.1",
+            "image_kind":"application_only",
+            "image_filename":filename,
+            "image_size":size,
+            "image_sha256":sha,
+            "single_ota_limit_bytes":4032*1024,
+            "includes_bootloader":False,
+            "includes_partition_table":False,
+            "includes_nvs":False,
+            "includes_assets":False,
+            "safe_to_flash_without_backups":False,
+            "notes":"Official 2.5.2 application without kid_app overlays. Existing device assets are older and may be incompatible."
+          }
+          (dest/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+          print(f"OFFICIAL_APP_OK size={size} sha256={sha}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-xiaozhi-v2.5.2-app-only-review
+          path: release-official/*
+          retention-days: 14
+          if-no-files-found: error
+      - name: Publish clearly labeled prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: official-xiaozhi-v2.5.2-waveshare-baseline
+          name: Official XiaoZhi v2.5.2 Waveshare app-only baseline
+          prerelease: true
+          make_latest: false
+          files: |
+            release-official/xiaozhi-official-v2.5.2-esp32s3-app.bin
+            release-official/manifest.json
+          body: |
+            Unmodified upstream xiaozhi-esp32 commit 49b4380...,
+            Waveshare ESP32-S3-ePaper-3.97, ESP-IDF 6.1.
+            Application image only, does not include NVS/assets/partition table.
+            DO NOT whole-chip flash. Existing device assets/NVS may belong to
+            older firmware versions: compatibility not yet verified.
