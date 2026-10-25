@@ -12,7 +12,8 @@
 - `PetCheckpointCodec`：定长 **1064B** 的小端序 v1 格式，头包含 magic `KPET`、版本、长度、64-bit generation；末尾 CRC32。编码显式地逐字段写入，不用 `memcpy(struct)`，避免 C++ 对齐、编译器和 MCU 端序差异。
 - `PetPersistence`：轮换写 `pet_a` 与 `pet_b` 两份 blob，仅新槽提交成功后更新当前代号；启动时选择校验通过的最大 generation。损坏的较新槽不会覆盖较旧但有效的快照。
 - `NvsPetBlobStore`：ESP-IDF `nvs_open/nvs_get_blob/nvs_set_blob/nvs_commit` 适配器；独立 NVS 命名空间 `kid_pet`，不接触小智已有业务 Key，也不会调用 `nvs_flash_erase`。
-- `SaveIfDue`：非关键写入由上层按单调毫秒时间节流；**喂食奖励、家长安静策略、重要成长进度必须调用立即 Save 并在保存成功后 ACK**。内存事件本身不是持久成功确认。
+- `SaveIfDue`：非关键写入由上层按单调毫秒时间节流；**喂食奖励、家长安静策略、重要成长进度必须立即持久提交后再 ACK**。内存事件本身不是持久成功确认。
+- `PetEventExecutor::ApplyDurably`：单线程事务入口，先暂存内存状态，在成功提交双槽后才返回 `Committed` 与 UI/音效效果；提交失败则恢复内存状态及事件去重窗口，返回 `StorageError`，由调用者决定重试。不要在失败时提前播放奖励音效。
 
 ## 二进制协议
 
