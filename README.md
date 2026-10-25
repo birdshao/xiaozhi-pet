@@ -78,6 +78,13 @@
 - **下一阶段**：官方基线屏幕/声音/输入进一步真机验收；儿童应用源码独立开发，不直接改写当前官方 OTA0。
 - [P2 宠物状态→画面桥接 #15](https://github.com/birdshao/xiaozhi-pet/pull/15) 已合并；C++ 自动测试通过。
 
+## P2：离线宠物核心持续开发（2026-10-25）
+
+- [PR #16 双槽 NVS checkpoint](https://github.com/birdshao/xiaozhi-pet/pull/16) 已合并，支持 1064B 版本化 CRC 存档、最近 128 条事件跨重启去重、提交失败时不发奖。
+- [PR #17 FreeRTOS 设备端事件任务](https://github.com/birdshao/xiaozhi-pet/pull/17) 已合并，[完整 ESP-IDF 固件构建](https://github.com/birdshao/xiaozhi-pet/actions/runs/40208607677) 通过；本地动作 ID 从持久代号导出，队列满时拒绝、NVS 故障时队头重试。[设备事件说明](docs/P2_DEVICE_EVENT_SERVICE.md)。
+- [PR #18 AudioCoordinator](https://github.com/birdshao/xiaozhi-pet/pull/18) 已合并，语音优先/故事恢复/宠物音效/安静时段的纯策略测试通过。[音频设计](docs/P2_AUDIO.md)；[ESP-IDF 组件集成 PR #19](https://github.com/birdshao/xiaozhi-pet/pull/19) 正在验收。
+- 以上是**代码/CI 交付**，尚未完成真实按钮、扬声器、NVS 断电恢复的物理联调。已安装的官方 OTA0 固件保持不变。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
