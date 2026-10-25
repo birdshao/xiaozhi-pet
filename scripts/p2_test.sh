@@ -42,3 +42,9 @@ CXX="${CXX:-g++}"
   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/tests/cpp/test_pet_local_event_id.cc" -o "$BUILD/test_pet_local_event_id"
 "$BUILD/test_pet_local_event_id"
+
+# Audio policy is platform-neutral; execute with the same P2 host suite.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
+  "$ROOT/tests/cpp/test_audio_coordinator.cc" -o "$BUILD/test_audio_coordinator"
+"$BUILD/test_audio_coordinator"
