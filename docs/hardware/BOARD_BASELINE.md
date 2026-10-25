@@ -150,3 +150,18 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 **注意**：这里仅报告了 OTA 记录的原始序号、状态字段，尚未核验 CRC/Bootloader 回滚策略、芯片 Flash 安全配置，因此不声称“已经证明当前活动槽及下一次启动槽”。
 
 至此已确认：备份文件可再次打开、大小与指纹相符、包含分区表与两套已有 app 镜像。**但没有进行破坏性的写回恢复测试，也未写入新的宠物固件。**
+
+## 2026-10-25 实际完成纯官方固件安装
+
+用户说明原先 OTA1 小智 2.2.38 并非官方未修改固件。通过另一条明确授权的组织 Windows Runner 工作流，实际从纯官方发布包完成了安装及启动验证：
+
+- [真实安装运行 #40203387106](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40203387106) 的最终结果是 `Success`，日志明确包含 `OFFICIAL_BOOT_CONFIRMED`。
+- 纯官方未修改 XiaoZhi v2.5.2 **app=2,848,304 B**，`APP_OFFICIAL_READBACK_OK`。
+- 配套官方 **assets=2,900,513 B**，`OFFICIAL_ASSETS_READBACK_OK`。
+- 启动目标已切至 **OTA0**，`OTA0_SELECTED_AND_VERIFIED`。
+- 串口共 124 行，识别到官方 2.5.2 版本，摘要为 `panic=False watchdog=False`。
+- 原 OTA1 旧应用槽保留。运行日志显示进行了 Flash 和必要资源的预检与备份；是否有持久配置/网络差异须另外检查。
+- 与此目标重叠的 [Runner PR #22](https://github.com/smoothRobot/orpa-agent-runner/pull/22) 已关闭且未合并，避免重复刷写。
+- [官方源码 app-only 构建 PR #14](https://github.com/birdshao/xiaozhi-pet/pull/14) 也已合并，作为可复现的原版源码/工具链构建记录；不要再额外安装一次。
+
+**验收范围**：已经有真机的官方 app+assets 写入、读回和启动串口确认，但儿童宠物应用并未在这一版本中启用；墨水屏显示、音频、按键、Wi-Fi、SD、IMU 等功能仍需专项真机验收。尤其不把一次启动无 Panic 当作所有功能已通过。
