@@ -57,3 +57,13 @@
 - 语音/音频是否在新版试运行期间异常？
 
 跟踪：[P1 Issue #2](https://github.com/birdshao/xiaozhi-pet/issues/2)。
+
+
+## 2026-10-25：首次手动试运行失败与修复
+
+- [失败运行 #40197657729](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40197657729)：PowerShell 抛出 `WhitespaceBeforeHereStringFooter`（内联 Python here-string 的闭合标记前出现空格），解析脚本时失败。
+- 失败发生在 PowerShell 语法解析阶段，**没有进入 Python，未写入任何 Flash 或切换 OTA**；这次不能当作固件启动失败。
+- [修复 PR #18](https://github.com/smoothRobot/orpa-agent-runner/pull/18) 已合并：用 Base64 字符串还原原 Python 脚本，避免嵌入源码被 YAML/heredoc 缩进破坏。
+- [最新无硬件影响的验证运行 #40198134906](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40198134906) **通过**，包括解码后源码逐字节核对、`pwsh` 对生成 PowerShell 脚本做纯语法解析，以及 OTA 切换/中断/恢复单元测试。组织仓库常规 CI 同样通过。
+- **旧失败运行不应点 Re-run jobs**，因旧 workflow 固定于出错的提交版本。请从该工作流页面创建一次全新的手动运行（`main`），并再次选择 `TRIAL_OTA0_AUTORESTORE_OTA1`。
+- 目前 **OTA0 镜像已烧录成功，仍待真实启动验证**。即便语法问题已修复，试运行本身仍有 USB 失联、上游固件升级导致 NVS 变化等风险。请在设备旁观察、确认私密 Flash 备份与原 OTA1 恢复手段可用后再操作。
