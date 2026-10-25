@@ -48,8 +48,12 @@ bool begin_pet_task() {
     return pet_service.Start(on_pet_committed, nullptr);
 }
 
-bool enqueue_button_event(uint64_t stable_event_id, kid_app::PetAction action) {
-    return pet_service.Post({stable_event_id, action});
+bool enqueue_button_event(kid_app::PetAction action) {
+    return pet_service.PostLocal(action); // persistent ID allocated in worker
+}
+
+bool enqueue_network_event(uint64_t stable_network_id, kid_app::PetAction action) {
+    return pet_service.Post({stable_network_id, action});
 }
 ```
 
@@ -63,11 +67,16 @@ bool enqueue_button_event(uint64_t stable_event_id, kid_app::PetAction action) {
 
 ## Event ID 的硬性要求
 
-`PetEvent.id` 由事件生产者分配，必须非 0，并且**同一动作重试时必须使用相同的 ID**。不能在同一次发送失败、Wi-Fi 重传或重启重发时生成新的 ID，否则会被当作新奖励。未来输入层应实现持久序号/消息传递 ID 规则；当前只有最近 128 条已提交 ID 的设备端去重窗口，长期跨设备幂等还依赖 P3 服务端事件日志。
+**普通本地输入**请使用 `PostLocal(action)`：FreeRTOS 消息先用专用内部哨兵，进入单一工作线程后按持久快照的 `generation+1` 分配 ID，设置最高位 1。完成事务后 generation 与最近 128 个 ID 一起提交，所以重启不会直接复用此前确认过的本地 ID。
+
+**外部/网络输入**使用 `Post(PetEvent)` 或 `PostFromISR(PetEvent)`，必须提供非 0、最高位为 0 的稳定 ID（`IsExternalEventId`），且**同一动作重传必须保留同一个 ID**。高位约定避免与设备本地事件冲突。事件已进入队列后的重试由工作任务负责，不重新编号。
+
+如果 NVS 回退到更老代号，那么从未成功持久确认的后续本地动作可能需要人工对账；该机制不是全局无限去重。现有设备仅持久保存最近 128 条已提交 ID，长期跨设备幂等还依赖 P3 服务端事件日志。
 
 ## 运行验证
 
 - `tests/cpp/test_pet_event_runtime.cc`：验证有界队列、回绕、存档失败队头保持、成功后 ACK、重复事件无奖励。
+- `tests/cpp/test_pet_local_event_id.cc`：验证跨重启事件 ID 随已提交 generation 增长、内外 ID 不冲突、旧本地事件不会重复发奖。
 - `tests/cpp/test_pet_event_executor.cc`：验证事务提交失败能回滚状态与事件去重。
 - `bash scripts/p2_test.sh`：无需 ESP-IDF 的主机编译/运行。
 - `.github/workflows/p1-integrated-firmware.yml`：ESP-IDF 6.1 编译 `freertos_pet_service.cc` 与完整微雪板型，产物不上板。
