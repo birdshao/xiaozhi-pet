@@ -44,12 +44,13 @@
 - [#5 P4：绘本、学习与养成](https://github.com/birdshao/xiaozhi-pet/issues/5)
 - [#6 P5：家长管理、OTA、安全与长期维护](https://github.com/birdshao/xiaozhi-pet/issues/6)
 
-## 当前实施进度（P0）
+## 当前实施进度（P0 + P1 主机原型）
 
-- **开发 PR**：[P0 固件工程基线 #7](https://github.com/birdshao/xiaozhi-pet/pull/7)。
+- **已合并**：[P0 固件工程基线 #7](https://github.com/birdshao/xiaozhi-pet/pull/7)；[P1 场景原型 #8](https://github.com/birdshao/xiaozhi-pet/pull/8)。
 - **可运行的代码**：固定上游 Commit、拉取脚本、板卡配置检查、host 测试和 GitHub Actions 原版固件构建。
 - **硬件记录**：[P0 板卡基线与实物待测清单](docs/hardware/BOARD_BASELINE.md)。
-- **状态约束**：PR 的单元测试、CI 编译、实物烧录是不同的验收环节；未通过的项目不标记为完成。
+- **验证状态**：[P0 固件 CI](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187425730) 和 [P1 C++ 主机测试](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187855638) 均通过。**实物烧录/墨水屏测试尚未完成**；不将 CI 成功当作真机通过。
+- **P1 原型**：[独立黑白宠物场景设计](docs/P1_SCENE_PROTOTYPE.md)，可在本机执行 `bash scripts/p1_preview.sh` 生成 PBM 预览。
 
 ## 文档导航
 
