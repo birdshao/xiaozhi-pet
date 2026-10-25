@@ -30,7 +30,11 @@ public:
     bool Start(PetCommitCallback callback, void* context);
 
     // Safe from normal FreeRTOS tasks. Never blocks a UI or audio callback.
+    // External IDs reserve their highest bit as 0 (network retries retain ID).
     bool Post(const PetEvent& event);
+    // Local button/IMU action gets a unique ID in the worker, derived from
+    // the last durably committed checkpoint generation.
+    bool PostLocal(PetAction action);
     // Safe from an ISR. Caller may request a reschedule if woken=true.
     bool PostFromISR(const PetEvent& event, BaseType_t* higher_priority_woken);
 
