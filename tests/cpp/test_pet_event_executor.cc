@@ -50,5 +50,26 @@ int main() {
     assert(resumed.ApplyDurably({100, PetAction::Feed}, &effects) == CommitResult::Duplicate);
     assert(resumed.ApplyDurably({101, PetAction::QuietBegin}, &effects) == CommitResult::Duplicate);
     assert(rebooted.Snapshot().interaction_count == 1);
+    // A failed VoiceReplyBegin must roll back in-memory to Listening,
+    // NOT apply the boot-only stale-voice cleanup.
+    MemoryNvs voice_nvs;
+    PetController voice_pet;
+    PetPersistence voice_persist(voice_nvs);
+    PetEventExecutor voice_exec(voice_pet, voice_persist);
+    assert(voice_exec.ApplyDurably({200, PetAction::VoiceBegin}, &effects) == CommitResult::Committed);
+    assert(voice_pet.Snapshot().mode == PetMode::Listening);
+    voice_nvs.fail = true;
+    assert(voice_exec.ApplyDurably({201, PetAction::VoiceReplyBegin}, &effects) == CommitResult::StorageError);
+    assert(voice_pet.Snapshot().mode == PetMode::Listening);
+    assert(voice_pet.Snapshot().mood == PetMood::Thinking);
+    voice_nvs.fail = false;
+    assert(voice_exec.ApplyDurably({201, PetAction::VoiceReplyBegin}, &effects) == CommitResult::Committed);
+    assert(voice_pet.Snapshot().mode == PetMode::Speaking);
+    // But boot-time recovery of a persisted Speaking event must be Idle.
+    PetController after_voice_reboot;
+    PetPersistence reopened(voice_nvs);
+    assert(reopened.Load(&after_voice_reboot) == PetLoadResult::Restored);
+    assert(after_voice_reboot.Snapshot().mode == PetMode::Idle);
+
     std::cout << "PASS: durable event only ACKed/rewarded after dual-slot commit\n";
 }
