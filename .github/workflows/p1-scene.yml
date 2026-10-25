@@ -1,0 +1,30 @@
+name: P1 host scene prototype
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/components/kid_app/**'
+      - 'tests/cpp/**'
+      - 'tools/pet_scene_preview.cc'
+      - 'scripts/p1_preview.sh'
+      - '.github/workflows/p1-scene.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Build and test hardware-independent scene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute C++ tests; export monochrome previews
+        run: bash scripts/p1_preview.sh
+      - name: Keep generated PBM previews for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-scene-preview-800x480-pbm
+          path: build/p1/*.pbm
+          if-no-files-found: error
+          retention-days: 7
