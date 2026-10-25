@@ -46,7 +46,7 @@ jobs:
           if not (100_000 < size <= 4032*1024):
               raise SystemExit(f"Unexpected image size {size}")
           with app.open("rb") as f:
-              if f.read(1) != b"\\xe9":
+              if f.read(1) != bytes([0xE9]):
                   raise SystemExit("ESP32 app image header 0xE9 missing")
           sha=hashlib.sha256(app.read_bytes()).hexdigest()
           output=root / "release"
