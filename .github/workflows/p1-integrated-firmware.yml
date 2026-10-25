@@ -1,0 +1,66 @@
+name: P1 integrated pet ePaper firmware (build only)
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/components/kid_app/**'
+      - 'scripts/p1_integrate.py'
+      - 'scripts/p0_*'
+      - 'version-lock.json'
+      - '.github/workflows/p1-integrated-firmware.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile ESP32 pet preview using pinned XiaoZhi source
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    timeout-minutes: 50
+    steps:
+      - name: Checkout pet project
+        uses: actions/checkout@v4
+      - name: Clone pinned upstream and verify board config
+        shell: bash
+        run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Apply narrow integration patch (disposable checkout only)
+        shell: bash
+        run: python3 scripts/p1_integrate.py --source "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Review integration diff for whitespace errors
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          git diff --check
+      - name: Compile official Waveshare board with pet adapter
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+      - name: Check pet firmware fits measured OTA slot
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          image = Path("build/xiaozhi.bin")
+          if not image.is_file():
+              raise SystemExit("Expected app image build/xiaozhi.bin missing")
+          size = image.stat().st_size
+          max_size = 4032 * 1024
+          print(f"Pet app image: {size} bytes; measured OTA slot: {max_size} bytes")
+          if size > max_size:
+              raise SystemExit("Integrated pet app is too large for the real device OTA partition")
+          print(f"SHA256: {hashlib.sha256(image.read_bytes()).hexdigest()}")
+          PY
+      - name: Upload build-only artifact (NOT automatically flashed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-preview-epd-buildonly
+          path: .upstream/xiaozhi-esp32/build/merged-binary.bin
+          if-no-files-found: error
+          retention-days: 7
