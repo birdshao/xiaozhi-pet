@@ -1,6 +1,6 @@
 # xiaozhi-pet — 儿童 AI 宠物与互动学习终端
 
-> 项目状态：**架构设计 / 待硬件验证** · 文档基线：2026-10-25  
+> 项目状态：**纯官方固件真机基线已启动 / 宠物 MVP 开发中** · 文档基线：2026-10-25  
 > 目标用户：**3–5 岁儿童（家长参与与控制）**  
 > 硬件：**Waveshare ESP32-S3-ePaper-3.97**（800×480 黑白墨水屏，ESP32-S3）
 
@@ -44,35 +44,22 @@
 - [#5 P4：绘本、学习与养成](https://github.com/birdshao/xiaozhi-pet/issues/5)
 - [#6 P5：家长管理、OTA、安全与长期维护](https://github.com/birdshao/xiaozhi-pet/issues/6)
 
-## 当前实施进度（P0 + P1 主机原型）
+## 当前实施进度（2026-10-25）
 
-- **已合并**：[P0 固件工程基线 #7](https://github.com/birdshao/xiaozhi-pet/pull/7)；[P1 场景原型 #8](https://github.com/birdshao/xiaozhi-pet/pull/8)。
-- **可运行的代码**：固定上游 Commit、拉取脚本、板卡配置检查、host 测试和 GitHub Actions 原版固件构建。
-- **硬件记录**：[P0 板卡基线与实物待测清单](docs/hardware/BOARD_BASELINE.md)。
-- **验证状态**：[P0 固件 CI](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187425730) 和 [P1 C++ 主机测试](https://github.com/birdshao/xiaozhi-pet/actions/runs/40187855638) 均通过。**实物烧录/墨水屏测试尚未完成**；不将 CI 成功当作真机通过。
-- **P1 原型**：[独立黑白宠物场景设计](docs/P1_SCENE_PROTOTYPE.md)，可在本机执行 `bash scripts/p1_preview.sh` 生成 PBM 预览。
+### 纯官方固件：真实硬件已刷入并启动
 
-## P1 固件集成与硬件状态（2026-10-25）
+- [纯官方小智 v2.5.2 固件包](https://github.com/birdshao/xiaozhi-pet/releases/tag/official-waveshare397-v2.5.2-20261025) 直接由未修改的上游 `78/xiaozhi-esp32` 构建；应用与匹配资源 SHA 均已锁定。
+- [Windows Self-hosted Runner 真机安装成功 #40203387106](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40203387106)：OTA0 写入官方 app-only 与匹配资源、读回 hash、选中 OTA0；串口确认版本 2.5.2 启动，未观察到匹配的 Panic/WDT 标记。
+- OTA1 保留用户原来的 2.2.38 应用；**这不能称为官方原版**。原 16MB Flash 完整备份仅保存在 Windows Runner 本地。原 bootloader、partition table、NVS 没有被该烧录程序直接改写；共享 assets 已更新，回退旧应用时需检查资源兼容性。
+- [详细实测与准确 Flash 范围](docs/hardware/OFFICIAL_BASELINE_20261025.md)。**屏幕、麦克风、喇叭、Wi-Fi 和 SD 尚待实机功能验收**。
+- 一次性物理烧录 PR [#21](https://github.com/smoothRobot/orpa-agent-runner/pull/21) 已关闭、未合并到组织主分支，避免重复触发。
 
-- [P1 宠物画面固件集成 PR #9](https://github.com/birdshao/xiaozhi-pet/pull/9) 已合并；[云端 ESP-IDF 6.1 构建](https://github.com/birdshao/xiaozhi-pet/actions/runs/40191850961) 已通过。
-- 集成镜像应用大小 **2,851,232 B**，实测 OTA 槽 **4,128,768 B**。可用的手动演示设计是待机长按 BOOT 进入/退出宠物预览，短按切换表情。
-- 真实 ESP32-S3 已由 Windows Self-hosted Runner 只读识别，**原 16 MiB Flash 已本地备份并独立校验**；没有把镜像上传 GitHub。
-- 备份中 OTA 两条记录的 CRC 已验证，芯片 Secure Boot / Flash Encryption 均关闭；**新宠物固件尚未烧录到实物**。
-- [P1 设备显示集成设计](docs/P1_EPD_INTEGRATION.md) · [首次受控刷写与回滚检查](docs/hardware/FIRST_FLASH_PLAN.md)。
+### 宠物功能：独立迭代中
 
-## P1 App-only 发布与硬件写入入口（2026-10-25）
-
-- [ESP32-S3 宠物 app-only 预发布](https://github.com/birdshao/xiaozhi-pet/releases/tag/p1-device-preview-20261025)：`xiaozhi-pet-esp32s3-app.bin`（2,851,232 B，固定 SHA256）。
-- [Windows Runner 只读预检已通过](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40194292691)：原 Flash 备份、实时 OTA 状态、发布文件、镜像哈希及分区大小全部匹配。
-- [手动分区写入工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-manual-stage-ota0.yml)：只写目前非活动的 `ota_0`、读回校验、保留当前 `ota_1`；需要 `birdshao` 登录后手动确认。**未触发，不代表设备已经换上宠物固件。**
-- [详细安全步骤与当前实际状态](docs/hardware/STAGING_INSTRUCTIONS.md)。
-
-## P1 最新真机状态：OTA0 已烧录，等待短时启动验收
-
-- [OTA0 真实烧录及读回成功](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40195232072)，日志含 `STAGE_SUCCESS`，确认 OTA1 和当前启动选择记录均未改变。
-- 预发布应用 `2.5.2` 已位于 OTA0，旧版 `2.2.38` 位于 OTA1；尚未让新固件实际启动。
-- [50 秒临时启动 OTA0 + 自动恢复 OTA1 工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota-trial.yml) 已部署，必须登录 GitHub 手动选择确认；另有独立的 `RESTORE_ORIGINAL_OTA1` 救援模式。
-- [使用说明、安全限制与验收事项](docs/hardware/TRIAL_BOOT_INSTRUCTIONS.md)。**新固件首次启动仍有跨版本 NVS 数据迁移风险；即使自动切回也不保证配置完全不变。**
+- [宠物黑白渲染与 PetDisplay 集成 PR #9](https://github.com/birdshao/xiaozhi-pet/pull/9) 已编译；[实验用 app-only 固件包](https://github.com/birdshao/xiaozhi-pet/releases/tag/p1-device-preview-20261025) 保留在 GitHub，**但不在当前启动的官方固件里**。
+- [P2 C++ 宠物状态机 PR #12](https://github.com/birdshao/xiaozhi-pet/pull/12) 已合并、主机与固件构建通过；支持喂食、故事、语音状态、安静时段及有限 RAM 去重。
+- P2 定长事件队列仍在测试：见 [PR #13](https://github.com/birdshao/xiaozhi-pet/pull/13)。
+- [P2 实现边界说明](docs/P2_PET_ENGINE.md)；未完成设备端事件任务、跨重启存档、真实画面联动及音频协调。
 
 ## 机械外壳 V5（2026-10-25）
 
@@ -119,4 +106,4 @@ xiaozhi-pet/
 - [Python 语音服务端](https://github.com/xinnan-tech/xiaozhi-esp32-server)
 - [微雪开发板文档](https://docs.waveshare.net/ESP32-S3-ePaper-3.97/)
 
-本仓库目前为设计文档，不代表已有经过安全审核的儿童成品、完成固件编译或通过真机测试。儿童开放式 AI 对话须在家长参与下测试；上线前必须执行家长控制、隐私、输入/输出审核及失败降级验收。
+本仓库已有通过 CI 的 C++ 组件及真实 ESP32-S3 固件刷写/启动记录，但并不代表通过儿童产品安全审核、墨水屏体验或完整语音/硬件功能验收。儿童开放式 AI 对话须在家长参与下测试；上线前必须执行家长控制、隐私、输入/输出审核及失败降级验收。
