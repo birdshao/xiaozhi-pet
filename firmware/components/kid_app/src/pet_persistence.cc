@@ -127,8 +127,10 @@ PetLoadResult PetPersistence::Load(PetController* pet) {
             best_slot = static_cast<int>(slot);
         }
     }
+    // A failed read could conceal a newer valid slot. Fail closed rather
+    // than load an older checkpoint then overwrite the inaccessible one.
+    if (failed) return PetLoadResult::StorageError;
     if (best_slot < 0) {
-        if (failed) return PetLoadResult::StorageError;
         return corrupt ? PetLoadResult::Corrupt : PetLoadResult::NotFound;
     }
     if (!pet->RestoreCheckpoint(best)) return PetLoadResult::Corrupt;
