@@ -69,6 +69,15 @@
 
 此版本重建了猫头外形与隐藏固定结构，保留原始屏幕及三处独立侧壁功能开口；扬声器音栅按 20 × 30 mm 设计。通过 CAD/网格检查，**尚未完成实体装配和儿童安全测试**。
 
+## 当前基线：纯官方 XiaoZhi 已在真机 OTA0 启动（2026-10-25）
+
+- [真实官方安装运行](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40203387106) 验证**未修改上游 v2.5.2 应用**（2,848,304B）和相应官方 assets（2,900,513B）均已写入/读回成功，OTA0 启动确认，串口监测 `panic=False watchdog=False`；旧 OTA1 程序保留。
+- 设备原有 OTA1 的 2.2.38 **不是用户要求的官方纯净基线**，只是恢复备份。官方基线已单独安装，不需重复刷入。
+- [官方源码可复现构建 #14](https://github.com/birdshao/xiaozhi-pet/pull/14) 已合并；[构建 CI](https://github.com/birdshao/xiaozhi-pet/actions/runs/40204407387) 成功。
+- 为避免重复写入，另一套 [Runner 刷写 PR #22](https://github.com/smoothRobot/orpa-agent-runner/pull/22) 已关闭、未执行。
+- **下一阶段**：官方基线屏幕/声音/输入进一步真机验收；儿童应用源码独立开发，不直接改写当前官方 OTA0。
+- [P2 宠物状态→画面桥接 #15](https://github.com/birdshao/xiaozhi-pet/pull/15) 已合并；C++ 自动测试通过。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
