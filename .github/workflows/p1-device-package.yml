@@ -1,0 +1,100 @@
+name: P1 prepare reviewable app-only test firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/p1-device-package.yml
+  workflow_dispatch:
+
+# Publishing a prerelease only from trusted main, never from PR events.
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned XiaoZhi source and hardware target
+        shell: bash
+        run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Integrate our isolated PetDisplay adapter
+        shell: bash
+        run: python scripts/p1_integrate.py --source "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Build full firmware but publish app-only image
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+      - name: Verify app format, size, and produce pinned manifest
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, shutil
+          from pathlib import Path
+          root=Path(os.environ["GITHUB_WORKSPACE"])
+          build=root / ".upstream/xiaozhi-esp32/build"
+          app=build / "xiaozhi.bin"
+          if not app.is_file():
+              raise SystemExit("No app-only ESP32 image found")
+          size=app.stat().st_size
+          if not (100_000 < size <= 4032*1024):
+              raise SystemExit(f"Unexpected image size {size}")
+          with app.open("rb") as f:
+              if f.read(1) != bytes([0xE9]):
+                  raise SystemExit("ESP32 app image header 0xE9 missing")
+          sha=hashlib.sha256(app.read_bytes()).hexdigest()
+          output=root / "release"
+          output.mkdir(exist_ok=True)
+          artifact=output / "xiaozhi-pet-esp32s3-app.bin"
+          shutil.copyfile(app,artifact)
+          manifest={
+            "schema_version": 1,
+            "status": "EXPERIMENTAL_DO_NOT_FLASH_AUTOMATICALLY",
+            "device": "waveshare/esp32-s3-epaper-3.97",
+            "chip": "ESP32-S3",
+            "image_kind": "application_only",
+            "image_filename": artifact.name,
+            "image_size": size,
+            "image_sha256": sha,
+            "maximum_single_ota_partition_bytes": 4032*1024,
+            "upstream_tag": "v2.5.2",
+            "upstream_commit": "49b4380b3faa0ceadd28a3e78aaf0f311c46c57e",
+            "xiaozhi_pet_commit": os.environ["GITHUB_SHA"],
+            "contains_bootloader": False,
+            "contains_partition_table": False,
+            "contains_assets": False,
+            "contains_nvs": False,
+            "safe_to_flash_without_checks": False
+          }
+          (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+          print(f"App-only image: {size} bytes, SHA256={sha}")
+          print("The package cannot itself choose an OTA slot; no automatic device flashing.")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p1-app-only-review
+          path: release/*
+          retention-days: 14
+          if-no-files-found: error
+      - name: Publish review-only GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: p1-device-preview-20261025
+          name: P1 ePaper pet test image (app-only, experimental)
+          prerelease: true
+          make_latest: false
+          files: |
+            release/xiaozhi-pet-esp32s3-app.bin
+            release/manifest.json
+          body: |
+            EXPERIMENTAL ONLY. This is an ESP32-S3 application partition image, NOT
+            a merged whole-flash image. Do not flash it without verifying board,
+            actual boot slot, image SHA256, trusted partition map, and backup.
+            Never erase NVS/assets. The Windows hardware workflow must use a
+            separate manually controlled, safety-gated process.
