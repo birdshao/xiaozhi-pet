@@ -33,6 +33,17 @@
 
 完整拆解、优先级、任务依赖与验收标准请看 [开发计划](docs/DEVELOPMENT_PLAN.md)。
 
+## 任务看板（GitHub Issues）
+
+按里程碑依次推进，详细子任务及验收勾选在各 Issue 内：
+
+- [#1 P0：硬件及上游基线](https://github.com/birdshao/xiaozhi-pet/issues/1)
+- [#2 P1：宠物 UI 与墨水屏刷新验证](https://github.com/birdshao/xiaozhi-pet/issues/2)
+- [#3 P2：离线宠物 MVP](https://github.com/birdshao/xiaozhi-pet/issues/3)
+- [#4 P3：自建 AI 语音与宠物联动](https://github.com/birdshao/xiaozhi-pet/issues/4)
+- [#5 P4：绘本、学习与养成](https://github.com/birdshao/xiaozhi-pet/issues/5)
+- [#6 P5：家长管理、OTA、安全与长期维护](https://github.com/birdshao/xiaozhi-pet/issues/6)
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
