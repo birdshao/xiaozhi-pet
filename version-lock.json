@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "verified_ref_date": "2026-10-25",
+  "firmware": {
+    "repository": "https://github.com/78/xiaozhi-esp32.git",
+    "tag": "v2.5.2",
+    "commit": "49b4380b3faa0ceadd28a3e78aaf0f311c46c57e"
+  },
+  "voice_server": {
+    "repository": "https://github.com/xinnan-tech/xiaozhi-esp32-server.git",
+    "tag": "v0.9.8",
+    "commit": "8f2dda09cf18f1c1ece0f906eee4cc2fabb7fb58"
+  },
+  "esp_idf": "6.1",
+  "board": {
+    "source_dir": "waveshare/esp32-s3-epaper-3.97",
+    "variant": "esp32-s3-epaper-3.97",
+    "target": "esp32s3",
+    "width": 800,
+    "height": 480
+  },
+  "note": "References verified against GitHub tag refs only. Build, flash and hardware validation remain pending."
+}

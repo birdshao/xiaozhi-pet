@@ -1,0 +1,52 @@
+name: P0 upstream firmware baseline
+
+on:
+  pull_request:
+    paths:
+      - 'version-lock.json'
+      - 'scripts/p0_*'
+      - 'tests/test_p0_*'
+      - '.github/workflows/p0-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    name: Validate P0 metadata and host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run host-only unit tests
+        run: python -m unittest discover -s tests -p 'test_p0_*.py' -v
+      - name: Validate pinned manifest
+        run: python scripts/p0_check.py --metadata-only
+
+  firmware-build:
+    name: Build original Waveshare ePaper firmware (no flashing)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exactly pinned upstream firmware
+        shell: bash
+        run: |
+          bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+      - name: Compile official board variant
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
+          python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+      - name: Upload compiled baseline binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-epaper-3.97-official-v2.5.2
+          path: .upstream/xiaozhi-esp32/build/merged-binary.bin
+          if-no-files-found: error
+          retention-days: 7

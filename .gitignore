@@ -1,0 +1,15 @@
+# Local upstream checkouts; authoritative revisions are version-lock.json
+.upstream/
+external/
+.cache/
+build/
+dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+.env
+.env.*
+!.env.example
+sdkconfig
+sdkconfig.old
