@@ -9,3 +9,10 @@ CXX="${CXX:-g++}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$SRC" "$ROOT/tests/cpp/test_pet_controller.cc" -o "$BUILD/test_pet_controller"
 "$BUILD/test_pet_controller"
+
+# End-to-end pet event -> scene model -> monochrome buffer.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_scene_presenter.cc" \
+  "$ROOT/tests/cpp/test_pet_scene_presenter.cc" -o "$BUILD/test_pet_scene_presenter"
+"$BUILD/test_pet_scene_presenter"
