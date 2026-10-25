@@ -1,0 +1,21 @@
+name: P2 deterministic pet state machine
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/components/kid_app/**'
+      - 'tests/cpp/test_pet_controller.cc'
+      - 'scripts/p2_test.sh'
+      - '.github/workflows/p2-pet-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pet-engine-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute deterministic C++ tests
+        run: bash scripts/p2_test.sh
