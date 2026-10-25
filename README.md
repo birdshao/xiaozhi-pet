@@ -74,6 +74,14 @@
 - [50 秒临时启动 OTA0 + 自动恢复 OTA1 工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota-trial.yml) 已部署，必须登录 GitHub 手动选择确认；另有独立的 `RESTORE_ORIGINAL_OTA1` 救援模式。
 - [使用说明、安全限制与验收事项](docs/hardware/TRIAL_BOOT_INSTRUCTIONS.md)。**新固件首次启动仍有跨版本 NVS 数据迁移风险；即使自动切回也不保证配置完全不变。**
 
+## 机械外壳 V5（2026-10-25）
+
+- [猫咪儿童外壳 CAD 源码与设计说明](hardware/enclosure/cat-v5/README.md)
+- [前后壳 3MF / STL / STEP / BREP 实体文件](hardware/enclosure/cat-v5/output/)
+- [自动 CAD 构建工作流](.github/workflows/enclosure-cad-v5.yml)
+
+此版本重建了猫头外形与隐藏固定结构，保留原始屏幕及三处独立侧壁功能开口；扬声器音栅按 20 × 30 mm 设计。通过 CAD/网格检查，**尚未完成实体装配和儿童安全测试**。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
