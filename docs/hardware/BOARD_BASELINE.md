@@ -112,3 +112,26 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 在任何固件写入前，先确认现有固件的备份与恢复策略，不要把整片 Flash 备份（可能含 Wi-Fi 密码、API 令牌或其他敏感配置）上传到 GitHub Actions artifact、公开仓库或日志。烧录命令必须经过明确的型号、COM 端口、镜像 digest、分区匹配和审批条件校验；先在可恢复环境进行非生产演练。
 
 **尚未实测**：物理拨轮和按钮、IMU、SD 文件系统、音频收录/播放、LCD/EPD 刷新、当前固件版本、实际 OTA 回滚、家长安全交互。此记录是部分 P0 硬件验证，不能把整个 P0 阶段标为完成。
+
+## 7. 完整 Flash 本地备份（已成功，2026-10-25）
+
+通过 Windows Self-hosted Runner，以 `esptool.py v4.8.1 read_flash 0x0 0x1000000` 读取整片 Flash。**这是只读操作，未擦写设备。**
+
+- 备份完成：**成功**；大小精确为 `16,777,216` 字节。
+- 保存目录：本机运行 Runner 的 Windows 账户 `%LOCALAPPDATA%\\XiaozhiPet\\FlashBackups`，使用单独 ACL 限制读取；**未上传到 GitHub、CI Artifact 或其他网络存储**。
+- 文件名：`esp32s3-com10-20261025T120252Z-full16mb.bin`
+- SHA-256：`56FD3AA2E5982D88880D42826D033E9F39ECB206A95A312F3C3CD1DD1028EDCC`
+- 验证方法：备份文件长度核对并重复两次读取 SHA-256；临时不完整文件自动清理。
+- [成功的 GitHub Actions 记录](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40191402358)。
+- 备份可能包含个人配置或设备凭据：**禁止作为公共 Artifact 上传、添加 Git 跟踪或提供公开下载**。
+
+### 备份与恢复的区别
+
+备份成功不等于已验证烧录后能完整恢复。任何新固件刷写之前还应确认：
+
+1. 此备份在本地目录中仍存在且哈希一致；
+2. 当前设备的 Flash 分区、真实型号和写入镜像属于同一目标；
+3. 计划仅更换必要 app/资源分区，尽量避免覆盖 NVS 和原厂资源；
+4. 如果发生故障，恢复时应优先在明确用户授权的条件下进行，并有已测试的步骤；**不要把“读出来了”误当成“写回成功过”**。
+
+本轮没有进行恢复写入演练，也没有将新宠物固件写到实体设备。
