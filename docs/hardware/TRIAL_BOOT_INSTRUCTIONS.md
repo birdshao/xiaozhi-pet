@@ -67,3 +67,26 @@
 - [最新无硬件影响的验证运行 #40198134906](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40198134906) **通过**，包括解码后源码逐字节核对、`pwsh` 对生成 PowerShell 脚本做纯语法解析，以及 OTA 切换/中断/恢复单元测试。组织仓库常规 CI 同样通过。
 - **旧失败运行不应点 Re-run jobs**，因旧 workflow 固定于出错的提交版本。请从该工作流页面创建一次全新的手动运行（`main`），并再次选择 `TRIAL_OTA0_AUTORESTORE_OTA1`。
 - 目前 **OTA0 镜像已烧录成功，仍待真实启动验证**。即便语法问题已修复，试运行本身仍有 USB 失联、上游固件升级导致 NVS 变化等风险。请在设备旁观察、确认私密 Flash 备份与原 OTA1 恢复手段可用后再操作。
+
+## 2026-10-25 紧急修订：OTA0 已试启动，但自动恢复失败
+
+> **本节优先于上文原有试运行步骤。当前不要再运行旧的 TRIAL_OTA0_AUTORESTORE_OTA1 工作流。该旧流程已在组织仓库设置跳过。**
+
+真实日志：
+
+- [#40198870261](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40198870261) 试运行：预检通过、`TRIAL_OTA0_SELECTED`、串口摘要显示检测到小智 **2.5.2** 和 150 行日志；之后 `TRIAL_RESTORE_ATTEMPT` 的 esptool 恢复命令失败，未出现 `RESTORE_SUCCESS`。
+- [#40199115086](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40199115086) 随后的重新试运行在写入前失败：`Live OTA selector differs from preserved backup`，并未执行第二次切换。
+- [只读实测 #40199421619](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40199421619) 确认当前 OTADATA：第一条 `seq=0x23, state=2, CRC valid`；第二条 `seq=0x22, state=2, CRC valid`。推定当前**选中 OTA0**。相对原备份，第一条 sector **恰有 5 个字节发生变更**（序号及 CRC），第二个 sector **完全没变**。备份 SHA 通过，未写设备。
+- 原 OTA1 仍具有完整的选择记录；尚未真正恢复 OTA1，因此不要把“脚本报错”解释成设备已经回滚。
+
+### 新的受控救援方案
+
+- [严格 OTA1 恢复 PR #20](https://github.com/smoothRobot/orpa-agent-runner/pull/20) 已合并；[无硬件 CI #40199795681](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40199795681) 通过（状态模型模拟、源代码对应 Base64 的一致性检查及 PowerShell 语法解析）。
+- 使用 **独立新入口**：[XiaoZhi OTA1 exact-state rescue (manual)](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota1-rescue.yml)，选择 `main`，把 `confirm` 从 `NO_WRITE` 手动选成 `RESTORE_OTA1_EXACT_STATE`。
+- 它核对受限本地备份、真实 COM10、OTA1 应用头、安全配置和**完整 8KB OTA 数据与已知的 OTA0 临时选择状态是否完全匹配**；若有任何异样直接拒绝写入。
+- 只允许以 115200 baud 对 `0xD000` 第一条 4096B sector **尝试写入一次**原备份记录，随后再读回完整 8192B 校验。原应用分区、NVS 与 assets 都不写。
+- 如输出 `RESTORE_SUCCESS`，表示原 `otadata` 已逐字节恢复且 OTA1 重新被选中；**不代表本次已完全恢复跨版本运行期间可能被修改的 NVS**。
+- 如退出失败、设备断开或没有 `RESTORE_SUCCESS`，**不要连续重试写入**。用只读诊断确认当前状态，再调查 USB/串口/芯片。
+- 因旧的自动恢复曾失败，老 [OTA0 试运行工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota-trial.yml) 已设置为跳过，避免再次启动并产生风险。
+
+恢复成功前本阶段优先级是**保障 OTA1 原应用可启动并保护备份**，其次才是继续墨水屏界面调试。
