@@ -1,0 +1,4 @@
+cadquery
+trimesh
+shapely
+numpy

@@ -1,0 +1,40 @@
+{
+  "design": "cat-v5-original-openings",
+  "date": "2026-10-25",
+  "units": "mm",
+  "build": "hardware/enclosure/cat-v5/generate.py",
+  "files": [
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_front.3mf",
+      "sha256": "8a1c2cadfd0dec22e2311953f2a1a671f0695c34d9aa9e9cc2e8045e872150ba"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_back.3mf",
+      "sha256": "58d79ff594fbfd2d308352af2fbe4f617c7342c61734ad9f5d53073f00e75270"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_front.step",
+      "sha256": "6f35a10ba4eb945f55be37dd940ef26fd0cbf4ba259df42b2f5f310b38ce9b70"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_back.step",
+      "sha256": "8e52bae63a1bc371bebe83842d41d135a051014f0ae81e0a66f20c123e3c83e3"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_front.stl",
+      "sha256": "449b5e4bdecdfa521bab5e54ccef30d91006afffe42e47497c7b75e76dd3f342"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_back.stl",
+      "sha256": "ce6b50c3890e19a11e7ee167b39c6987f0b071d846910e338eb61221b47b1490"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_front.brep",
+      "sha256": "2d61429de482a64b5518b6be488531dd376620eaa151f007026556dc8d2e1270"
+    },
+    {
+      "name": "Waveshare_3.97_cat_v5_original_openings_back.brep",
+      "sha256": "29262efcd75530871c7723eee8921c14a311be8660fa16006073cbd594d9afd0"
+    }
+  ]
+}
