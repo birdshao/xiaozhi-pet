@@ -1,4 +1,5 @@
 #include "kid_app/freertos_pet_service.h"
+#include "kid_app/pet_local_event_id.h"
 
 #include "esp_log.h"
 
@@ -46,13 +47,21 @@ bool FreertosPetService::Start(PetCommitCallback callback, void* context) {
 }
 
 bool FreertosPetService::Post(const PetEvent& event) {
-    if (!inbox_ || event.id == 0) return false;
+    if (!inbox_ || !IsExternalEventId(event.id)) return false;
     return xQueueSend(inbox_, &event, 0) == pdTRUE;
+}
+
+bool FreertosPetService::PostLocal(PetAction action) {
+    if (!inbox_) return false;
+    // id==0 is only a private FreeRTOS-inbox sentinel, never accepted by
+    // PetEventRuntime or PetController. Single worker assigns its durable ID.
+    const PetEvent pending{0, action};
+    return xQueueSend(inbox_, &pending, 0) == pdTRUE;
 }
 
 bool FreertosPetService::PostFromISR(const PetEvent& event,
                                     BaseType_t* higher_priority_woken) {
-    if (!inbox_ || event.id == 0 || !higher_priority_woken) return false;
+    if (!inbox_ || !IsExternalEventId(event.id) || !higher_priority_woken) return false;
     return xQueueSendFromISR(inbox_, &event, higher_priority_woken) == pdTRUE;
 }
 
@@ -68,6 +77,13 @@ void FreertosPetService::TaskLoop() {
         if (!runtime_.HasPendingRetry()) {
             PetEvent event{};
             if (xQueueReceive(inbox_, &event, kIdlePollTicks) == pdTRUE) {
+                if (event.id == 0) {
+                    event.id = NextLocalEventId(persistence_.Generation());
+                    if (event.id == 0) {
+                        ESP_LOGE(kTag, "Pet local event generation exhausted");
+                        continue;
+                    }
+                }
                 // A single-worker runtime, capacity 1: should always succeed.
                 if (!runtime_.Enqueue(event)) {
                     ESP_LOGE(kTag, "Pet runtime invariant broken: event rejected");
