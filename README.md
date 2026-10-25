@@ -44,6 +44,13 @@
 - [#5 P4：绘本、学习与养成](https://github.com/birdshao/xiaozhi-pet/issues/5)
 - [#6 P5：家长管理、OTA、安全与长期维护](https://github.com/birdshao/xiaozhi-pet/issues/6)
 
+## 当前实施进度（P0）
+
+- **开发 PR**：[P0 固件工程基线 #7](https://github.com/birdshao/xiaozhi-pet/pull/7)。
+- **可运行的代码**：固定上游 Commit、拉取脚本、板卡配置检查、host 测试和 GitHub Actions 原版固件构建。
+- **硬件记录**：[P0 板卡基线与实物待测清单](docs/hardware/BOARD_BASELINE.md)。
+- **状态约束**：PR 的单元测试、CI 编译、实物烧录是不同的验收环节；未通过的项目不标记为完成。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
