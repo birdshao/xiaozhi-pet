@@ -133,6 +133,12 @@ PetLoadResult PetPersistence::Load(PetController* pet) {
     if (best_slot < 0) {
         return corrupt ? PetLoadResult::Corrupt : PetLoadResult::NotFound;
     }
+    // An unclean reboot cannot resume an old microphone / TTS session.
+    if (best.snapshot.mode == PetMode::Listening ||
+        best.snapshot.mode == PetMode::Speaking) {
+        best.snapshot.mode = PetMode::Idle;
+        best.snapshot.mood = PetMood::Neutral;
+    }
     if (!pet->RestoreCheckpoint(best)) return PetLoadResult::Corrupt;
     generation_ = best_gen;
     active_slot_ = best_slot;
