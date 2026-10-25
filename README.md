@@ -60,6 +60,13 @@
 - 备份中 OTA 两条记录的 CRC 已验证，芯片 Secure Boot / Flash Encryption 均关闭；**新宠物固件尚未烧录到实物**。
 - [P1 设备显示集成设计](docs/P1_EPD_INTEGRATION.md) · [首次受控刷写与回滚检查](docs/hardware/FIRST_FLASH_PLAN.md)。
 
+## P1 App-only 发布与硬件写入入口（2026-10-25）
+
+- [ESP32-S3 宠物 app-only 预发布](https://github.com/birdshao/xiaozhi-pet/releases/tag/p1-device-preview-20261025)：`xiaozhi-pet-esp32s3-app.bin`（2,851,232 B，固定 SHA256）。
+- [Windows Runner 只读预检已通过](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40194292691)：原 Flash 备份、实时 OTA 状态、发布文件、镜像哈希及分区大小全部匹配。
+- [手动分区写入工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-manual-stage-ota0.yml)：只写目前非活动的 `ota_0`、读回校验、保留当前 `ota_1`；需要 `birdshao` 登录后手动确认。**未触发，不代表设备已经换上宠物固件。**
+- [详细安全步骤与当前实际状态](docs/hardware/STAGING_INSTRUCTIONS.md)。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
