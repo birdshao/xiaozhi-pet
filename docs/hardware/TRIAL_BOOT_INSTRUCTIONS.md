@@ -90,3 +90,23 @@
 - 因旧的自动恢复曾失败，老 [OTA0 试运行工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-ota-trial.yml) 已设置为跳过，避免再次启动并产生风险。
 
 恢复成功前本阶段优先级是**保障 OTA1 原应用可启动并保护备份**，其次才是继续墨水屏界面调试。
+
+## 2026-10-25 OTA1 恢复完成：读回已确认成功
+
+**最终恢复工作流**：[运行 #40200871224](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40200871224)，状态 `Success`，Windows Self-hosted Runner 真实执行：
+
+```text
+RESTORE_PREFLIGHT: restore_original_first_sector
+ONE_SECTOR_WRITE_ATTEMPT: 0xD000, 4096B, 115200 baud
+RESTORE_SUCCESS: OTA1 selected, original 8192B otadata restored (write_exit=0)
+NO_APP_NVS_ASSETS_WRITE: only first 4096B OTADATA sector was targeted
+```
+
+**可信结论**：
+- 严格匹配已知 OTA0 临时切换状态后，以 115200 baud 成功把第一条 4096B 启动记录恢复到原备份版本，读回完整 8192B 与备份一致。
+- 依据 OTA 记录，已重新选择原小智 **OTA1 2.2.38**。
+- **原来的 OTA0 2.5.2 + PetDisplay 镜像未擦除**；本次恢复未写入 OTA0、OTA1、NVS、assets。
+- 旧“临时启动 + 自动恢复”工作流已禁用，不能再直接重试；要重设计真机切换流程并验证恢复性。
+- **仍待确认**：原版 OTA1 运行时是否正常启动，屏幕/语音是否正常；这次仅确认了选择记录，不证明应用完整健康或 NVS 未被 2.5.2 临时启动修改。
+
+**下一步**：先用现有设备正常启动、监测非敏感串口启动状态，并在现场确认原 UI、语音；确认原版本可用后，再重新设计宠物屏幕的受控试验，不急于切换到 OTA0。
