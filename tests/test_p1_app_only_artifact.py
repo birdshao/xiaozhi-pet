@@ -16,7 +16,7 @@ def valid_image(length=100_001):
     image = bytearray(b"\xff" * length)
     image[:2] = b"\xe9\x04"
     struct.pack_into("<I", image, 32, 0xABCD5432)
-    image[48:53] = b"2.5.2"
+    image[48:54] = b"2.5.2\x00"
     image[80:87] = b"xiaozhi"
     return bytes(image)
 
