@@ -85,6 +85,12 @@
 - [PR #18 AudioCoordinator](https://github.com/birdshao/xiaozhi-pet/pull/18) 已合并，语音优先/故事恢复/宠物音效/安静时段的纯策略测试通过。[音频设计](docs/P2_AUDIO.md)；[ESP-IDF 组件集成 PR #19](https://github.com/birdshao/xiaozhi-pet/pull/19) 正在验收。
 - 以上是**代码/CI 交付**，尚未完成真实按钮、扬声器、NVS 断电恢复的物理联调。已安装的官方 OTA0 固件保持不变。
 
+## P1/P2 新增：电子纸画面邮箱与刷新节流
+
+- [PR #20 已合并](https://github.com/birdshao/xiaozhi-pet/pull/20)：`FreertosPetSceneMailbox` 只在存档成功后接收宠物场景，覆盖队列只保留最新画面；`PetRefreshGate` 默认最短 5s 全刷完成间隔；`FreertosPetDisplayWorker` 在专用任务中调用物理渲染回调，刷新失败不提前提交画面状态。
+- `scripts/p1_integrate.py` 新增微雪 `CustomEpdDisplay::ShowPetScene(SceneModel)`，原 BOOT 表情预览行为保持兼容。
+- [刷新设计与尚缺的真机接线步骤](docs/P1_REFRESH_GATE.md)。上述通过主机测试及组件编译验证，**还没有在实体设备启用这条宠物显示链路**；纯官方 OTA0 未刷写。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
