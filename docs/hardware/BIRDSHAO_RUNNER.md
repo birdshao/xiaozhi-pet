@@ -59,3 +59,11 @@
 手动选择 `main`，确认值为 `PRIVATE_BACKUP_READ_ONLY`。这个作业仅在独立 `xiaozhi-birdshao` Runner 标签且实际名称为 BIRDSHAO 的机器上执行。读取完整 16MiB Flash 到 **BIRDSHAO 本机** `%LOCALAPPDATA%/XiaozhiPet/FlashBackups/` 中新建的唯一文件，校验 SHA256 并输出不包含用户原始 NVS/凭证的摘要。禁止上传 Flash、自动烧录、修改 OTA。**esptool 只读也可能将芯片临时切入 ROM 下载模式，读完会复位设备。**
 
 将只读摘要中的 `PARTITION_LAYOUT_MATCH`、`SELECTED_OTA`、`OFFICIAL_OTA0_APP_SHA_MATCH`、`OFFICIAL_SHARED_ASSETS_SHA_MATCH`、`PRIVATE_BACKUP_OK` 作为下一轮是否准备 OTA1 宠物测试的门槛。此流程**尚需用户手动运行**，不能把 CI 成功误认为已经在 BIRDSHAO 上创建了备份。
+
+## 2026-10-25 Desktop Commander 直接控制已验证
+
+BIRDSHAO 设备现在可通过已授权的 **Desktop Commander Remote** 直接操作，无需每次手动运行 GitHub Actions。真实远程 shell 核验：Windows 主机名 `BIRDSHAO`，Python `3.13.9`，唯一 Espressif USB `303A:1001` 端口 `COM10`。
+
+BIRDSHAO 上 `esptool==4.8.1` 的原始完整 `read_flash 0x0 0x1000000` 发生 USB 数据帧丢失：`Corrupt data, expected 0x1000 bytes but received 0xfb5 bytes`。这属于传输通道的错误，**没有证据表明 Flash 数据自身损坏**。只读小块读取验证为 8KiB、64KiB、256KiB、512KiB 成功；1MiB 连续读取失败。经 [Runner PR #26](https://github.com/smoothRobot/orpa-agent-runner/pull/26) 完成容错改造，以默认 512KiB 的分段读取，失败时减半到 8KiB；每段必须完整返回、最终整片 16MiB SHA256 校验才认定备份可用。原始备份永不上传到 GitHub。
+
+**注意**：Remote 临时执行环境并不是 OTA 烧录授权。尚未明确确认独立 OTA1 的镜像哈希、当前分区和可靠回退之前，任何真机软件写入继续禁止。官方 OTA0 保持保留。完整备份是否成功以最终 `PRIVATE_BACKUP_OK` 标记为准，不能凭局部读取进度认定成功。
