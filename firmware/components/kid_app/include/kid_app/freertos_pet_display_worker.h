@@ -4,6 +4,7 @@
 #include "kid_app/pet_refresh_gate.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <atomic>
 
 namespace kid_app {
 
@@ -23,6 +24,11 @@ public:
     FreertosPetDisplayWorker& operator=(const FreertosPetDisplayWorker&) = delete;
 
     bool Start(PetRenderCallback renderer, void* context);
+    // Enabled only in interactive pet mode. Default disabled.
+    void SetEnabled(bool enabled) {
+        if (enabled) reset_before_next_frame_.store(true);
+        enabled_.store(enabled);
+    }
 
 private:
     static void TaskEntry(void* context);
@@ -32,6 +38,8 @@ private:
     PetRenderCallback renderer_ = nullptr;
     void* context_ = nullptr;
     TaskHandle_t worker_ = nullptr;
+    std::atomic<bool> enabled_{false};
+    std::atomic<bool> reset_before_next_frame_{false};
 };
 
 }  // namespace kid_app
