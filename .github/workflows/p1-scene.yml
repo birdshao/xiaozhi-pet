@@ -7,6 +7,8 @@ on:
       - 'tests/cpp/**'
       - 'tools/pet_scene_preview.cc'
       - 'scripts/p1_preview.sh'
+      - 'scripts/p1_integrate.py'
+      - 'tests/test_p1_integration_contract.py'
       - '.github/workflows/p1-scene.yml'
   workflow_dispatch:
 
@@ -21,6 +23,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile and execute C++ tests; export monochrome previews
         run: bash scripts/p1_preview.sh
+      - name: Test board overlay scene-model contract without IDF
+        run: python3 -m unittest discover -s tests -p 'test_p1_integration_contract.py' -v
       - name: Keep generated PBM previews for review
         uses: actions/upload-artifact@v4
         with:
