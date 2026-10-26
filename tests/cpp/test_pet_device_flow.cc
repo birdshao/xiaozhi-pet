@@ -91,7 +91,8 @@ int main() {
     PetPersistence restored(store);
     assert(restored.Load(&after_reboot) == PetLoadResult::Restored);
     assert(after_reboot.Snapshot().quiet);
-    assert(executor.ApplyDurably({4, PetAction::QuietBegin}, &effects) ==
+    PetEventExecutor rebooted_executor(after_reboot, restored);
+    assert(rebooted_executor.ApplyDurably({4, PetAction::QuietBegin}, &effects) ==
            CommitResult::Duplicate);
     assert(!effects.repaint);
     epd.Reset();  // Original LVGL UI overwrote the pet frame when exiting.
