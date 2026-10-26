@@ -40,6 +40,7 @@ def patch_display_h(text: str) -> str:
 
     // P1 manual-only pet display prototype; no voice/LLM dependency.
     bool ShowPetPreview(kid_app::Emotion emotion);
+    bool ShowPetScene(const kid_app::SceneModel& scene);
     void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
@@ -48,6 +49,10 @@ def patch_display_h(text: str) -> str:
 
 DISPLAY_IMPL = r'''
 bool CustomEpdDisplay::ShowPetPreview(kid_app::Emotion emotion) {
+    return ShowPetScene({kid_app::SceneKind::Home, emotion, 1});
+}
+
+bool CustomEpdDisplay::ShowPetScene(const kid_app::SceneModel& scene) {
     // Do not use the FreeRTOS task stack for a 48KiB mono framebuffer.
     void* memory = heap_caps_malloc(sizeof(kid_app::MonoFrame),
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -57,8 +62,7 @@ bool CustomEpdDisplay::ShowPetPreview(kid_app::Emotion emotion) {
     }
 
     auto* frame = new (memory) kid_app::MonoFrame();
-    kid_app::SceneComposer::Render(
-        kid_app::SceneModel{kid_app::SceneKind::Home, emotion, 1}, *frame);
+    kid_app::SceneComposer::Render(scene, *frame);
 
     bool okay = false;
     if (lvgl_port_lock(5000)) {
