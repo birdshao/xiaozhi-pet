@@ -1,10 +1,20 @@
-name: P1 integrated pet ePaper firmware (build only)
-
+name: P1 integrated pet ePaper firmware (app-only build)
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'firmware/components/kid_app/**'
+      - 'scripts/p1_integrate.py'
+      - 'scripts/p1_app_only_artifact.py'
+      - 'scripts/p0_*'
+      - 'version-lock.json'
+      - '.github/workflows/p1-integrated-firmware.yml'
   pull_request:
     paths:
       - 'firmware/components/kid_app/**'
       - 'scripts/p1_integrate.py'
+      - 'scripts/p1_app_only_artifact.py'
+      - 'tests/test_p1_app_only_artifact.py'
       - 'scripts/p0_*'
       - 'version-lock.json'
       - '.github/workflows/p1-integrated-firmware.yml'
@@ -15,7 +25,7 @@ permissions:
 
 jobs:
   build:
-    name: Compile ESP32 pet preview using pinned XiaoZhi source
+    name: Compile and package ESP32-S3 app only (NEVER flash)
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:v6.1
@@ -23,6 +33,9 @@ jobs:
     steps:
       - name: Checkout pet project
         uses: actions/checkout@v4
+      - name: Test artifact packaging contract without hardware
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_p1_app_only_artifact.py' -v
       - name: Clone pinned upstream and verify board config
         shell: bash
         run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
@@ -34,33 +47,30 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           git diff --check
-      - name: Compile official Waveshare board with pet adapter
+      - name: Compile official Waveshare board with Pet adapter
         shell: bash
         run: |
           source "$IDF_PATH/export.sh"
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
-      - name: Check pet firmware fits measured OTA slot
+      - name: Validate and package immutable app-only image + SHA manifest
         shell: bash
         run: |
-          cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          image = Path("build/xiaozhi.bin")
-          if not image.is_file():
-              raise SystemExit("Expected app image build/xiaozhi.bin missing")
-          size = image.stat().st_size
-          max_size = 4032 * 1024
-          print(f"Pet app image: {size} bytes; measured OTA slot: {max_size} bytes")
-          if size > max_size:
-              raise SystemExit("Integrated pet app is too large for the real device OTA partition")
-          print(f"SHA256: {hashlib.sha256(image.read_bytes()).hexdigest()}")
-          PY
-      - name: Upload build-only artifact (NOT automatically flashed)
+          UPSTREAM_COMMIT="$(git -C "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32" rev-parse HEAD)"
+          python3 scripts/p1_app_only_artifact.py \
+            --image "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32/build/xiaozhi.bin" \
+            --out "$GITHUB_WORKSPACE/release" \
+            --upstream-commit "$UPSTREAM_COMMIT" \
+            --pet-commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID"
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 2
+          test ! -e release/merged-binary.bin
+      - name: Upload review-only OTA app artifact (not a flashing workflow)
         uses: actions/upload-artifact@v4
         with:
-          name: pet-preview-epd-buildonly
-          path: .upstream/xiaozhi-esp32/build/merged-binary.bin
+          name: pet-ota1-app-only-buildonly
+          path: |
+            release/xiaozhi-pet-esp32s3-app.bin
+            release/manifest.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
