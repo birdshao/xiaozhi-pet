@@ -45,7 +45,21 @@ void display_task() {
 }
 ```
 
-本示例不是可直接使用的真机入口，实际显示任务和物理驱动适配仍待完成。不能将 `Complete(true)` 提前放在 SPI 命令发出时，应等屏幕 BUSY 完全结束。
+现在已经提供 `FreertosPetDisplayWorker` 实现以上 display loop：每 100ms 读取最新场景、按 `PetRefreshGate` 控制刷新、由独立显示任务调用用户提供的 `PetRenderCallback`，在真实操作返回后更新冷却，失败时退避 1 秒。宿主示例可缩减为：
+
+```cpp
+static kid_app::FreertosPetDisplayWorker display_worker(mailbox, 5000);
+static bool render_pet_scene(const kid_app::SceneModel& model, void* context) {
+    auto* display = static_cast<CustomEpdDisplay*>(context);
+    return display->ShowPetScene(model);
+}
+// 注意：需要等显示对象构造完成，并在适当的宿主初始化阶段执行。
+// mailbox.Initialize() -> display_worker.Start(render_pet_scene, display)
+```
+
+此时 `CustomEpdDisplay::ShowPetScene` 的完整 SceneModel 渲染入口也已加入受控上游适配脚本 `scripts/p1_integrate.py`，原 `ShowPetPreview(Emotion)` 委托至 Home Scene 保持兼容。**板卡在启动时自动创建/运行此 worker 的连接仍未完成**，因此不会因为源码编译成功而自动启动儿童模式。
+
+物理驱动回调必须在 SPI 和屏幕 BUSY 操作**确实完成**以后返回 true；不能仅凭提交刷屏指令就报告成功。真实硬件仍需对 LVGL 互斥、显示方向、EPD BUSY 时序与原版音频回调做验证。
 
 ## 不变量
 
@@ -63,7 +77,8 @@ void display_task() {
 
 ## 后续硬件验收
 
-- [ ] 将邮箱队列与真正的 `CustomEpdDisplay`/LVGL 互斥 Hook 对接；
+- [x] 提供 `CustomEpdDisplay::ShowPetScene(SceneModel)` 的受控代码注入和单独 FreeRTOS display worker（仅代码/CI，不等于真机接线）；
+- [ ] 在板卡启动流程实例化 mailbox/worker 与 `FreertosPetService`，并确认真实 ESP-IDF NVS 初始化时序；
 - [ ] EPD 刷新完成才 `Complete(true)`，测实际 BUSY 时长；
 - [ ] 首页、绘本、Quiet 连续切换 100 次，记录丢弃数、最终显示、WDT 与残影；
 - [ ] 检查语音服务期间不能与 EPD 全刷相互阻塞；
