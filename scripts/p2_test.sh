@@ -54,3 +54,12 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_refresh_gate.cc" \
   "$ROOT/tests/cpp/test_pet_refresh_gate.cc" -o "$BUILD/test_pet_refresh_gate"
 "$BUILD/test_pet_refresh_gate"
+
+# Complete offline pipeline: durable action -> scene projection -> EPD pacing.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_event_executor.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_scene_presenter.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_refresh_gate.cc" \
+  "$ROOT/tests/cpp/test_pet_device_flow.cc" -o "$BUILD/test_pet_device_flow"
+"$BUILD/test_pet_device_flow"
