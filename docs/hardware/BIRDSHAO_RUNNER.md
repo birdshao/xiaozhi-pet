@@ -67,3 +67,26 @@ BIRDSHAO 设备现在可通过已授权的 **Desktop Commander Remote** 直接�
 BIRDSHAO 上 `esptool==4.8.1` 的原始完整 `read_flash 0x0 0x1000000` 发生 USB 数据帧丢失：`Corrupt data, expected 0x1000 bytes but received 0xfb5 bytes`。这属于传输通道的错误，**没有证据表明 Flash 数据自身损坏**。只读小块读取验证为 8KiB、64KiB、256KiB、512KiB 成功；1MiB 连续读取失败。经 [Runner PR #26](https://github.com/smoothRobot/orpa-agent-runner/pull/26) 完成容错改造，以默认 512KiB 的分段读取，失败时减半到 8KiB；每段必须完整返回、最终整片 16MiB SHA256 校验才认定备份可用。原始备份永不上传到 GitHub。
 
 **注意**：Remote 临时执行环境并不是 OTA 烧录授权。尚未明确确认独立 OTA1 的镜像哈希、当前分区和可靠回退之前，任何真机软件写入继续禁止。官方 OTA0 保持保留。完整备份是否成功以最终 `PRIVATE_BACKUP_OK` 标记为准，不能凭局部读取进度认定成功。
+
+## BIRDSHAO 2026-10-26：完整备份已实际完成（重要基线）
+
+通过 Desktop Commander 远程访问已授权的 BIRDSHAO，使用 [已合并的分块容错代码 PR #26](https://github.com/smoothRobot/orpa-agent-runner/pull/26)，在 Windows 本机逐段只读 Flash 后完成以下结果（原始二进制未上传）：
+
+```text
+READ_PROGRESS: 16/16 MiB
+PRIVATE_BACKUP_OK: bytes=16777216
+sha256=c3fe03b73fe5123d0e40e22fc6047d023fa62a84cf47719352292e78574eeed8
+PARTITION_LAYOUT_MATCH: True
+OTA_RECORD_0: seq=0x23 state=2 crc_valid=True usable=True
+OTA_RECORD_1: seq=0x22 state=2 crc_valid=True usable=True
+SELECTED_OTA: 0
+OTA0_APP_VERSION: 2.5.2
+OTA1_APP_VERSION: 2.2.38
+OFFICIAL_OTA0_APP_SHA_MATCH: True
+OFFICIAL_SHARED_ASSETS_SHA_MATCH: True
+NO_FLASH_WRITE_EXECUTED; BACKUP_REMAINS_PRIVATE; BASELINE_COMPLETE
+```
+
+备份仅保存于 BIRDSHAO 当前 Windows 用户的本地目录 `%LOCALAPPDATA%/XiaozhiPet/FlashBackups/`，文件名 `esp32s3-birdshao-20261026T025147Z-chunked-full16mb.bin`（16MiB）。脚本还在本机留下 `.summary.json`；**此备份不在仓库、GitHub Artifact 或 ChatGPT 工作容器中**。必须先通过本机 SHA256 精确比对后才能把它作为任何写操作的恢复基线。
+
+纯官方 v2.5.2 app 与官方共享 assets 的 SHA 均与此前审定的发布镜像一致，OTA0 是当前已选启动槽，OTA1 则是设备的旧非官方固件。**这是 OTA1 测试可行性的必要条件，不是充分条件。** 接下来需固定最新专用 Pet app 的签名/哈希、确认 ESP32 安全位和备份恢复脚本，才可以批准 OTA1 app-only 写入。此阶段未执行任何 Flash 写命令。
