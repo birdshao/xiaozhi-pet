@@ -91,6 +91,14 @@
 - `scripts/p1_integrate.py` 新增微雪 `CustomEpdDisplay::ShowPetScene(SceneModel)`，原 BOOT 表情预览行为保持兼容。
 - [刷新设计与尚缺的真机接线步骤](docs/P1_REFRESH_GATE.md)。上述通过主机测试及组件编译验证，**还没有在实体设备启用这条宠物显示链路**；纯官方 OTA0 未刷写。
 
+## BIRDSHAO 设备联调与 Pet 专用板卡入口
+
+- 用户已将微雪 ESP32-S3-ePaper-3.97 板卡连接至新的 **BIRDSHAO** Windows Runner。旧 `DESKTOP-QMOCC9V` / COM10 记录不可直接复用。
+- [组织 Runner 只读 USB 检测工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-birdshao-readonly.yml) 已部署，[安全 CI](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40251421525) 通过；需用户从 GitHub 手动执行并先验证真实 Runner 名及 USB/COM。
+- [PR #21 板卡入口已合并](https://github.com/birdshao/xiaozhi-pet/pull/21)：待机时 BOOT 长按进入/退出宠物模式；单击互动/绘本翻页、双击故事、三击喂食；P2 NVS 事务及独立 EPD 刷新任务接入专用 Pet 固件。**未对实体板卡刷写**。
+- [完整 IDF6.1 板卡编译通过](https://github.com/birdshao/xiaozhi-pet/actions/runs/40252096543)：测试 App 2,857,408 B，单 OTA 槽 4,128,768 B。
+- [BIRDSHAO 新 Runner + OTA 测试步骤](docs/hardware/BIRDSHAO_RUNNER.md)。确认端口、备份、分区/官方 OTA0 状态和可恢复性之前，不进行 OTA1 物理写入。原纯官方 OTA0 仍保留。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
