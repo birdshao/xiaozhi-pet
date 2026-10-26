@@ -48,3 +48,9 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
   "$ROOT/tests/cpp/test_audio_coordinator.cc" -o "$BUILD/test_audio_coordinator"
 "$BUILD/test_audio_coordinator"
+
+# E-paper full-refresh pacing and scene coalescing without any framebuffer heap.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_refresh_gate.cc" \
+  "$ROOT/tests/cpp/test_pet_refresh_gate.cc" -o "$BUILD/test_pet_refresh_gate"
+"$BUILD/test_pet_refresh_gate"
