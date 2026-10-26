@@ -7,7 +7,8 @@
 组织仓库 `smoothRobot/orpa-agent-runner` 已合并 [PR #23](https://github.com/smoothRobot/orpa-agent-runner/pull/23)，新增 [只读 BIRDSHAO 串口识别工作流](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-birdshao-readonly.yml)。
 
 - 需要有权限的 GitHub 账号进入工作流，选择分支 `main`，**手动 Run workflow**。
-- 首先必须验证环境变量 `RUNNER_NAME == BIRDSHAO`。GitHub 的 Runner **名称不是自动生成的调度标签**，因此先使用 `[self-hosted, Windows, X64]` 安排；若被旧 Runner 抢占，任务会在第一步拒绝，不执行 USB 查询。
+- [2026-10-25 修复 PR #24](https://github.com/smoothRobot/orpa-agent-runner/pull/24)：最初 [#40252978001](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40252978001) 误分配至旧 `DESKTOP-QMOCC9V2`，第一步阻止并未访问 USB。已改为 `runs-on: [self-hosted, Windows, X64, xiaozhi-birdshao]`。**必须由组织管理员在 GitHub > smoothRobot > Settings > Actions > Runners > BIRDSHAO 的 Labels 中为该 Runner 单独添加 `xiaozhi-birdshao`**，并确认只在这一台上分配该标签。Runner 名称不是自动标签，没有标签时作业只会排队（不是脚本错误）。
+- 调度命中后仍必须验证环境变量 `RUNNER_NAME == BIRDSHAO`。如果将标签误加到其它 Runner，工作流会主动拒绝，不执行 USB 查询。
 - 在正确的 BIRDSHAO 上只打印串口 `COMx` 和已识别 USB 家族，不输出 USB 实际序列号、设备 MAC 或敏感备份路径；**不执行 esptool、不触碰 Flash**。
 - 仅当工作流报告 `RUNNER_TARGET_OK`、`ESP32_USB_DETECTED: port=COMx`、`READ_ONLY_INVENTORY_COMPLETE` 后，才将新的实际端口绑定到后续真机测试工作流。若未显示上述三项，先排查 Runner 上线/USB 数据线/驱动。
 - 如果需要稳定分配给 BIRDSHAO，可在 GitHub 的 Runner 管理 UI 给该设备增加独立自定义标签，再将任务 `runs-on` 改为该标签，而不是猜测 Runner 名称可直接匹配。
