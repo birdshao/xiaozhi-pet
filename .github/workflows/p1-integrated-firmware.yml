@@ -1,5 +1,14 @@
 name: P1 integrated pet ePaper firmware (app-only build)
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'firmware/components/kid_app/**'
+      - 'scripts/p1_integrate.py'
+      - 'scripts/p1_app_only_artifact.py'
+      - 'scripts/p0_*'
+      - 'version-lock.json'
+      - '.github/workflows/p1-integrated-firmware.yml'
   pull_request:
     paths:
       - 'firmware/components/kid_app/**'
