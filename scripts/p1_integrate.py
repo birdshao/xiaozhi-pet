@@ -108,84 +108,170 @@ def patch_display_cc(text: str) -> str:
 
 
 BOARD_WORKER = r'''
-    // Demonstration only: worker prevents the ePaper BUSY wait from blocking
-    // the button callback or XiaoZhi main event loop.
-    std::atomic<bool> pet_demo_busy_{false};
-    std::atomic<bool> pet_demo_mode_{false};
-    std::atomic<unsigned> pet_demo_pose_{0};
+    // Opt-in child pet runtime for experimental firmware only. Stock OTA0
+    // remains pristine; this code is overlaid only in a disposable checkout.
+    kid_app::FreertosPetSceneMailbox pet_mailbox_;
+    kid_app::FreertosPetService pet_service_;
+    kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 5000};
+    SemaphoreHandle_t pet_screen_mutex_ = nullptr;
+    std::atomic<bool> pet_mode_{false};
+    std::atomic<bool> pet_toggle_busy_{false};
+    std::atomic<bool> pet_runtime_ready_{false};
+    std::atomic<kid_app::PetMode> pet_event_mode_{kid_app::PetMode::Idle};
+    std::atomic<uint32_t> last_pet_scene_{0};
 
-    void RequestPetPreview(bool toggle_mode) {
-        if (pet_demo_busy_.exchange(true)) return;
-        if (!pet_demo_mode_.load() &&
-            Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
-            pet_demo_busy_.store(false);
+    static uint32_t PackPetScene(const kid_app::SceneModel& scene) {
+        return (static_cast<uint32_t>(scene.book_page) << 16) |
+               (static_cast<uint32_t>(scene.emotion) << 8) |
+               static_cast<uint32_t>(scene.kind);
+    }
+
+    static kid_app::SceneModel UnpackPetScene(uint32_t bits) {
+        return {static_cast<kid_app::SceneKind>(bits & 0xFF),
+                static_cast<kid_app::Emotion>((bits >> 8) & 0xFF),
+                static_cast<uint16_t>(bits >> 16)};
+    }
+
+    static bool PetRender(const kid_app::SceneModel& scene, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || !self->pet_screen_mutex_ ||
+            xSemaphoreTake(self->pet_screen_mutex_, pdMS_TO_TICKS(30000)) != pdTRUE) {
+            return false;
+        }
+        // This mutex also serializes ExitPetPreview, so no late pet frame
+        // can overwrite the original XiaoZhi LVGL screen after exit.
+        const bool okay = self->pet_mode_.load() &&
+                          self->display_->ShowPetScene(scene);
+        xSemaphoreGive(self->pet_screen_mutex_);
+        return okay;
+    }
+
+    static void PetCommitted(const kid_app::PetEvent& event,
+                              kid_app::PumpResult outcome,
+                              const kid_app::PetEffects& effects,
+                              const kid_app::PetSnapshot& snapshot, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || outcome != kid_app::PumpResult::Committed) return;
+        self->pet_event_mode_.store(snapshot.mode);
+        const auto scene = kid_app::PetScenePresenter::Present(snapshot);
+        self->last_pet_scene_.store(PackPetScene(scene));
+        if (effects.repaint) self->pet_mailbox_.Publish(scene);
+        // Deliberately do NOT play audio here. AudioCoordinator/AudioPort
+        // will be wired separately; only committed events can emit effects.
+        ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s",
+                 (event.id & kid_app::kLocalEventBit) ? "local" : "external");
+    }
+
+    bool InitializePetRuntime() {
+        if (pet_runtime_ready_.load()) return true;
+        if (!pet_screen_mutex_) pet_screen_mutex_ = xSemaphoreCreateMutex();
+        if (!pet_screen_mutex_) return false;
+        if (!pet_mailbox_ready_) {
+            if (!pet_mailbox_.Initialize()) return false;
+            pet_mailbox_ready_ = true;
+        }
+        if (!pet_display_task_ready_) {
+            if (!pet_display_worker_.Start(&PetRender, this)) return false;
+            pet_display_task_ready_ = true;
+        }
+        if (!pet_event_task_ready_) {
+            kid_app::PetSnapshot restored{};
+            if (!pet_service_.Start(&PetCommitted, this, &restored)) return false;
+            const auto scene = kid_app::PetScenePresenter::Present(restored);
+            last_pet_scene_.store(PackPetScene(scene));
+            pet_event_mode_.store(restored.mode);
+            pet_event_task_ready_ = true;
+        }
+        pet_runtime_ready_.store(true);
+        return true;
+    }
+
+    // Only the toggle worker accesses these booleans, preventing double-start.
+    bool pet_mailbox_ready_ = false;
+    bool pet_display_task_ready_ = false;
+    bool pet_event_task_ready_ = false;
+
+    void TogglePetRuntime() {
+        if (pet_mode_.load()) {
+            pet_display_worker_.SetEnabled(false);
+            if (pet_screen_mutex_ &&
+                xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(30000)) == pdTRUE) {
+                pet_mode_.store(false);
+                display_->ExitPetPreview();
+                xSemaphoreGive(pet_screen_mutex_);
+                ESP_LOGI(TAG, "PET_RUNTIME_OFF");
+            } else {
+                // Never claim an exit completed without serializing screen I/O.
+                pet_display_worker_.SetEnabled(true);
+                ESP_LOGW(TAG, "PET_RUNTIME_EXIT_RETRY");
+            }
             return;
         }
-        struct Job {
-            WaveshareEsp32s3ePaper3inch97* board;
-            bool toggle;
-        };
-        auto* job = new (std::nothrow) Job{this, toggle_mode};
-        if (!job) {
-            pet_demo_busy_.store(false);
+        // Voice always keeps its original single-click behavior unless idle.
+        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) return;
+        if (!InitializePetRuntime()) {
+            ESP_LOGE(TAG, "PET_RUNTIME_INIT_FAILED (NVS kept intact)");
             return;
         }
-        BaseType_t result = xTaskCreate(
-            [](void* ctx) {
-                auto* arg = static_cast<Job*>(ctx);
-                auto* self = arg->board;
-                bool toggle = arg->toggle;
-                delete arg;
+        pet_mode_.store(true);
+        pet_display_worker_.SetEnabled(true);
+        pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
+        ESP_LOGI(TAG, "PET_RUNTIME_ON");
+    }
 
-                if (toggle && self->pet_demo_mode_.load()) {
-                    self->display_->ExitPetPreview();
-                    self->pet_demo_mode_.store(false);
-                    ESP_LOGI(TAG, "PET_PREVIEW_OFF");
-                } else {
-                    unsigned value = toggle ? 1u : (self->pet_demo_pose_.load() + 1u) % 4u;
-                    kid_app::Emotion emotion = kid_app::Emotion::Neutral;
-                    switch (value) {
-                        case 1: emotion = kid_app::Emotion::Happy; break;
-                        case 2: emotion = kid_app::Emotion::Curious; break;
-                        case 3: emotion = kid_app::Emotion::Sleepy; break;
-                        default: emotion = kid_app::Emotion::Neutral; break;
-                    }
-                    if (self->display_->ShowPetPreview(emotion)) {
-                        self->pet_demo_pose_.store(value);
-                        self->pet_demo_mode_.store(true);
-                        ESP_LOGI(TAG, "PET_PREVIEW_ON pose=%u", value);
-                    } else {
-                        ESP_LOGW(TAG, "PET_PREVIEW_FAILED");
-                    }
-                }
-                self->pet_demo_busy_.store(false);
+    void RequestPetModeToggle() {
+        if (pet_toggle_busy_.exchange(true)) return;
+        const BaseType_t started = xTaskCreate(
+            [](void* context) {
+                auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+                self->TogglePetRuntime();
+                self->pet_toggle_busy_.store(false);
                 vTaskDelete(nullptr);
-            }, "pet_demo", 6144, job, 2, nullptr);
-        if (result != pdPASS) {
-            delete job;
-            pet_demo_busy_.store(false);
-            ESP_LOGE(TAG, "Could not launch pet display task");
+            }, "pet_toggle", 8192, this, 2, nullptr);
+        if (started != pdPASS) {
+            pet_toggle_busy_.store(false);
+            ESP_LOGE(TAG, "PET_RUNTIME_TOGGLE_TASK_FAILED");
         }
     }
 '''
 
 
 def patch_board(text: str) -> str:
-    text = once(text, "#include <stdio.h>", "#include <stdio.h>\n#include <atomic>\n#include <new>", "board headers")
-    text = once(text, "    void InitializeButtons() {", BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {", "board worker")
+    text = once(text, "#include <stdio.h>",
+        '#include <stdio.h>\n#include <atomic>\n'
+        '#include "kid_app/freertos_pet_service.h"\n'
+        '#include "kid_app/freertos_pet_scene_mailbox.h"\n'
+        '#include "kid_app/freertos_pet_display_worker.h"\n'
+        '#include "kid_app/pet_scene_presenter.h"\n'
+        '#include "kid_app/pet_local_event_id.h"',
+        "board headers")
+    text = once(text, "    void InitializeButtons() {",
+                BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
+                "board pet worker")
     text = once(text, "            app.ToggleChatState();",
-        """            if (pet_demo_mode_.load()) {
-                RequestPetPreview(false); // BOOT click cycles pet expressions.
+        """            if (pet_mode_.load()) {
+                const auto action = pet_event_mode_.load() == kid_app::PetMode::Story
+                    ? kid_app::PetAction::NextPage : kid_app::PetAction::Pickup;
+                if (!pet_service_.PostLocal(action))
+                    ESP_LOGW(TAG, "PET_INPUT_REJECTED");
                 return;
             }
-            app.ToggleChatState();""",
-        "board click hook")
+            app.ToggleChatState();""", "board click hook")
     text = once(text, "        pwr_button_.OnClick([this]() {",
-        """        // Hold BOOT while idle to enter/leave pet preview; otherwise normal
-        // XiaoZhi voice click and power button retain their behavior.
-        boot_button_.OnLongPress([this]() { RequestPetPreview(true); });
+        """        boot_button_.OnLongPress([this]() { RequestPetModeToggle(); });
 
-        pwr_button_.OnClick([this]() {""", "board long press")
+        // Double click begins the first story page; triple click feeds the
+        // pet. Single click remains original voice control outside pet mode.
+        boot_button_.OnDoubleClick([this]() {
+            if (pet_mode_.load())
+                pet_service_.PostLocal(kid_app::PetAction::StartStory);
+        });
+        boot_button_.OnMultipleClick([this]() {
+            if (pet_mode_.load())
+                pet_service_.PostLocal(kid_app::PetAction::Feed);
+        }, 3);
+
+        pwr_button_.OnClick([this]() {""", "board extra click hooks")
     return text
 
 

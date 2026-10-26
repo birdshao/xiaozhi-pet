@@ -31,6 +31,11 @@ void FreertosPetDisplayWorker::TaskEntry(void* arg) {
 
 void FreertosPetDisplayWorker::TaskLoop() {
     for (;;) {
+        if (!enabled_.load()) {
+            vTaskDelay(kPollTicks);
+            continue;
+        }
+        if (reset_before_next_frame_.exchange(false)) gate_.Reset();
         SceneModel next{};
         if (source_.Receive(&next, kPollTicks)) gate_.Request(next);
 

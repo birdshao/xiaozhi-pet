@@ -13,6 +13,8 @@ public:
     bool Request(const SceneModel& scene);
     bool Acquire(uint64_t now_ms, SceneModel* scene);
     bool Complete(bool success, uint64_t finished_at_ms);
+    // Single owner only. Reset when an external LVGL page replaces pet EPD.
+    void Reset();
 
     bool HasPending() const { return pending_; }
     bool Busy() const { return busy_; }

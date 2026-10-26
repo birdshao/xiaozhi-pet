@@ -48,4 +48,11 @@ bool PetRefreshGate::Complete(bool success, uint64_t finished_at_ms) {
     return true;
 }
 
+void PetRefreshGate::Reset() {
+    busy_ = false;
+    pending_ = false;
+    has_displayed_ = false;
+    last_success_ms_ = 0;
+}
+
 }  // namespace kid_app

@@ -15,7 +15,8 @@ constexpr TickType_t kStorageRetryTicks = pdMS_TO_TICKS(750);
 FreertosPetService::FreertosPetService()
     : persistence_(blob_), executor_(controller_, persistence_), runtime_(executor_) {}
 
-bool FreertosPetService::Start(PetCommitCallback callback, void* context) {
+bool FreertosPetService::Start(PetCommitCallback callback, void* context,
+                               PetSnapshot* initial_snapshot) {
     if (worker_ != nullptr || inbox_ != nullptr) return false;
     const PetLoadResult loaded = persistence_.Load(&controller_);
     if (loaded == PetLoadResult::Corrupt || loaded == PetLoadResult::StorageError) {
@@ -23,6 +24,7 @@ bool FreertosPetService::Start(PetCommitCallback callback, void* context) {
         return false;
     }
 
+    if (initial_snapshot) *initial_snapshot = controller_.Snapshot();
     inbox_ = xQueueCreate(kInboxCapacity, sizeof(PetEvent));
     if (inbox_ == nullptr) {
         ESP_LOGE(kTag, "Pet event queue allocation failed");
