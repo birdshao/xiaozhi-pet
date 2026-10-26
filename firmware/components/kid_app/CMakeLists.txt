@@ -5,6 +5,7 @@ idf_component_register(
          "src/pet_event_executor.cc" "src/freertos_pet_service.cc"
          "src/audio_coordinator.cc" "src/pet_refresh_gate.cc"
          "src/freertos_pet_scene_mailbox.cc"
+         "src/freertos_pet_display_worker.cc"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES nvs_flash freertos
 )
