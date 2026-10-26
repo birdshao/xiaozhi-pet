@@ -3,7 +3,7 @@
 Does not need the ESP-IDF SDK; test patches on fixture snippets.
 """
 import unittest
-from scripts.p1_integrate import patch_display_h, patch_display_cc
+from scripts.p1_integrate import patch_display_h, patch_display_cc, patch_board
 
 class DisplayOverlayTest(unittest.TestCase):
     def test_scene_display_header(self):
@@ -28,6 +28,33 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn("heap_caps_malloc", patched)
         self.assertIn("heap_caps_free(memory)", patched)
         self.assertIn("pet_preview_enabled_", patched)
+
+
+    def test_device_pet_runtime_board_hooks(self):
+        original = ('#include <stdio.h>\n'
+                    'class Board {\n'
+                    '    void InitializeButtons() {\n'
+                    '        boot_button_.OnClick([this]() {\n'
+                    '            app.ToggleChatState();\n'
+                    '        });\n'
+                    '        pwr_button_.OnClick([this]() {\n'
+                    '        });\n'
+                    '    }\n'
+                    '};\n')
+        patched = patch_board(original)
+        self.assertIn('FreertosPetSceneMailbox pet_mailbox_', patched)
+        self.assertIn('FreertosPetService pet_service_', patched)
+        self.assertIn('FreertosPetDisplayWorker pet_display_worker_', patched)
+        self.assertIn('ShowPetScene(scene)', patched)
+        self.assertIn('PET_RUNTIME_ON', patched)
+        self.assertIn('PET_RUNTIME_OFF', patched)
+        self.assertIn('PetAction::NextPage', patched)
+        self.assertIn('PetAction::Feed', patched)
+        self.assertIn('pet_screen_mutex_', patched)
+        self.assertIn('app.ToggleChatState();', patched)
+        self.assertIn('pwr_button_.OnClick', patched)
+        self.assertEqual(patched.count('OnLongPress'), 1)
+        self.assertEqual(patched.count('OnDoubleClick'), 1)
 
 if __name__ == "__main__":
     unittest.main()
