@@ -51,5 +51,14 @@ int main() {
     assert(gate.Acquire(22500, &output));
     assert(output.emotion == Emotion::Sleepy);
     assert(gate.Complete(true, 23000));
-    std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY and retry\n";
+
+    // Re-entering pet mode after LVGL has redrawn requires a full paint
+    // even if the desired pet scene did not change since prior session.
+    gate.Reset();
+    assert(!gate.HasDisplayed() && !gate.Busy());
+    assert(gate.Request(sleepy));
+    assert(gate.Acquire(23001, &output));
+    assert(output.emotion == Emotion::Sleepy);
+    assert(gate.Complete(true, 24000));
+    std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }
