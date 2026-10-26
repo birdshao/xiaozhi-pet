@@ -41,3 +41,21 @@
 6. 出错时首先停留在可读状态，采用已验证的手动启动槽恢复；不要重用旧 COM10 恢复脚本。
 
 此文档和目前代码**不触发任何真机烧录或板卡复位**。
+
+## 2026-10-25 实机 BIRDSHAO USB 检查已完成
+
+[只读 USB 工作流 #40256890982](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40256890982) 实测：
+
+- `RUNNER_NAME=BIRDSHAO`，机器也是 `BIRDSHAO`。
+- Windows 串口枚举得到 COM3、COM4（其它设备）及 **COM10（Espressif USB VID:PID 303A:1001）**；仅一个 ESP32 USB 命中。
+- `READ_ONLY_INVENTORY_COMPLETE`，工作流无 Flash 操作。**COM10 是这次在新 Runner 上实际确认的端口，而不是沿用旧电脑记录。**
+
+### 新 Runner 本地 Flash 备份与 OTA 审核工作流
+
+[PR #25](https://github.com/smoothRobot/orpa-agent-runner/pull/25) 已合并，新工作流入口：
+
+[**XiaoZhi BIRDSHAO private Flash backup and OTA baseline (READ ONLY)**](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-birdshao-baseline.yml)
+
+手动选择 `main`，确认值为 `PRIVATE_BACKUP_READ_ONLY`。这个作业仅在独立 `xiaozhi-birdshao` Runner 标签且实际名称为 BIRDSHAO 的机器上执行。读取完整 16MiB Flash 到 **BIRDSHAO 本机** `%LOCALAPPDATA%/XiaozhiPet/FlashBackups/` 中新建的唯一文件，校验 SHA256 并输出不包含用户原始 NVS/凭证的摘要。禁止上传 Flash、自动烧录、修改 OTA。**esptool 只读也可能将芯片临时切入 ROM 下载模式，读完会复位设备。**
+
+将只读摘要中的 `PARTITION_LAYOUT_MATCH`、`SELECTED_OTA`、`OFFICIAL_OTA0_APP_SHA_MATCH`、`OFFICIAL_SHARED_ASSETS_SHA_MATCH`、`PRIVATE_BACKUP_OK` 作为下一轮是否准备 OTA1 宠物测试的门槛。此流程**尚需用户手动运行**，不能把 CI 成功误认为已经在 BIRDSHAO 上创建了备份。
