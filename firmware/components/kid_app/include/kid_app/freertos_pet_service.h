@@ -27,7 +27,8 @@ public:
     FreertosPetService& operator=(const FreertosPetService&) = delete;
 
     // Fail closed if NVS contains corrupt data or is unreadable. No auto erase.
-    bool Start(PetCommitCallback callback, void* context);
+    bool Start(PetCommitCallback callback, void* context,
+               PetSnapshot* initial_snapshot = nullptr);
 
     // Safe from normal FreeRTOS tasks. Never blocks a UI or audio callback.
     // External IDs reserve their highest bit as 0 (network retries retain ID).
