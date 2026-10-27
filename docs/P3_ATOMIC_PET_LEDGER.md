@@ -16,7 +16,7 @@ The new PetAtomicLedger, its codec, and NvsAtomicPetStore persist *both* in one 
 
 ## Operational status and migration
 
-This is a newly implemented core and NVS adapter, **not yet activated on the Waveshare board**. Legacy FreertosPetService continues using the old kid_pet store until the event task is switched deliberately to a single atomic ledger owner. Running both controllers simultaneously would be incorrect.
+This is a newly implemented core, NVS adapter, and an **opt-in FreeRTOS event service**, not yet activated by the Waveshare board integration. Legacy FreertosPetService continues using the old kid_pet store until the event task is switched deliberately to a single atomic ledger owner. Running both controllers simultaneously would be incorrect.
 
 Fresh or migrated initialization is always explicit. ImportLegacyForFreshServer requires the calling code to have verified all three conditions: a validated original kid_pet checkpoint, no unsent messages in the old kid_bridge outbox, and a newly provisioned authenticated backend device cursor at 0. It rejects reinitialization, preserving original replay IDs and advancing from legacy checkpoint generation. It deliberately cannot authenticate the remote cursor on its own.
 
@@ -29,3 +29,12 @@ When a device is offline for too long, 16 queued records may fill. Do not silent
 Host test: tests/cpp/test_pet_atomic_ledger.cc; runs in scripts/p2_test.sh. It covers fault injection before a commit, crash immediately after a feeding commit, reboot with an unacknowledged event, remote success with failed local ACK storage, repeated IDs, queue overflow, corruption recovery, fresh-server-only legacy import and transient voice normalization. ESP-IDF CI ensures the NVS store adapter compiles.
 
 No physical firmware write or device-side network request is performed by this PR.
+
+
+## Opt-in FreeRTOS single-owner task
+
+FreertosAtomicPetService (header/source in firmware/components/kid_app) routes local button actions and external events through one persistent PetAtomicLedger, rather than through the old two-store PetEventExecutor. The alternate service explicitly selects ExistingOnly or FreshNoLegacy startup. FreshNoLegacy rejects any detected old kid_pet or kid_bridge checkpoint, and never silently erases either namespace.
+
+An immutable validated device ID is bound during Start. The worker restores unacknowledged outbound head after reboot through a nonblocking AtomicPetOutboundCallback; the caller must **only copy** the record to its network task. Network submits the ACK back with SubmitAck, which queues a full copy of message_id, seq, accepted, duplicate and server version. Only the original Pet worker invokes Acknowledge and issues a new head after durable dequeue. If its NVS commit fails, the identical ACK remains pending for retry; on queue backpressure, the network worker must retry, never invent an ACK.
+
+The new service must not run at the same time as the existing FreertosPetService. Neither a real HTTP transport nor the Waveshare board's choice between old and new service is changed in this PR. Do not switch a device with existing legacy state to FreshNoLegacy; a separate supervised migration path must validate old outbox and server state first.
