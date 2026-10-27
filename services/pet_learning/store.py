@@ -37,9 +37,11 @@ def _hash_json(value: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _response(message_id: str, accepted: bool, version: int, reason: str = "") -> dict[str, Any]:
+def _response(message_id: str, accepted: bool, version: int, seq: int,
+              reason: str = "") -> dict[str, Any]:
     return {
         "message_id": message_id,
+        "seq": seq,
         "accepted": accepted,
         "server_state_version": version,
         "reason_code": reason or None,
@@ -178,18 +180,18 @@ class PetStore:
             if row is None:
                 raise ValueError("Unknown device")
             prior = db.execute(
-                "SELECT payload_sha,accepted_version FROM event_log "
+                "SELECT payload_sha,accepted_version,seq FROM event_log "
                 "WHERE device_id=? AND message_id=?",
                 (device_id, msg),
             ).fetchone()
             if prior:
                 if prior["payload_sha"] != digest:
-                    return _response(msg, False, row["version"], "MESSAGE_ID_CONFLICT")
-                return _response(msg, True, prior["accepted_version"], "DUPLICATE")
+                    return _response(msg, False, row["version"], seq, "MESSAGE_ID_CONFLICT")
+                return _response(msg, True, prior["accepted_version"], prior["seq"], "DUPLICATE")
             if seq != row["seq"] + 1:
-                return _response(msg, False, row["version"], "SEQUENCE_GAP_OR_REPLAY")
+                return _response(msg, False, row["version"], seq, "SEQUENCE_GAP_OR_REPLAY")
             if action not in EVENTS:
-                return _response(msg, False, row["version"], "UNKNOWN_EVENT")
+                return _response(msg, False, row["version"], seq, "UNKNOWN_EVENT")
 
             count, mode, book, page, quiet = (
                 row["interaction_count"], row["mode"], row["active_book"],
@@ -197,20 +199,20 @@ class PetStore:
             )
             if action == "PET_FEED":
                 if quiet or count == MAX_UINT32:
-                    return _response(msg, False, row["version"], "ACTION_UNAVAILABLE")
+                    return _response(msg, False, row["version"], seq, "ACTION_UNAVAILABLE")
                 count += 1
             elif action == "STORY_OPEN":
                 book = event["payload"].get("book_id")
                 if quiet or not isinstance(book, str) or self.page(book, 1) is None:
-                    return _response(msg, False, row["version"], "BOOK_NOT_APPROVED")
+                    return _response(msg, False, row["version"], seq, "BOOK_NOT_APPROVED")
                 page, mode = 1, "STORY"
             elif action == "PAGE_NEXT":
                 if mode != "STORY" or self.page(book, page + 1) is None:
-                    return _response(msg, False, row["version"], "PAGE_NOT_APPROVED")
+                    return _response(msg, False, row["version"], seq, "PAGE_NOT_APPROVED")
                 page += 1
             elif action == "STORY_STOP":
                 if mode != "STORY":
-                    return _response(msg, False, row["version"], "NOT_IN_STORY")
+                    return _response(msg, False, row["version"], seq, "NOT_IN_STORY")
                 mode = "HOME"
             elif action == "QUIET_HOURS_START":
                 quiet, mode = True, "QUIET"
@@ -218,12 +220,12 @@ class PetStore:
                 quiet, mode = False, "HOME"
             elif action == "VOICE_STARTED":
                 if quiet:
-                    return _response(msg, False, row["version"], "QUIET_HOURS")
+                    return _response(msg, False, row["version"], seq, "QUIET_HOURS")
                 mode = "VOICE"
             elif action == "VOICE_ENDED":
                 mode = "HOME" if not quiet else "QUIET"
             elif action == "PET_PICKUP" and quiet:
-                return _response(msg, False, row["version"], "QUIET_HOURS")
+                return _response(msg, False, row["version"], seq, "QUIET_HOURS")
 
             version = row["version"] + 1
             db.execute(
@@ -237,4 +239,4 @@ class PetStore:
                 (device_id, msg, seq, digest, version),
             )
             db.commit()
-            return _response(msg, True, version)
+            return _response(msg, True, version, seq)
