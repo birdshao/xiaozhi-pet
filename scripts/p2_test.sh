@@ -63,3 +63,11 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_refresh_gate.cc" \
   "$ROOT/tests/cpp/test_pet_device_flow.cc" -o "$BUILD/test_pet_device_flow"
 "$BUILD/test_pet_device_flow"
+
+# P3 offline-first DeviceBridge: persistent outbound events, fixed HTTP
+# envelope and authenticated ACK policy (real HTTPS worker not yet attached).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_device_bridge.cc" \
+  "$ROOT/tests/cpp/test_pet_device_bridge.cc" -o "$BUILD/test_pet_device_bridge"
+"$BUILD/test_pet_device_bridge"
+
