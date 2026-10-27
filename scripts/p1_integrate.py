@@ -272,6 +272,25 @@ def patch_board(text: str) -> str:
         }, 3);
 
         pwr_button_.OnClick([this]() {""", "board extra click hooks")
+    text = once(text, "    void InitializeButtons() {",
+        """    void InitializeButtons() {
+        // Distinct Pet app identity at board setup; the upstream official
+        // OTA0 firmware never emits this marker. Logging does not enable Pet.
+        ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=board_init");
+        // A single short-lived low-priority task repeats the marker after
+        // serial monitoring can attach following esptool hard_reset.
+        // No NVS, networking, GPIO, audio or EPD changes.
+        const BaseType_t pet_diag_started = xTaskCreate(
+            [](void*) {
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay5s");
+                vTaskDelay(pdMS_TO_TICKS(7000));
+                ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
+                vTaskDelete(nullptr);
+            }, "pet_boot_diag", 2048, nullptr, 1, nullptr);
+        if (pet_diag_started != pdPASS)
+            ESP_LOGW(TAG, "PET_BOOT_DIAG_TASK_FAILED");""",
+        "board Pet boot diagnostic")
     return text
 
 
