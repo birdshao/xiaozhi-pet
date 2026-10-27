@@ -40,3 +40,25 @@ The existing generic Runner script xiaozhi_ota_trial.py was written for a differ
 A first boot trial, Pet mode acceptance and any further NVS/user-data changes remain **unperformed**.
 
 See also [P1 firmware/EPD integration](../P1_EPD_INTEGRATION.md) and the private hardware workflow document in smoothRobot/orpa-agent-runner: docs/xiaozhi-birdshao-ota1-stage.md.
+
+
+## BIRDSHAO boot selector and separate rescue implemented (2026-10-27 UTC)
+
+Runner [PR #32](https://github.com/smoothRobot/orpa-agent-runner/pull/32) is merged; main CI [#40459816348](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40459816348) is successful. The selector plan, independent rescue, read-only audit, and short first-boot controller now exist as **manually gated tools**, not as proof of a boot experiment.
+
+The planned first-trial change is restricted to **the second 4 KiB OTADATA sector (0xE000)**. The original first sector (0xD000), seq=0x23, state VALID, and official OTA0 selection is preserved intact. The original second sector has seq=0x22/state VALID; a planned trial second sector would have seq=0x24/state NEW, and CRC adjusted. The proposed sector SHA256 is 532fb82918593b50c1066f48a2da827232b0f845a68794e5524729a76bf51734.
+
+The exact plan was run **read-only on BIRDSHAO** against the actual full-backup OTADATA, and current live OTADATA was separately read and compared with all original 8192 bytes:
+- original seq0=0x23, seq1=0x22;
+- original selects official OTA0, planned second sector selects OTA1;
+- first OTA0 recovery sector is unchanged;
+- live selector remains original official OTA0;
+- script exited 0, no Flash write or boot-slot switch.
+
+The merged script [xiaozhi_birdshao_boot_control.py](https://github.com/smoothRobot/orpa-agent-runner/blob/main/scripts/xiaozhi_birdshao_boot_control.py) was also run on the physical board in **audit** mode only, reporting READ_ONLY_SELECTOR_STATE=original_ota0_selected, NO_FLASH_WRITE_OR_BOOT_SWITCH, exit 0.
+
+The future workflow is [BIRDSHAO independent boot selector](https://github.com/smoothRobot/orpa-agent-runner/actions/workflows/xiaozhi-birdshao-boot-selector.yml) and has three different action-specific confirmation values. Its trial mode plans a 20-second observation before a separately callable restoration of exactly the original second OTADATA sector and checks that the original full 8192-byte selector is back.
+
+**Important constraints:** the installed bootloader's rollback flag remains unverified; a Python finally clause cannot survive a PC/board power loss; serial observations can miss early boot messages; unknown/torn selector bytes trigger fail-closed manual recovery instead of an unchecked overwrite. No physical boot trial has yet been authorized or conducted. The first run must be attended and can still fail or require manual recovery.
+
+For a future **separately approved** 20-second first boot: select main, mode TRIAL_OTA1_20S, and confirm TRIAL_STAGED_OTA1_AND_RESTORE_OTA0. These choices modify only OTADATA sector 0xE000 and do not rewrite OTA0 or OTA1 applications. Choose neither without explicit permission to change the boot selection.
