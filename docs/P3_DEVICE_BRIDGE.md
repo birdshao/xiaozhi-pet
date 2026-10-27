@@ -21,6 +21,12 @@ PetDeviceBridge is a single-owner, fixed-memory outbox for already durably commi
 - Queue Full never drops an event or consumes a sequence; the producer must explicitly report backpressure.
 - Server holds durable receipts, so replay of an older head after NVS recovery is harmless if the exact immutable envelope is reused.
 
+## Outbound sender and backoff
+
+The transport-agnostic PetDeviceBridgeSender serializes ONE pending event per poll and calls the injected DeviceBridgeTransport, which is responsible for performing HTTP/TLS and parsing the server ACK. Transient connection failures and invalid receipts retain the same JSON and retry with bounded exponential delays from 1s to 60s. After a matching ACK and successful NVS persistence, the next event may be sent. If NVS refuses to save the ACK, retry is also paced instead of spinning. No additional sequence is allocated during retries.
+
+This is a network sender state machine, not a connected HTTP client. It contains no socket, credentials, plaintext child speech, or direct FreeRTOS task creation. Unit test: tests/cpp/test_pet_device_bridge_sender.cc.
+
 ## Explicit remaining integration gaps
 
 The new C++ NVS store and core are compiled into the ESP-IDF kid_app component but NOT constructed/activated by the Waveshare board. No live HTTP worker is included. The current FreertosPetService calls its callback only AFTER PetPersistence::Save, so a power loss between pet commit and outbox enqueue could lose a server notification.
