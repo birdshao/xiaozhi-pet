@@ -29,9 +29,9 @@ GitHub CI：`.github/workflows/p1-integrated-firmware.yml`，只编译不烧录�
 
 ## 3. 真机验证（后续操作）
 
-- [ ] 本地全芯片备份完成，校验 16MiB 大小与 SHA256，备份不上传 GitHub。
-- [ ] 明确可用的恢复路径和原固件镜像位置。
-- [ ] 从编译 artifact 验证映像 SHA256、board 类型、分区表与 Flash 容量。
+- [x] BIRDSHAO 原始 Flash 16MiB 完整私有备份存在，SHA256 已校验，未上传 GitHub。
+- [x] 已保存原完整 Flash 和旧 OTA1 镜像，并提供手动 OTA1 还原脚本；首次切换启动槽的独立 OTADATA 恢复工具尚未验收。
+- [x] 已校验正式 app-only artifact 的 SHA256、board 类型、原始分区表和 16MiB Flash；在实体备用 OTA1 完成烧录与两次独立读回校验。
 - [ ] 初次上电观察串口异常与看门狗。
 - [ ] 在空闲状态长按 BOOT 进入宠物预览。
 - [ ] 短按 BOOT 切换表情：开心、好奇、困倦、普通。
@@ -65,3 +65,9 @@ GitHub CI：`.github/workflows/p1-integrated-firmware.yml`，只编译不烧录�
 - **CI 仅证明代码能完整编译，尚未证明硬件可运行。**
 
 切忌直接把 `merged-binary.bin` 整片覆盖到现有设备：该文件可能包含 bootloader、分区表或默认资源，而现有分区内已存储用户数据和两套可启动固件。第一次写入必须遵守 [首次受控烧录计划](hardware/FIRST_FLASH_PLAN.md)。
+
+## 6. 实际 OTA1 备用分区烧录（2026-10-27 UTC）
+
+之前的 CI-only P1 适配已向真实设备推进了一步：`main` 上的 Pet app-only 固件 2,857,408 B，SHA256 `b643437eda9ccff1f7d21bd8822a31253906613286b892b1f6b5d8caa4bb1dda`，已写入 BIRDSHAO 的 `ota_1` 分区（地址 `0x410000`）。[真机写入与读回成功的 Runner 任务](https://github.com/smoothRobot/orpa-agent-runner/actions/runs/40450062505) 及后续独立只读审计均验证 SHA256，官方 OTA0 保持完整、OTADATA 未改变、本地事务日志为 `stage_verified`。
+
+**注意：写入成功不等于已经运行 Pet 应用。** 官方 OTA0 仍被选中，下面的实体按键/墨水屏/音频/恢复验证保持未完成。只有在确认安全的启动槽回退方案并获得另一次许可后，才能进行短时首次启动实验。详见 [OTA1 实际烧录与首次启动门禁](hardware/OTA1_STAGED_BOOT_GATE.md)。
