@@ -62,3 +62,19 @@ The future workflow is [BIRDSHAO independent boot selector](https://github.com/s
 **Important constraints:** the installed bootloader's rollback flag remains unverified; a Python finally clause cannot survive a PC/board power loss; serial observations can miss early boot messages; unknown/torn selector bytes trigger fail-closed manual recovery instead of an unchecked overwrite. No physical boot trial has yet been authorized or conducted. The first run must be attended and can still fail or require manual recovery.
 
 For a future **separately approved** 20-second first boot: select main, mode TRIAL_OTA1_20S, and confirm TRIAL_STAGED_OTA1_AND_RESTORE_OTA0. These choices modify only OTADATA sector 0xE000 and do not rewrite OTA0 or OTA1 applications. Choose neither without explicit permission to change the boot selection.
+
+## Upgrade readiness: verified private v1 OTA1 full-partition recovery (2026-10-27 UTC)
+
+The **new passive Pet firmware** on main was built successfully in [app-only build #40467690855](https://github.com/birdshao/xiaozhi-pet/actions/runs/40467690855): Pet commit b2c2106f1ae4b27bd0a6fb5d079cedff3b65f8fc, app size 2,858,144 bytes, SHA256 5820c2a18759411739705929b13ccd6f3c4721254552d1b1e698c1d692cf3d78. Binary strings verify the passive Pet boot diagnostic markers at board init, +5 seconds and +12 seconds. This build has **not** been flashed.
+
+The versioned full OTA1 snapshot tool in [Runner PR #36](https://github.com/smoothRobot/orpa-agent-runner/pull/36) was run read-only on physical BIRDSHAO and exited successfully. It confirmed the original 16MiB private backup, original official OTA0 and untouched OTADATA; verified the actual installed v1 Pet app SHA; and stored the **full 4,128,768-byte currently installed OTA1 region** privately. This is different from the original pre-Pet v2.2.38 OTA1 preserved inside the original 16 MiB backup.
+
+The newly saved private full-region rollback snapshot SHA256 is:
+
+187e1061aea3bdbd4f27ef3aed8c83ad30f47edb57eed5e9b03c4d026159c5eb
+
+Local-only location: %LOCALAPPDATA%\XiaozhiPet\OTA1UpgradeBackups\ota1-before-b2c2106f1ae4-full4128768.bin, with matching local .bin.json metadata; independently rehashed. The private snapshot and the original full 16MiB backup **were not uploaded** to GitHub.
+
+**Current state:** OTA0 official remains selected; OTA1 still contains the **old** pinned Pet app (b643437e...), not the new firmware; the original first-boot trial journal remains restored. No second app write, new slot switch or second boot trial has taken place.
+
+A future upgrade needs a separate version-pinned, independently reviewed and explicitly authorized workflow that verifies the just-recorded old full OTA1 digest, only writes the new app into inactive OTA1, readback-verifies the new SHA, and preserves original OTA0/OTADATA/NVS/assets. An independent restore must use this *current Pet v1 full OTA1 snapshot* rather than the even older pre-Pet OTA1 region. Never delete/reuse old single-use flash/boot journals.
