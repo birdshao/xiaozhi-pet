@@ -78,3 +78,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_pet_device_bridge_sender.cc" \
   -o "$BUILD/test_pet_device_bridge_sender"
 "$BUILD/test_pet_device_bridge_sender"
+
+# Single atomic NVS blob: pet action+outbound event AND remote ACK dequeue.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/tests/cpp/test_pet_atomic_ledger.cc" \
+  -o "$BUILD/test_pet_atomic_ledger"
+"$BUILD/test_pet_atomic_ledger"
