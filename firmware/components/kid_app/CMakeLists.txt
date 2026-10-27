@@ -8,6 +8,7 @@ idf_component_register(
          "src/freertos_pet_display_worker.cc"
          "src/pet_device_bridge.cc" "src/pet_device_bridge_sender.cc"
          "src/nvs_bridge_blob_store.cc"
+         "src/pet_atomic_ledger.cc" "src/nvs_atomic_pet_store.cc"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES nvs_flash freertos esp_timer
 )
