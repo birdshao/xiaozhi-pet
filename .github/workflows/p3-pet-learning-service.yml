@@ -1,0 +1,40 @@
+name: P3 PetLearning Python service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'tests/test_p3_pet_learning_api.py'
+      - 'tools/pet_learning_admin.py'
+      - '.github/workflows/p3-pet-learning-service.yml'
+  pull_request:
+    paths:
+      - 'services/**'
+      - 'tests/test_p3_pet_learning_api.py'
+      - 'tools/pet_learning_admin.py'
+      - '.github/workflows/p3-pet-learning-service.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pet-service:
+    name: SQLite, API and speech routing (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install isolated self-hosted API dependencies
+        run: python -m pip install -r services/requirements.txt
+      - name: Compile service source
+        run: python -m compileall -q services tools/pet_learning_admin.py
+      - name: Run isolated service integration tests (no hardware/cloud)
+        run: python -m unittest discover -s tests -p 'test_p3_pet_learning_api.py' -v
