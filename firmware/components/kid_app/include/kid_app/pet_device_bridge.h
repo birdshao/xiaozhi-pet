@@ -47,8 +47,9 @@ public:
         Confirmed, NoPending, Mismatch, ServerRejected, StorageError
     };
     struct ServerAck {
+        // Exact fields supplied by PetLearning API's per-event receipt.
+        const char* message_id = nullptr;
         uint64_t sequence = 0;
-        uint64_t event_id = 0;
         uint64_t server_version = 0;
         bool accepted = false;
         bool duplicate = false;  // server reason_code == DUPLICATE
@@ -59,7 +60,7 @@ public:
     LoadResult Load();
     AppendResult AppendCommitted(const PetEvent& event);
     bool Peek(Record* output) const;
-    AckResult Acknowledge(const ServerAck& ack);
+    AckResult Acknowledge(const ServerAck& ack, const char* device_id);
     size_t PendingCount() const { return state_.count; }
     uint64_t NextSequence() const { return state_.next_sequence; }
 
