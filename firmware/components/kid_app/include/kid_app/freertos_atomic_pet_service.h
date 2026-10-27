@@ -32,7 +32,8 @@ public:
     FreertosAtomicPetService(const FreertosAtomicPetService&) = delete;
     FreertosAtomicPetService& operator=(const FreertosAtomicPetService&) = delete;
 
-    bool Start(StartMode mode, AtomicPetCommitCallback committed,
+    bool Start(StartMode mode, const char* device_id,
+               AtomicPetCommitCallback committed,
                AtomicPetOutboundCallback outbound, void* context,
                PetSnapshot* initial = nullptr);
 
@@ -68,6 +69,7 @@ private:
     AtomicPetCommitCallback committed_ = nullptr;
     AtomicPetOutboundCallback outbound_ = nullptr;
     void* context_ = nullptr;
+    char device_id_[64]{};  // Immutable, validated ASCII, not a secret.
 };
 
 }  // namespace kid_app
