@@ -33,9 +33,9 @@ POST /v1/devices/pet-unit-001/events accepts a batch of 1–32 events matching t
 
 ACK example:
 
-    {"acks":[{"message_id":"pet-unit-001:1","accepted":true,"server_state_version":1,"reason_code":null}]}
+    {"acks":[{"message_id":"pet-unit-001:1","seq":1,"accepted":true,"server_state_version":1,"reason_code":null}]}
 
-A byte-equivalent logical event resent with the same immutable envelope returns DUPLICATE and the original version, with no new rewards. Reusing a message ID with changed content returns MESSAGE_ID_CONFLICT. Skipped sequence numbers and old events are rejected. The ESP32 PetController remains the owner of instant offline actions; this service maintains a synchronized projection, never replays rewards on the device.
+A byte-equivalent logical event resent with the same immutable envelope returns DUPLICATE and the original version, with no new rewards. Reusing a message ID with changed content returns MESSAGE_ID_CONFLICT. Every ACK now includes the exact original event seq, including DUPLICATE receipts; device clients must validate both returned message_id and seq before removing a durable outbound event. Skipped sequence numbers and old events are rejected. The ESP32 PetController remains the owner of instant offline actions; this service maintains a synchronized projection, never replays rewards on the device.
 
 GET /v1/devices/{id}/snapshot returns the device-scoped minimal pet state.
 GET /v1/books/{book_id}/pages/{page} needs the bearer token plus X-Device-Id and returns only approved pages. Drafts and missing pages both return 404.
