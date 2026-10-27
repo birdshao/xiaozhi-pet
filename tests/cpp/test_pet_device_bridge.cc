@@ -74,6 +74,9 @@ void TestQueueAndNetworkRecovery() {
     assert(!Bridge::EncodePostBody(item, "invalid\"id", json, sizeof(json)));
     assert(!Bridge::EncodePostBody(item, "ok", json, 4));
     assert(!Bridge::EncodePostBody(item, "pet-unit-001", json, 2));
+    const std::string largest_valid_device(63, 'A');
+    assert(Bridge::EncodePostBody(item, largest_valid_device.c_str(),
+                                  json, sizeof(json)));
 
     Bridge restart(nvs);
     assert(restart.Load() == Bridge::LoadResult::Ready);
