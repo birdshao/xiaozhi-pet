@@ -5,6 +5,8 @@
 
 #include "esp_log.h"
 
+#include <cstring>
+
 namespace kid_app {
 namespace {
 constexpr const char* kTag = "kid_pet_atomic";
@@ -30,10 +32,23 @@ bool FreertosAtomicPetService::NoLegacyPetOrOutbox() const {
 }
 
 bool FreertosAtomicPetService::Start(
-        StartMode mode, AtomicPetCommitCallback committed,
+        StartMode mode, const char* device_id,
+        AtomicPetCommitCallback committed,
         AtomicPetOutboundCallback outbound, void* context,
         PetSnapshot* initial) {
-    if (messages_ || worker_) return false;
+    if (messages_ || worker_ || !device_id) return false;
+    // Match FastAPI device path requirements before any NVS mutation.
+    size_t size=0;
+    for (;size<sizeof(device_id_);++size) {
+        const char c=device_id[size];
+        if (!c) break;
+        if (!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+              (c>='0'&&c<='9')||(size>0&&(c=='_'||c=='-'))))
+            return false;
+    }
+    if (size<3 || size>=sizeof(device_id_)) return false;
+    std::memcpy(device_id_,device_id,size);
+    device_id_[size]=0;
     const auto loaded=ledger_.Load();
     if (loaded==PetAtomicLedger::LoadResult::Corrupt ||
         loaded==PetAtomicLedger::LoadResult::StorageError) {
@@ -129,13 +144,17 @@ void FreertosAtomicPetService::Run() {
                 pending.message_id,pending.seq,pending.version,
                 pending.accepted,pending.duplicate
             };
-            // Device ID is a stable, nonsecret transport identity bound by
-            // the network layer. The outbound callback is responsible for
-            // ensuring the matching ID is passed back in a validated ACK.
-            // Without a verified device ID, never clear any pending event.
-            // A later configuration update should replace this no-op gate
-            // with a provisioned ID supplied in Start().
+            const auto result=ledger_.Acknowledge(ack,device_id_);
+            if (result==PetAtomicLedger::AckResult::StorageError) {
+                has_retry=true;
+                vTaskDelay(kRetry);
+                continue;
+            }
             has_retry=false;
+            if (result==PetAtomicLedger::AckResult::Confirmed)
+                NotifyHead(); // now let transport process the next entry
+            // Wrong or rejected receipts leave the head unmodified. Network
+            // worker must retry its original immutable event, not forge ACK.
             continue;
         }
 
