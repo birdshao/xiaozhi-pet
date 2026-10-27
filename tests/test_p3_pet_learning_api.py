@@ -59,6 +59,7 @@ class PetLearningApiTests(unittest.TestCase):
         feed = event("pet-unit-A", 1, "pet-unit-A:1", "PET_FEED")
         accepted = self.post(feed).json()["acks"][0]
         self.assertEqual(accepted["server_state_version"], 1)
+        self.assertEqual(accepted["seq"], 1)
         self.assertTrue(accepted["accepted"])
         # A new application / database instance sees the same permanent receipt.
         restarted = TestClient(create_app(self.dbfile))
@@ -67,6 +68,8 @@ class PetLearningApiTests(unittest.TestCase):
         self.assertTrue(duplicate["accepted"])
         self.assertEqual(duplicate["reason_code"], "DUPLICATE")
         self.assertEqual(duplicate["server_state_version"], 1)
+        self.assertEqual(duplicate["seq"], 1)
+        self.assertEqual(duplicate["message_id"], "pet-unit-A:1")
         restarted.close()
         changed = {**feed, "payload": {"event": "PET_PICKUP"}}
         self.assertEqual(self.post(changed).json()["acks"][0]["reason_code"],
@@ -81,6 +84,7 @@ class PetLearningApiTests(unittest.TestCase):
         first = event("pet-unit-A", 1, "pet-unit-A:1", "PET_FEED")
         acks = self.post(first, second).json()["acks"]
         self.assertEqual([a["server_state_version"] for a in acks], [1, 2])
+        self.assertEqual([a["seq"] for a in acks], [1, 2])
         self.assertTrue(all(a["accepted"] for a in acks))
         self.assertEqual(self.store.snapshot("pet-unit-A")["interaction_count"], 2)
 
