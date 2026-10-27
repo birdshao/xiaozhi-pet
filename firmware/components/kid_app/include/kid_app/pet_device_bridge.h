@@ -15,7 +15,7 @@ namespace kid_app {
 class PetDeviceBridge {
 public:
     static constexpr size_t kCapacity = 16;
-    static constexpr size_t kJsonMaxBytes = 288;
+    static constexpr size_t kJsonMaxBytes = 384;
 
     struct Record {
         uint64_t event_id = 0;
