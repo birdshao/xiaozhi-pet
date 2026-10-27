@@ -170,7 +170,7 @@ void TestStrictMigrationAndCorruption() {
     // Latest of two A/B blobs has CRC damage; use still-valid previous blob.
     assert(restored.ApplyDurably({124,PetAction::Pickup},&effects)==CommitResult::Committed);
     assert(restored.PendingCount()==1);
-    disk.slots[0][36] ^= 0x1; // latest generation in the opposite slot
+    disk.slots[1][36] ^= 0x1; // latest generation in the opposite slot
     Ledger fallback(disk);
     assert(fallback.Load()==Ledger::LoadResult::Ready);
     assert(fallback.Snapshot().interaction_count==1);
