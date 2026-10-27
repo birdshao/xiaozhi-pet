@@ -2,12 +2,24 @@
 #include "kid_app/pet_local_event_id.h"
 
 #include <cassert>
+#include <cinttypes>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <string>
 
 using namespace kid_app;
 using Bridge = PetDeviceBridge;
+
+Bridge::AckResult Ack(Bridge& bridge, uint64_t seq, uint64_t id,
+                      uint64_t server_version, bool accepted, bool duplicate = false) {
+    char message_id[96]{};
+    const int size = std::snprintf(message_id, sizeof(message_id),
+        "pet-unit-001:%016" PRIx64, id);
+    assert(size > 0 && static_cast<size_t>(size) < sizeof(message_id));
+    return bridge.Acknowledge(
+        {message_id, seq, server_version, accepted, duplicate}, "pet-unit-001");
+}
 
 class MemoryBridgeStore final : public Bridge::Storage {
 public:
@@ -71,30 +83,32 @@ void TestQueueAndNetworkRecovery() {
     assert(body == json);
 
     // Bad HTTP reply, wrong event and reordered sequence MUST NOT erase data.
-    assert(restart.Acknowledge({1, id1, 0, true, false}) ==
+    assert(Ack(restart, 1, id1, 0, true, false) ==
            Bridge::AckResult::ServerRejected);
-    assert(restart.Acknowledge({1, id1, 1, false, false}) ==
+    assert(Ack(restart, 1, id1, 1, false, false) ==
            Bridge::AckResult::ServerRejected);
-    assert(restart.Acknowledge({2, id1, 1, true, false}) ==
+    assert(Ack(restart, 2, id1, 1, true, false) ==
            Bridge::AckResult::Mismatch);
-    assert(restart.Acknowledge({1, id2, 1, true, false}) ==
+    assert(Ack(restart, 1, id2, 1, true, false) ==
            Bridge::AckResult::Mismatch);
+    assert(restart.Acknowledge({"pet-unit-OTHER:8000000000000008", 1, 1, true, false},
+                               "pet-unit-001") == Bridge::AckResult::Mismatch);
     assert(restart.PendingCount() == 2);
 
     // Losing local NVS ACK write must NOT remove the pending head.
     nvs.failed_writes = true;
-    assert(restart.Acknowledge({1, id1, 1, true, false}) ==
+    assert(Ack(restart, 1, id1, 1, true, false) ==
            Bridge::AckResult::StorageError);
     assert(restart.Peek(&item) && item.sequence == 1);
     nvs.failed_writes = false;
-    assert(restart.Acknowledge({1, id1, 1, true, false}) ==
+    assert(Ack(restart, 1, id1, 1, true, false) ==
            Bridge::AckResult::Confirmed);
     // Simulate lost HTTP ACK in the following request: duplicate is accepted
     // by the server with the original version (not a new reward).
-    assert(restart.Acknowledge({2, id2, 2, true, true}) ==
+    assert(Ack(restart, 2, id2, 2, true, true) ==
            Bridge::AckResult::Confirmed);
     assert(restart.PendingCount() == 0 && restart.NextSequence() == 3);
-    assert(restart.Acknowledge({1, id1, 1, true, true}) ==
+    assert(Ack(restart, 1, id1, 1, true, true) ==
            Bridge::AckResult::NoPending);
 
     Bridge after_ack(nvs);
@@ -130,7 +144,7 @@ void TestFullAndDurableWriteErrors() {
     for (uint64_t i = 1; i <= Bridge::kCapacity; ++i) {
         Bridge::Record r{};
         assert(restart.Peek(&r) && r.sequence == i);
-        assert(restart.Acknowledge({i, 100 + i, i, true, false}) ==
+        assert(Ack(restart, i, 100 + i, i, true, false) ==
                Bridge::AckResult::Confirmed);
     }
     assert(restart.PendingCount() == 0);
