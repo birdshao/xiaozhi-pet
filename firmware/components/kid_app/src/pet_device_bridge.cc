@@ -196,11 +196,17 @@ bool PetDeviceBridge::Peek(Record* output) const {
     return true;
 }
 
-PetDeviceBridge::AckResult PetDeviceBridge::Acknowledge(const ServerAck& ack) {
+PetDeviceBridge::AckResult PetDeviceBridge::Acknowledge(
+        const ServerAck& ack, const char* device_id) {
     if (!loaded_ || state_.count == 0) return AckResult::NoPending;
     const Record& front = state_.pending[0];
-    if (ack.sequence != front.sequence || ack.event_id != front.event_id)
-        return AckResult::Mismatch;
+    if (!ack.message_id || !ValidId(device_id)) return AckResult::Mismatch;
+    char expected[96]{};
+    const int size = std::snprintf(expected, sizeof(expected),
+        "%s:%016" PRIx64, device_id, front.event_id);
+    if (size < 1 || static_cast<size_t>(size) >= sizeof(expected) ||
+        ack.sequence != front.sequence ||
+        std::strcmp(ack.message_id, expected) != 0) return AckResult::Mismatch;
     if (!ack.accepted || ack.server_version == 0)
         return AckResult::ServerRejected;
     State next = state_;
