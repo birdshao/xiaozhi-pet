@@ -35,6 +35,7 @@ BridgePollResult PetDeviceBridgeSender::Poll(uint64_t now_ms) {
         case PetDeviceBridge::AckResult::StorageError:
             // Even a successful remote ACK cannot erase our local head
             // until the A/B NVS snapshot commit succeeds.
+            Retry(now_ms);
             return BridgePollResult::StorageBlocked;
         case PetDeviceBridge::AckResult::NoPending:
         case PetDeviceBridge::AckResult::Mismatch:
