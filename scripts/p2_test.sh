@@ -86,3 +86,13 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_pet_atomic_ledger.cc" \
   -o "$BUILD/test_pet_atomic_ledger"
 "$BUILD/test_pet_atomic_ledger"
+
+# Board BOOT gestures: home interaction, story start/advance/exit, no
+# accidental feed while reading or interaction in quiet/voice states.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_scene_presenter.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_input_router.cc" \
+  "$ROOT/tests/cpp/test_pet_input_router.cc" \
+  -o "$BUILD/test_pet_input_router"
+"$BUILD/test_pet_input_router"
