@@ -28,8 +28,8 @@ class SdSmokeFixtureTests(unittest.TestCase):
             self.assertEqual(b[3],FRAME_BYTES)
             self.assertEqual(a[8],24000)
             self.assertEqual(b[8],24000)
-            self.assertEqual(a[7],24000) # 500 ms, mono signed 16-bit
-            self.assertEqual(b[7],24000)
+            self.assertEqual(a[6],24000) # 500 ms, mono signed 16-bit
+            self.assertEqual(b[6],24000)
             self.assertNotEqual(payload[a[2]:a[2]+a[3]],
                                 payload[b[2]:b[2]+b[3]])
             self.assertNotEqual(payload[a[5]:a[5]+a[6]],
