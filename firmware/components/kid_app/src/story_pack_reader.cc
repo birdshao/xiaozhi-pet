@@ -86,8 +86,8 @@ bool StoryPackReader::Open(StoryPackFile& file) {
         if (U16(r+2)!=0 ||
             std::any_of(r+48,r+64,[](uint8_t v){return v!=0;}) ||
             p.index!=i+1 || p.image_bytes!=kImageBytes ||
-            p.sample_rate!=16000 || p.channels!=1 || p.bits!=16 ||
-            p.pcm_bytes<2 || p.pcm_bytes>16000u*2*60 ||
+            p.sample_rate!=24000 || p.channels!=1 || p.bits!=16 ||
+            p.pcm_bytes<2 || p.pcm_bytes>24000u*2*60 ||
             (p.pcm_bytes&1u)!=0 ||
             p.text_bytes==0 || p.text_bytes>1280 ||
             (p.image_offset&3u)!=0 || (p.pcm_offset&3u)!=0 ||
