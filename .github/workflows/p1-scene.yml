@@ -10,6 +10,8 @@ on:
       - 'scripts/p1_integrate.py'
       - 'tests/test_p1_integration_contract.py'
       - 'tests/test_p4_board_sd_overlay.py'
+      - 'tests/test_p4_story_audio_contract.py'
+      - 'scripts/p4_audio_queue_patch.py'
       - '.github/workflows/p1-scene.yml'
   workflow_dispatch:
 
@@ -28,6 +30,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_p1_integration_contract.py' -v
       - name: Check official Waveshare SD mount and real Reader EPD overlay
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
+      - name: Verify one-owner XiaoZhi PCM story queue source contract
+        run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
       - name: Keep generated PBM previews for review
         uses: actions/upload-artifact@v4
         with:
