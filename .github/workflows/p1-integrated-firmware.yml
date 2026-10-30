@@ -17,6 +17,8 @@ on:
       - 'tests/test_p1_app_only_artifact.py'
       - 'tests/test_p1_integration_contract.py'
       - 'tests/test_p4_board_sd_overlay.py'
+      - 'tests/test_p4_story_audio_contract.py'
+      - 'scripts/p4_audio_queue_patch.py'
       - 'scripts/p0_*'
       - 'version-lock.json'
       - '.github/workflows/p1-integrated-firmware.yml'
@@ -44,6 +46,9 @@ jobs:
       - name: Check SD GPIOs and EPD story fallback before board build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
+      - name: Validate voice-exclusive story PCM queue patch before IDF build
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
       - name: Clone pinned upstream and verify board config
         shell: bash
         run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
