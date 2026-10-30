@@ -243,16 +243,17 @@ def patch_board(text: str) -> str:
         '#include "kid_app/freertos_pet_scene_mailbox.h"\n'
         '#include "kid_app/freertos_pet_display_worker.h"\n'
         '#include "kid_app/pet_scene_presenter.h"\n'
-        '#include "kid_app/pet_local_event_id.h"',
+        '#include "kid_app/pet_local_event_id.h"\n'
+        '#include "kid_app/pet_input_router.h"',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
                 "board pet worker")
     text = once(text, "            app.ToggleChatState();",
         """            if (pet_mode_.load()) {
-                const auto action = pet_event_mode_.load() == kid_app::PetMode::Story
-                    ? kid_app::PetAction::NextPage : kid_app::PetAction::Pickup;
-                if (!pet_service_.PostLocal(action))
+                const auto decision = kid_app::PetInputRouter::Decide(
+                    pet_event_mode_.load(), kid_app::PetClick::Single);
+                if (decision.valid && !pet_service_.PostLocal(decision.action))
                     ESP_LOGW(TAG, "PET_INPUT_REJECTED");
                 return;
             }
@@ -260,15 +261,22 @@ def patch_board(text: str) -> str:
     text = once(text, "        pwr_button_.OnClick([this]() {",
         """        boot_button_.OnLongPress([this]() { RequestPetModeToggle(); });
 
-        // Double click begins the first story page; triple click feeds the
-        // pet. Single click remains original voice control outside pet mode.
+        // Offline story controls: single advances a page, double starts or
+        // exits the reader; triple feeds only on the Pet home screen.
+        // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
-            if (pet_mode_.load())
-                pet_service_.PostLocal(kid_app::PetAction::StartStory);
+            if (!pet_mode_.load()) return;
+            const auto decision = kid_app::PetInputRouter::Decide(
+                pet_event_mode_.load(), kid_app::PetClick::Double);
+            if (decision.valid && !pet_service_.PostLocal(decision.action))
+                ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         });
         boot_button_.OnMultipleClick([this]() {
-            if (pet_mode_.load())
-                pet_service_.PostLocal(kid_app::PetAction::Feed);
+            if (!pet_mode_.load()) return;
+            const auto decision = kid_app::PetInputRouter::Decide(
+                pet_event_mode_.load(), kid_app::PetClick::Triple);
+            if (decision.valid && !pet_service_.PostLocal(decision.action))
+                ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         }, 3);
 
         pwr_button_.OnClick([this]() {""", "board extra click hooks")
