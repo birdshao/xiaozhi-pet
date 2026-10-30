@@ -1,4 +1,5 @@
 #include "kid_app/story_pack_reader.h"
+#include "kid_app/scene_model.h"
 
 #include <algorithm>
 #include <array>
@@ -125,6 +126,9 @@ bool StoryPackReader::ReadImage(uint16_t page, uint8_t* target, size_t size) {
     StoryPageInfo p{};
     return Page(page,&p) && target && size>=kImageBytes &&
            file_->ReadAt(p.image_offset,target,kImageBytes);
+}
+bool StoryPackReader::ReadFrame(uint16_t page, MonoFrame& frame) {
+    return ReadImage(page, frame.pixels_.data(), frame.pixels_.size());
 }
 bool StoryPackReader::ReadPcm(uint16_t page, uint32_t position,
                               void* target, size_t bytes) {
