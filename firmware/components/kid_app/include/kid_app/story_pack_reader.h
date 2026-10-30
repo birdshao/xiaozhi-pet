@@ -56,7 +56,8 @@ private:
     static uint32_t Checksum(const uint8_t* data, size_t bytes);
     static uint32_t AdvanceChecksum(uint32_t prior, const uint8_t* data,
                                     size_t bytes);
-    bool Verified(uint32_t offset, uint32_t bytes, uint32_t crc);
+    static bool Verified(StoryPackFile& file, uint32_t offset,
+                         uint32_t bytes, uint32_t crc);
 
     StoryPackFile* file_ = nullptr;
     uint16_t count_ = 0;
