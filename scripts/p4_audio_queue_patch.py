@@ -5,7 +5,11 @@ audio and a transition away from Idle cancels narration before voice playback.
 """
 from __future__ import annotations
 
-from scripts.p1_integrate import once
+def once(source: str, before: str, after: str, label: str) -> str:
+    matches = source.count(before)
+    if matches != 1:
+        raise RuntimeError(f"{label}: expected 1 anchor; found {matches}")
+    return source.replace(before, after, 1)
 
 
 def patch_audio_h(source: str) -> str:
