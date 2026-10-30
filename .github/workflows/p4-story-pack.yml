@@ -4,9 +4,11 @@ on:
   pull_request:
     paths:
       - 'tools/story_pack.py'
+      - 'tools/make_story_sd_fixture.py'
       - 'tools/story_pack_requirements.txt'
       - 'firmware/components/kid_app/**'
       - 'tests/test_p4_story_pack.py'
+      - 'tests/test_p4_story_sd_smoke_fixture.py'
       - 'tests/cpp/test_story_pack_reader.cc'
       - 'docs/P4_OFFLINE_STORY_PACK.md'
       - '.github/workflows/p4-story-pack.yml'
@@ -14,9 +16,11 @@ on:
     branches: [main]
     paths:
       - 'tools/story_pack.py'
+      - 'tools/make_story_sd_fixture.py'
       - 'tools/story_pack_requirements.txt'
       - 'firmware/components/kid_app/**'
       - 'tests/test_p4_story_pack.py'
+      - 'tests/test_p4_story_sd_smoke_fixture.py'
       - 'tests/cpp/test_story_pack_reader.cc'
       - '.github/workflows/p4-story-pack.yml'
   workflow_dispatch:
@@ -42,3 +46,18 @@ jobs:
         run: python -m compileall -q tools/story_pack.py
       - name: Generate reviewed fixtures and validate on compiled device reader
         run: python -m unittest discover -s tests -p 'test_p4_story_pack.py' -v
+      - name: Check distinct page graphics and test tones in SD smoke fixture
+        run: python -m unittest discover -s tests -p 'test_p4_story_sd_smoke_fixture.py' -v
+      - name: Generate downloadable TF card diagnostic book
+        if: matrix.python-version == '3.12'
+        run: python -m tools.make_story_sd_fixture --output build/story-smoke
+      - name: Upload TF card diagnostic book (not child content)
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-tf-story-smoke-only
+          path: |
+            build/story-smoke/books/forest_friends.kpb
+            build/story-smoke/README-SMOKE-ONLY.txt
+          if-no-files-found: error
+          retention-days: 14
