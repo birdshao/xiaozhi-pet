@@ -215,8 +215,12 @@ BOARD_WORKER = r'''
         // Suspend the old page immediately when a new page/scene is
         // committed. The new page starts only after the slow EPD refresh.
         if (self->story_pcm_.Ready() &&
-            (snapshot.mode != kid_app::PetMode::Story || effects.repaint))
+            (snapshot.mode != kid_app::PetMode::Story || effects.repaint)) {
+            // Invalidate queued audio now, not after the slower SD feeder
+            // wakes up. A previously spoken page must not overlap EPD.
+            StoryAudioCancel(self);
             self->story_pcm_.Stop();
+        }
         const auto scene = kid_app::PetScenePresenter::Present(snapshot);
         self->last_pet_scene_.store(PackPetScene(scene));
         if (effects.repaint) self->pet_mailbox_.Publish(scene);

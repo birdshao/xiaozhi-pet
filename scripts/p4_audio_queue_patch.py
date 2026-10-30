@@ -44,8 +44,9 @@ bool AudioService::BeginLocalStoryPcm(uint64_t session) {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (service_stopped_.load() || !audio_decode_queue_.empty() ||
         decode_in_flight_) return false;
-    if (!local_story_session_ &&
-        (!audio_playback_queue_.empty() || output_in_flight_))
+    // Never start a book over a queued or in-flight voice/previous page
+    // packet. The SD feeder retries after the existing output drains.
+    if (!audio_playback_queue_.empty() || output_in_flight_)
         return false;
     local_story_session_ = session;
     return true;
@@ -97,6 +98,16 @@ def patch_audio_cc(source: str) -> str:
     source = once(source, "        codec_->OutputData(task.pcm);",
                   "        if (may_output) codec_->OutputData(task.pcm);",
                   "AudioService sole I2S write")
+    # Decoded network speech can arrive before Application's state switch
+    # is dispatched. Invalidate book audio while holding the SAME queue
+    # mutex, as soon as a network packet is accepted for decoding.
+    source = once(source,
+        "    playback_drained_notified_ = false;\n"
+        "    audio_decode_queue_.push_back(std::move(packet));",
+        "    local_story_session_ = 0;\n"
+        "    playback_drained_notified_ = false;\n"
+        "    audio_decode_queue_.push_back(std::move(packet));",
+        "server voice PCM preemption at packet ingress")
     return source
 
 
