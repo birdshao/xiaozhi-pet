@@ -212,7 +212,10 @@ BOARD_WORKER = r'''
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || outcome != kid_app::PumpResult::Committed) return;
         self->pet_event_mode_.store(snapshot.mode);
-        if (snapshot.mode != kid_app::PetMode::Story && self->story_pcm_.Ready())
+        // Suspend the old page immediately when a new page/scene is
+        // committed. The new page starts only after the slow EPD refresh.
+        if (self->story_pcm_.Ready() &&
+            (snapshot.mode != kid_app::PetMode::Story || effects.repaint))
             self->story_pcm_.Stop();
         const auto scene = kid_app::PetScenePresenter::Present(snapshot);
         self->last_pet_scene_.store(PackPetScene(scene));
