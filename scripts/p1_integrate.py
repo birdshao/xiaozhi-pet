@@ -156,6 +156,26 @@ BOARD_WORKER = r'''
                 static_cast<uint16_t>(bits >> 16)};
     }
 
+    static bool StoryAudioBegin(uint64_t token, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || !self->pet_mode_.load() ||
+            Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
+            return false;
+        return Application::GetInstance().GetAudioService().BeginLocalStoryPcm(token);
+    }
+    static bool StoryAudioPush(uint64_t token, const int16_t* pcm,
+                               size_t count, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || !self->pet_mode_.load() ||
+            Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
+            return false;
+        return Application::GetInstance().GetAudioService().TryQueueLocalStoryPcm(
+            token, pcm, count);
+    }
+    static void StoryAudioCancel(void*) {
+        Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+    }
+
     static bool PetRender(const kid_app::SceneModel& scene, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || !self->pet_screen_mutex_ ||
@@ -170,6 +190,9 @@ BOARD_WORKER = r'''
                 self->story_sd_.Ready()) {
                 okay = self->display_->ShowStoryPage(
                     *self->story_sd_.Reader(), scene.book_page);
+                // Only speak after EPD shows a validated book page.
+                if (okay && self->story_pcm_.Ready())
+                    self->story_pcm_.RequestPage(scene.book_page);
             }
             // Missing SD or a page outside a reviewed book falls back to
             // the pre-existing monochrome reader placeholder.
@@ -186,6 +209,8 @@ BOARD_WORKER = r'''
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || outcome != kid_app::PumpResult::Committed) return;
         self->pet_event_mode_.store(snapshot.mode);
+        if (snapshot.mode != kid_app::PetMode::Story && self->story_pcm_.Ready())
+            self->story_pcm_.Stop();
         const auto scene = kid_app::PetScenePresenter::Present(snapshot);
         self->last_pet_scene_.store(PackPetScene(scene));
         if (effects.repaint) self->pet_mailbox_.Publish(scene);
@@ -222,6 +247,11 @@ BOARD_WORKER = r'''
             if (!story_sd_.Initialize("forest_friends"))
                 ESP_LOGW(TAG, "PET_STORY_SD_FALLBACK");
         }
+        if (story_sd_.Ready() && !story_pcm_.Ready() &&
+            !story_pcm_.Start("/sdcard/books", "forest_friends",
+                              {&StoryAudioBegin, &StoryAudioPush,
+                               &StoryAudioCancel}, this))
+            ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
         pet_runtime_ready_.store(true);
         return true;
     }
@@ -229,6 +259,7 @@ BOARD_WORKER = r'''
     // Story SD is optional; accessed by the toggle and EPD tasks only after
     // initialization. No media IO on BOOT interrupt or Pet/NVS task.
     kid_app::WaveshareStorySd story_sd_;
+    kid_app::FreertosStoryPcmWorker story_pcm_;
     bool story_sd_attempted_ = false;
 
     // Only the toggle worker accesses these booleans, preventing double-start.
@@ -238,6 +269,8 @@ BOARD_WORKER = r'''
 
     void TogglePetRuntime() {
         if (pet_mode_.load()) {
+            if (story_pcm_.Ready()) story_pcm_.Stop();
+            Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
             pet_display_worker_.SetEnabled(false);
             if (pet_screen_mutex_ &&
                 xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(30000)) == pdTRUE) {
@@ -290,7 +323,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_scene_presenter.h"\n'
         '#include "kid_app/pet_local_event_id.h"\n'
         '#include "kid_app/pet_input_router.h"\n'
-        '#include "kid_app/waveshare_story_sd.h"',
+        '#include "kid_app/waveshare_story_sd.h"\n'
+        '#include "kid_app/freertos_story_pcm_worker.h"',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
