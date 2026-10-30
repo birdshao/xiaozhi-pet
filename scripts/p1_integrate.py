@@ -190,9 +190,12 @@ BOARD_WORKER = r'''
                 self->story_sd_.Ready()) {
                 okay = self->display_->ShowStoryPage(
                     *self->story_sd_.Reader(), scene.book_page);
-                // Only speak after EPD shows a validated book page.
-                if (okay && self->story_pcm_.Ready())
-                    self->story_pcm_.RequestPage(scene.book_page);
+                // Only speak after EPD shows a validated book page;
+                // invalid/out-of-range pages must cancel prior narration.
+                if (self->story_pcm_.Ready()) {
+                    if (okay) self->story_pcm_.RequestPage(scene.book_page);
+                    else self->story_pcm_.Stop();
+                }
             }
             // Missing SD or a page outside a reviewed book falls back to
             // the pre-existing monochrome reader placeholder.
