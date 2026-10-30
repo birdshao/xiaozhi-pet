@@ -81,7 +81,7 @@ def _pcm(path: Path) -> bytes:
     with wave.open(str(path), "rb") as wf:
         if wf.getcomptype() != "NONE" or wf.getnchannels() != 1 or \
                 wf.getsampwidth() != 2 or wf.getframerate() != 24000:
-            raise ValueError("Audio must be uncompressed 16 kHz mono PCM16 WAV")
+            raise ValueError("Audio must be uncompressed 24 kHz mono PCM16 WAV")
         frames = wf.getnframes()
         if not 0 < frames <= MAX_AUDIO_SECONDS * 24000:
             raise ValueError("WAV length must be >0 and <=60 seconds")
