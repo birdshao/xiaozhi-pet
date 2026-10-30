@@ -10,7 +10,8 @@ idf_component_register(
          "src/nvs_bridge_blob_store.cc"
          "src/pet_atomic_ledger.cc" "src/nvs_atomic_pet_store.cc"
          "src/freertos_atomic_pet_service.cc"
+         "src/esp_pet_https_transport.cc" "src/freertos_pet_http_worker.cc"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES nvs_flash freertos esp_timer
+    PRIV_REQUIRES nvs_flash freertos esp_timer esp_http_client mbedtls cjson
 )
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
