@@ -35,6 +35,8 @@ class StoryAudioContract(unittest.TestCase):
             "void AudioService::AudioOutputTask() {\n"
             "        if (!codec_->output_enabled()) {\n"
             "        codec_->OutputData(task.pcm);\n"
+            "    playback_drained_notified_ = false;\n"
+            "    audio_decode_queue_.push_back(std::move(packet));\n"
         )
         new=patch_audio_cc(source)
         self.assertEqual(new.count("codec_->OutputData(task.pcm)"),1)
@@ -44,6 +46,8 @@ class StoryAudioContract(unittest.TestCase):
         self.assertIn("audio_playback_queue_.full()",new)
         self.assertIn("samples > 480",new)
         self.assertIn("decode_in_flight_",new)
+        self.assertIn("local_story_session_ = 0;\n    playback_drained_notified_",new)
+        self.assertIn("if (!audio_playback_queue_.empty() || output_in_flight_)",new)
         with self.assertRaisesRegex(RuntimeError,"expected 1 anchor"):
             patch_audio_cc(new)
 
@@ -69,6 +73,8 @@ class StoryAudioContract(unittest.TestCase):
         self.assertIn("kFrameSamples = 480",src)
         self.assertIn("reader_.ReadPcm",src)
         self.assertIn("hooks_.cancel",src)
+        self.assertIn("for (unsigned attempt = 0; attempt < 100; ++attempt)",src)
+        self.assertIn("if (xQueueReceive(queue_, &queued, 0) == pdPASS)",src)
         self.assertNotIn("OutputData",src)
         self.assertNotIn("i2s_channel_write",src)
 
