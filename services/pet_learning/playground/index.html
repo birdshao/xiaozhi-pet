@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>小宠物体验台 · 开发者演示</title>
+  <link rel="stylesheet" href="/play/play.css">
+  <script type="module" src="/play/play.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="heading">
+      <span class="brand">🐾 小宠物体验台</span>
+      <span class="dev">本机开发演示 · 成人陪同</span>
+    </header>
+    <section id="connect-panel" class="connect" aria-labelledby="connect-title">
+      <h1 id="connect-title">连接测试宠物</h1>
+      <p>请使用专门创建的 <strong>测试设备</strong>，不要与真实 ESP32 共用设备 ID。令牌只保存在本网页内存中，刷新即清空。</p>
+      <form id="connect-form" autocomplete="off">
+        <label>测试设备 ID <input id="device-id" name="device-id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,63}" maxlength="64" required placeholder="pet-demo-001" autocomplete="off"></label>
+        <label>设备令牌 <input id="device-token" name="device-token" type="password" minlength="32" maxlength="256" required autocomplete="off" spellcheck="false" placeholder="已在本地注册的设备令牌"></label>
+        <button class="primary" type="submit">开始体验</button>
+      </form>
+    </section>
+    <section id="experience" class="experience" hidden aria-label="宠物互动">
+      <div class="topline">
+        <span id="device-label"></span>
+        <button id="disconnect" type="button" class="subtle">退出测试</button>
+      </div>
+      <nav class="tabs" aria-label="体验功能">
+        <button class="tab active" type="button" data-tab="pet" aria-pressed="true">🐱 互动</button>
+        <button class="tab" type="button" data-tab="story" aria-pressed="false">📖 绘本</button>
+        <button class="tab" type="button" data-tab="quiz" aria-pressed="false">🐘 猜动物</button>
+      </nav>
+      <section class="stage" id="pet-panel" data-panel="pet">
+        <div class="pet-figure" id="pet-figure" role="img" aria-label="快乐的小猫">
+          <svg viewBox="0 0 280 230" aria-hidden="true" focusable="false">
+            <path d="M60 68 L58 20 Q58 9 69 17 L115 42 Q140 34 166 42 L210 17 Q221 9 222 20 L220 68 Q245 94 240 140 Q236 191 190 206 Q140 224 91 206 Q44 192 40 140 Q35 92 60 68Z" fill="#fff9eb" stroke="#41362e" stroke-width="7" stroke-linejoin="round"/>
+            <path d="M71 30 L75 61 L103 46Z M207 30 L204 61 L176 46Z" fill="#efbaa8"/>
+            <ellipse cx="99" cy="118" rx="9" ry="13" fill="#41362e"/><ellipse cx="181" cy="118" rx="9" ry="13" fill="#41362e"/>
+            <path d="M132 145 Q140 138 148 145 Q140 155 132 145Z" fill="#df938a"/>
+            <path d="M140 153 Q131 168 118 159 M140 153 Q149 168 162 159" fill="none" stroke="#41362e" stroke-width="5" stroke-linecap="round"/>
+            <path d="M85 153 L47 144 M85 163 L47 167 M195 153 L233 144 M195 163 L233 167" fill="none" stroke="#41362e" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="79" cy="151" r="11" fill="#f1c1b7" opacity=".65"/><circle cx="201" cy="151" r="11" fill="#f1c1b7" opacity=".65"/>
+          </svg>
+        </div>
+        <h2>今天也一起玩吧！</h2>
+        <p id="pet-stats">正在读取状态…</p>
+        <div class="actions">
+          <button id="pet-feed" class="primary">🥕 喂小宠物</button>
+          <button id="pet-wave">👋 打个招呼</button>
+        </div>
+        <p class="hint">喂食事件由测试服务端入库；本演示不是离线可靠事件队列，断网时不会假装喂食成功。</p>
+      </section>
+      <section class="stage" id="story-panel" data-panel="story" hidden>
+        <div class="hero-emoji" aria-hidden="true">📚</div>
+        <h2>一起听故事</h2>
+        <p id="story-status" class="soft">还没有打开绘本</p>
+        <div id="story-text" class="story-text" aria-live="polite">说“给我讲故事”，或点击下面的按钮。</div>
+        <div class="actions">
+          <button id="story-start" class="primary">▶ 开始 / 继续</button>
+          <button id="story-next">下一页</button>
+          <button id="story-repeat">重读</button>
+          <button id="story-stop">结束</button>
+        </div>
+      </section>
+      <section class="stage" id="quiz-panel" data-panel="quiz" hidden>
+        <div class="hero-emoji" aria-hidden="true">🐘</div>
+        <h2>猜动物</h2>
+        <p id="quiz-progress" class="soft">准备开始</p>
+        <div id="quiz-text" class="story-text" aria-live="polite">看看你能猜出哪位动物朋友。</div>
+        <div class="actions">
+          <button id="quiz-start" class="primary">🎲 开始 / 再来一题</button>
+          <button id="quiz-1">选一</button>
+          <button id="quiz-2">选二</button>
+        </div>
+      </section>
+      <footer class="controls">
+        <button id="speak-toggle" type="button" aria-pressed="false">🔈 开启朗读</button>
+        <button id="speak-stop" type="button">停止朗读</button>
+        <span id="status" role="status" aria-live="polite">已连接</span>
+      </footer>
+      <p class="disclaimer">测试页面使用浏览器朗读（可能调用系统或云端语音）；仅播报家长批准的内容及固定提示。此页面不是 ESP32 真机验收。</p>
+    </section>
+  </main>
+</body>
+</html>
