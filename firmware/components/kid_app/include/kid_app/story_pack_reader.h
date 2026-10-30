@@ -6,6 +6,8 @@
 
 namespace kid_app {
 
+class MonoFrame;
+
 // KPB1: deterministic offline picture book. This is a read-only FAT/SD
 // abstraction; the host owns SD mount, AudioPort, PSRAM and EPD updates.
 // Do not call Open() or other file IO from an audio callback / ISR.
@@ -43,6 +45,8 @@ public:
 
     // Caller provides PSRAM-allocated (or other valid) 48 KiB destination.
     bool ReadImage(uint16_t page, uint8_t* target, size_t capacity);
+    // Direct EPD frame import: caller owns MonoFrame in PSRAM.
+    bool ReadFrame(uint16_t page, MonoFrame& frame);
     // Streams packed signed little-endian PCM16 audio in bounded blocks.
     // byte_offset and length must be 2-byte aligned, as samples are 16-bit.
     bool ReadPcm(uint16_t page, uint32_t byte_offset,
