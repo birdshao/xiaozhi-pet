@@ -5,7 +5,6 @@
 
 #include <cstdint>
 
-#include "sdmmc_cmd.h"
 
 namespace kid_app {
 
@@ -26,7 +25,6 @@ public:
 private:
     bool mounted_ = false;
     bool ready_ = false;
-    sdmmc_card_t* card_ = nullptr;
     StoryPackFilePort file_{};
     StoryPackReader reader_{};
 };
