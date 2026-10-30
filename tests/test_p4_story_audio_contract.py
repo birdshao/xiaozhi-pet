@@ -40,7 +40,6 @@ class StoryAudioContract(unittest.TestCase):
         self.assertEqual(new.count("codec_->OutputData(task.pcm)"),1)
         self.assertIn("if (may_output) codec_->OutputData(task.pcm);",new)
         self.assertIn("audio_playback_queue_.push_back(std::move(task))",new)
-        self.assertIn("local_story_session_ != task.story_session",new) if False else None
         self.assertIn("local_story_session_ == task.story_session",new)
         self.assertIn("audio_playback_queue_.full()",new)
         self.assertIn("samples > 480",new)
