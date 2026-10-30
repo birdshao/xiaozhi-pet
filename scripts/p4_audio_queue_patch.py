@@ -98,9 +98,9 @@ def patch_audio_cc(source: str) -> str:
     source = once(source, "        codec_->OutputData(task.pcm);",
                   "        if (may_output) codec_->OutputData(task.pcm);",
                   "AudioService sole I2S write")
-    // Decoded network speech can arrive before Application's state switch
-    // is dispatched. Invalidate book audio while holding the SAME queue
-    // mutex, as soon as a network packet is accepted for decoding.
+    # Decoded network speech can arrive before Application's state switch
+    # is dispatched. Invalidate book audio while holding the SAME queue
+    # mutex, as soon as a network packet is accepted for decoding.
     source = once(source,
         "    playback_drained_notified_ = false;\n"
         "    audio_decode_queue_.push_back(std::move(packet));",
