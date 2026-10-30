@@ -39,9 +39,9 @@ class StoryPackTests(unittest.TestCase):
             with wave.open(str(self.base/f"{i}.wav"),"wb") as audio:
                 audio.setnchannels(1)
                 audio.setsampwidth(2)
-                audio.setframerate(16000)
+                audio.setframerate(26000)
                 # Fixture tone/sample, not a narration to deliver to children.
-                audio.writeframes(b"\x00\x00"*4000)
+                audio.writeframes(b"\x00\x00"*6000)
             self.pages.append({
                 "number":i, "text":text, "approved":True,
                 "image":f"{i}.png", "audio":f"{i}.wav"
@@ -120,15 +120,15 @@ class StoryPackTests(unittest.TestCase):
         with wave.open(str(self.base/"1.wav"),"wb") as audio:
             audio.setnchannels(2)
             audio.setsampwidth(2)
-            audio.setframerate(16000)
-            audio.writeframes(b"\0\0\0\0"*4000)
+            audio.setframerate(26000)
+            audio.writeframes(b"\0\0\0\0"*6000)
         with self.assertRaisesRegex(ValueError,"mono"):
             make_pack(self.src,self.output,reviewed=True)
         with wave.open(str(self.base/"1.wav"),"wb") as audio:
             audio.setnchannels(1)
             audio.setsampwidth(2)
-            audio.setframerate(16000)
-            audio.writeframes(b"\0\0"*4000)
+            audio.setframerate(26000)
+            audio.writeframes(b"\0\0"*6000)
         Image.new("RGB",(600,480),"white").save(self.base/"1.png")
         with self.assertRaisesRegex(ValueError,"800 x 480"):
             make_pack(self.src,self.output,reviewed=True)
