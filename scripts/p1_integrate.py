@@ -356,10 +356,19 @@ def run(source: Path) -> None:
     if dest.exists():
         raise RuntimeError(f"Target component already exists: {dest}")
 
+    # Import the pinned audio queue patch from this repository, not upstream.
+    sys.path.insert(0, str(ROOT))
+    from scripts.p4_audio_queue_patch import (
+        patch_audio_h, patch_audio_cc, patch_application_cc,
+    )
+
     cmake = source / "main/CMakeLists.txt"
     header = source / BOARD_REL / "custom_lcd_display.h"
     impl = source / BOARD_REL / "custom_lcd_display.cc"
     board = source / BOARD_REL / "waveshare-s3-epaper-3.97.cc"
+    audio_h = source / "main/audio/audio_service.h"
+    audio_cc = source / "main/audio/audio_service.cc"
+    application_cc = source / "main/application.cc"
     # Calculate all changes before writing anything so an anchor mismatch
     # cannot leave half a patched source tree.
     patches = {
@@ -367,6 +376,9 @@ def run(source: Path) -> None:
         header: patch_display_h(header.read_text(encoding="utf-8")),
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_board(board.read_text(encoding="utf-8")),
+        audio_h: patch_audio_h(audio_h.read_text(encoding="utf-8")),
+        audio_cc: patch_audio_cc(audio_cc.read_text(encoding="utf-8")),
+        application_cc: patch_application_cc(application_cc.read_text(encoding="utf-8")),
     }
     src = ROOT / "firmware/components/kid_app"
     if not (src / "CMakeLists.txt").exists():
