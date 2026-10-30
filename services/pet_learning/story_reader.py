@@ -69,7 +69,12 @@ class StoryReader:
 
     @staticmethod
     def _speak(page, *, prefix: str = ""):
-        return _reply(prefix + page["text"], state="reading", page=page["page"])
+        text = prefix + page["text"]
+        # Upstream voice guard accepts no more than 320 spoken characters.
+        # Long approved pages remain verbatim without a title prefix.
+        if len(text) > 320:
+            text = page["text"]
+        return _reply(text, state="reading", page=page["page"])
 
     @staticmethod
     def _session(db, device_id: str):
