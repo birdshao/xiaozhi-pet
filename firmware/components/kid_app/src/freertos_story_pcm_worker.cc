@@ -65,7 +65,22 @@ void FreertosStoryPcmWorker::Run() {
         }
         if (++next_token_ == 0) ++next_token_;
         const uint64_t token = next_token_;
-        if (!hooks_.begin(token,context_)) continue;
+        // A previous page may still have up to two queued 20 ms frames.
+        // Wait for the single audio output task to drain them. Never lose
+        // the newly requested page simply because Begin was momentarily busy.
+        bool begun = false;
+        for (unsigned attempt = 0; attempt < 100; ++attempt) {
+            if (xQueueReceive(queue_, &queued, 0) == pdPASS) {
+                preloaded = true;
+                break;  // A newer page/stop always wins.
+            }
+            if (hooks_.begin(token, context_)) {
+                begun = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!begun) continue;
         uint32_t offset = 0;
         unsigned failed = 0;
         bool read_error = false;
