@@ -35,13 +35,15 @@ def patch_main_cmake(text: str) -> str:
 
 
 def patch_display_h(text: str) -> str:
-    text = once(text, '#include "lcd_display.h"', '#include "lcd_display.h"\n#include "kid_app/scene_model.h"', "display header include")
+    text = once(text, '#include "lcd_display.h"',
+        '#include "lcd_display.h"\n#include "kid_app/scene_model.h"\n#include "kid_app/story_pack_reader.h"',
+        "display header include")
     text = once(text, "    void EPD_Sleep();", """    void EPD_Sleep();
 
     // P1 manual-only pet display prototype; no voice/LLM dependency.
     bool ShowPetPreview(kid_app::Emotion emotion);
     bool ShowPetScene(const kid_app::SceneModel& scene);
-    void ExitPetPreview();
+    bool ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page);\n    void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
     return text
@@ -71,6 +73,28 @@ bool CustomEpdDisplay::ShowPetScene(const kid_app::SceneModel& scene) {
             memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
             pet_preview_enabled_ = true;
             // Prototype full refresh: physical partial refresh remains an open P1 task.
+            EPD_DisplayPartBaseImage();
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    frame->~MonoFrame();
+    heap_caps_free(memory);
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page) {
+    // Acquire a single 48 KiB PSRAM frame; do SD reads BEFORE the EPD lock.
+    void* memory = heap_caps_malloc(sizeof(kid_app::MonoFrame),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) return false;
+    auto* frame = new (memory) kid_app::MonoFrame();
+    const bool loaded = reader.ReadFrame(page, *frame);
+    bool okay = false;
+    if (loaded && lvgl_port_lock(5000)) {
+        if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
+            memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
+            pet_preview_enabled_ = true;
             EPD_DisplayPartBaseImage();
             okay = true;
         }
@@ -140,8 +164,17 @@ BOARD_WORKER = r'''
         }
         // This mutex also serializes ExitPetPreview, so no late pet frame
         // can overwrite the original XiaoZhi LVGL screen after exit.
-        const bool okay = self->pet_mode_.load() &&
-                          self->display_->ShowPetScene(scene);
+        bool okay = false;
+        if (self->pet_mode_.load()) {
+            if (scene.kind == kid_app::SceneKind::Reader &&
+                self->story_sd_.Ready()) {
+                okay = self->display_->ShowStoryPage(
+                    *self->story_sd_.Reader(), scene.book_page);
+            }
+            // Missing SD or a page outside a reviewed book falls back to
+            // the pre-existing monochrome reader placeholder.
+            if (!okay) okay = self->display_->ShowPetScene(scene);
+        }
         xSemaphoreGive(self->pet_screen_mutex_);
         return okay;
     }
@@ -182,9 +215,21 @@ BOARD_WORKER = r'''
             pet_event_mode_.store(restored.mode);
             pet_event_task_ready_ = true;
         }
+        if (!story_sd_attempted_) {
+            story_sd_attempted_ = true;
+            // Default approved demo book only. Never format an SD card.
+            // Missing/malformed media cannot prevent pet mode startup.
+            if (!story_sd_.Initialize("forest_friends"))
+                ESP_LOGW(TAG, "PET_STORY_SD_FALLBACK");
+        }
         pet_runtime_ready_.store(true);
         return true;
     }
+
+    // Story SD is optional; accessed by the toggle and EPD tasks only after
+    // initialization. No media IO on BOOT interrupt or Pet/NVS task.
+    kid_app::WaveshareStorySd story_sd_;
+    bool story_sd_attempted_ = false;
 
     // Only the toggle worker accesses these booleans, preventing double-start.
     bool pet_mailbox_ready_ = false;
@@ -244,7 +289,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/freertos_pet_display_worker.h"\n'
         '#include "kid_app/pet_scene_presenter.h"\n'
         '#include "kid_app/pet_local_event_id.h"\n'
-        '#include "kid_app/pet_input_router.h"',
+        '#include "kid_app/pet_input_router.h"\n'
+        '#include "kid_app/waveshare_story_sd.h"',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
