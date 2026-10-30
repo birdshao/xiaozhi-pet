@@ -9,6 +9,7 @@ on:
       - 'scripts/p1_preview.sh'
       - 'scripts/p1_integrate.py'
       - 'tests/test_p1_integration_contract.py'
+      - 'tests/test_p4_board_sd_overlay.py'
       - '.github/workflows/p1-scene.yml'
   workflow_dispatch:
 
@@ -25,6 +26,8 @@ jobs:
         run: bash scripts/p1_preview.sh
       - name: Test board overlay scene-model contract without IDF
         run: python3 -m unittest discover -s tests -p 'test_p1_integration_contract.py' -v
+      - name: Check official Waveshare SD mount and real Reader EPD overlay
+        run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
       - name: Keep generated PBM previews for review
         uses: actions/upload-artifact@v4
         with:

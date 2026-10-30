@@ -16,6 +16,7 @@ on:
       - 'scripts/p1_app_only_artifact.py'
       - 'tests/test_p1_app_only_artifact.py'
       - 'tests/test_p1_integration_contract.py'
+      - 'tests/test_p4_board_sd_overlay.py'
       - 'scripts/p0_*'
       - 'version-lock.json'
       - '.github/workflows/p1-integrated-firmware.yml'
@@ -40,6 +41,9 @@ jobs:
       - name: Validate narrow EPD and Pet boot marker integration hooks
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p1_integration_contract.py' -v
+      - name: Check SD GPIOs and EPD story fallback before board build
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
       - name: Clone pinned upstream and verify board config
         shell: bash
         run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
