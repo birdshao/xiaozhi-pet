@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .intent import resolve
@@ -71,6 +72,35 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
         token = authorization[7:]
         if not store.authenticated(device_id, token):
             raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
+
+    # Developer-only interactive preview. Disabled by default and static:
+    # no token, content approval, storage or parental admin endpoints.
+    # Bind uvicorn to loopback and use a separate test device ID.
+    def playground_file(name: str, media_type: str):
+        if os.environ.get("KID_PET_ENABLE_PLAYGROUND") != "1":
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        file = Path(__file__).resolve().parent / "playground" / name
+        response = FileResponse(file, media_type=media_type)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        )
+        return response
+
+    @app.get("/play", include_in_schema=False)
+    def playground():
+        return playground_file("index.html", "text/html; charset=utf-8")
+
+    @app.get("/play/{asset}", include_in_schema=False)
+    def playground_asset(asset: str):
+        if asset not in {"play.js", "play.css"}:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        return playground_file(asset, "text/javascript" if asset == "play.js" else "text/css")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
