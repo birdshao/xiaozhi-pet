@@ -12,7 +12,7 @@ idf_component_register(
          "src/freertos_atomic_pet_service.cc"
          "src/esp_pet_https_transport.cc" "src/freertos_pet_http_worker.cc"
          "src/story_pack_reader.cc" "src/story_pack_file_port.cc"
-         "src/waveshare_story_sd.cc"
+         "src/waveshare_story_sd.cc" "src/freertos_story_pcm_worker.cc"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES nvs_flash freertos esp_timer esp_http_client mbedtls cjson fatfs sdmmc esp_driver_sdmmc
 )
