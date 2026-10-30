@@ -7,6 +7,7 @@
 namespace kid_app {
 
 // Hardware-agnostic scene state. No Xiaozhi, LVGL, or ESP-IDF headers here.
+class StoryPackReader;
 enum class SceneKind : uint8_t { Home, Reader };
 enum class Emotion : uint8_t { Neutral, Happy, Curious, Sleepy, Surprised };
 
@@ -31,6 +32,9 @@ public:
     const std::array<uint8_t, kSize>& Data() const { return pixels_; }
 
 private:
+    // Allow validated SD book pages to load directly into the existing
+    // 48KiB PSRAM-backed MonoFrame without allocating a second framebuffer.
+    friend class StoryPackReader;
     std::array<uint8_t, kSize> pixels_{};
 };
 
