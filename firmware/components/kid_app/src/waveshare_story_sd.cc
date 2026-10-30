@@ -1,6 +1,7 @@
 #include "kid_app/waveshare_story_sd.h"
 
 #include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
@@ -39,8 +40,9 @@ bool WaveshareStorySd::Initialize(const char* book_id) {
         slot.d1 = static_cast<gpio_num_t>(kD1);
         slot.d2 = static_cast<gpio_num_t>(kD2);
         slot.d3 = static_cast<gpio_num_t>(kD3);
+        sdmmc_card_t* card = nullptr;
         const esp_err_t result =
-            esp_vfs_fat_sdmmc_mount(kMount, &host, &slot, &config, &card_);
+            esp_vfs_fat_sdmmc_mount(kMount, &host, &slot, &config, &card);
         if (result != ESP_OK) {
             ESP_LOGW(kTag, "Optional SD mount unavailable: %s",
                      esp_err_to_name(result));
