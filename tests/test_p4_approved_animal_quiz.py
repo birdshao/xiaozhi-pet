@@ -100,7 +100,7 @@ class QuizIntegrationTests(unittest.TestCase):
             self.assertEqual(restarted.get("/v1/devices/pet-unit-B/quiz/status",
                                            headers=self.b).json()["completed"],0)
             self.assertEqual(restarted.post("/v1/devices/pet-unit-A/quiz/answer",
-                                            headers=self.a,json={"choice":1}).json()["learning_state"],"finished")
+                                            headers=self.a,json={"choice":2}).json()["learning_state"],"finished")
             self.assertEqual(restarted.post("/v1/devices/pet-unit-A/quiz/start",
                                             headers=self.a).json()["learning_state"],"question")
         finally:
