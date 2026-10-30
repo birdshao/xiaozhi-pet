@@ -11,6 +11,7 @@ idf_component_register(
          "src/pet_atomic_ledger.cc" "src/nvs_atomic_pet_store.cc"
          "src/freertos_atomic_pet_service.cc"
          "src/esp_pet_https_transport.cc" "src/freertos_pet_http_worker.cc"
+         "src/story_pack_reader.cc" "src/story_pack_file_port.cc"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES nvs_flash freertos esp_timer esp_http_client mbedtls cjson
 )
