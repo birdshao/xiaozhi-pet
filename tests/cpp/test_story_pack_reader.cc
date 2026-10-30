@@ -43,8 +43,8 @@ int main(int argc, char** argv) {
     StoryPageInfo info{};
     assert(parser.Page(1,&info));
     assert(info.image_bytes==StoryPackReader::kImageBytes);
-    assert(info.sample_rate==16000 && info.channels==1 && info.bits==16);
-    assert(info.pcm_bytes==8000);
+    assert(info.sample_rate==24000 && info.channels==1 && info.bits==16);
+    assert(info.pcm_bytes==12000);
     assert(!parser.Page(0,&info));
     assert(!parser.Page(3,&info));
     std::vector<uint8_t> pixels(StoryPackReader::kImageBytes,0);
