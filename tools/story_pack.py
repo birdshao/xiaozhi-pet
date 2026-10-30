@@ -6,7 +6,7 @@ Usage:
   python -m tools.story_pack render --title ... --text ... --font ... --output page.png
   python -m tools.story_pack pack --source book.json --output story.kpb --reviewed
 
-Inputs: 800x480 PNG, 16kHz mono 16-bit little-endian uncompressed WAV.
+Inputs: 800x480 PNG, 24kHz mono 16-bit little-endian uncompressed WAV.
 Output: 1-bit white=1 800x480 page plus PCM16 stream (no RIFF) per page.
 """
 from __future__ import annotations
@@ -80,10 +80,10 @@ def _bitmap(path: Path) -> bytes:
 def _pcm(path: Path) -> bytes:
     with wave.open(str(path), "rb") as wf:
         if wf.getcomptype() != "NONE" or wf.getnchannels() != 1 or \
-                wf.getsampwidth() != 2 or wf.getframerate() != 16000:
+                wf.getsampwidth() != 2 or wf.getframerate() != 24000:
             raise ValueError("Audio must be uncompressed 16 kHz mono PCM16 WAV")
         frames = wf.getnframes()
-        if not 0 < frames <= MAX_AUDIO_SECONDS * 16000:
+        if not 0 < frames <= MAX_AUDIO_SECONDS * 24000:
             raise ValueError("WAV length must be >0 and <=60 seconds")
         data = wf.readframes(frames)
         if len(data) != frames * 2:
@@ -142,14 +142,14 @@ def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
             i, 0,
             offsets[0], len(image), _crc(image),
             offsets[1], len(audio), _crc(audio),
-            16000, 1, 16,
+            24000, 1, 16,
             offsets[2], len(utf8), _crc(utf8),
             b"\0" * 16
         )
         records.append(entry)
         detail.append({"page": i, "text": text, "image_sha256": hashlib.sha256(image).hexdigest(),
                        "pcm_sha256": hashlib.sha256(audio).hexdigest(),
-                       "duration_ms": len(audio) * 1000 // 32000})
+                       "duration_ms": len(audio) * 1000 // 48000})
     toc = b"".join(records)
     total = data_start + len(payload)
     # CRC protects the header from accidental SD corruption (not authenticity).
