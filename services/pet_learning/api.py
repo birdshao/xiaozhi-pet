@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .intent import resolve
 from .quiz import QuizEngine
+from .story_reader import StoryReader
 from .store import PetStore
 
 
@@ -53,6 +54,7 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
     database = filename or os.environ.get("KID_PET_DB", "data/pet_learning.sqlite3")
     store = PetStore(database)
     quiz = QuizEngine(database)
+    reader = StoryReader(database)
     app = FastAPI(
         title="xiaozhi-pet PetLearning MVP",
         version="0.1.0",
@@ -60,6 +62,7 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
     )
     app.state.pet_store = store
     app.state.quiz_engine = quiz
+    app.state.story_reader = reader
 
     def require_device(device_id: str, authorization: str | None) -> None:
         # No user identity or bearer token is returned in error messages.
@@ -128,6 +131,37 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
         require_device(device_id, authorization)
         return quiz.status(device_id)
 
+    @app.post("/v1/devices/{device_id}/story/start")
+    def start_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        if store.snapshot(device_id)["quiet"]:
+            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
+        return reader.start(device_id)
+
+    @app.post("/v1/devices/{device_id}/story/next")
+    def next_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        if store.snapshot(device_id)["quiet"]:
+            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
+        return reader.next(device_id)
+
+    @app.post("/v1/devices/{device_id}/story/repeat")
+    def repeat_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        if store.snapshot(device_id)["quiet"]:
+            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
+        return reader.repeat(device_id)
+
+    @app.post("/v1/devices/{device_id}/story/stop")
+    def stop_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        return reader.stop(device_id)
+
+    @app.get("/v1/devices/{device_id}/story/status")
+    def story_status(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        return reader.status(device_id)
+
     @app.post("/v1/devices/{device_id}/intent")
     def classify_intent(device_id: str, query: VoiceQuery,
                         authorization: str | None = Header(default=None)) -> dict:
@@ -136,6 +170,15 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
         learning_reply = quiz.intent(device_id, query.text, quiet=context["quiet"])
         if learning_reply is not None:
             return learning_reply
+        # Preserve legacy STORY_OPEN/PAGE_NEXT PetStore behavior when an
+        # existing device has already opened a book with Pet events.
+        if context["mode"] == "STORY":
+            legacy_reply = resolve(query.text, context, store.page)
+            if legacy_reply["kind"] != "fallback":
+                return legacy_reply
+        story_reply = reader.intent(device_id, query.text, quiet=context["quiet"])
+        if story_reply is not None:
+            return story_reply
         return resolve(query.text, context, store.page)
 
     return app
