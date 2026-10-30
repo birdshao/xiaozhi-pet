@@ -1,0 +1,44 @@
+name: P4 offline SD story packages
+
+on:
+  pull_request:
+    paths:
+      - 'tools/story_pack.py'
+      - 'tools/story_pack_requirements.txt'
+      - 'firmware/components/kid_app/**'
+      - 'tests/test_p4_story_pack.py'
+      - 'tests/cpp/test_story_pack_reader.cc'
+      - 'docs/P4_OFFLINE_STORY_PACK.md'
+      - '.github/workflows/p4-story-pack.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/story_pack.py'
+      - 'tools/story_pack_requirements.txt'
+      - 'firmware/components/kid_app/**'
+      - 'tests/test_p4_story_pack.py'
+      - 'tests/cpp/test_story_pack_reader.cc'
+      - '.github/workflows/p4-story-pack.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  story:
+    name: Python ${{ matrix.python-version }}; C++ 17 SD reader
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -r tools/story_pack_requirements.txt
+      - name: Check Python and offline pack CLI
+        run: python -m compileall -q tools/story_pack.py
+      - name: Generate reviewed fixtures and validate on compiled device reader
+        run: python -m unittest discover -s tests -p 'test_p4_story_pack.py' -v
