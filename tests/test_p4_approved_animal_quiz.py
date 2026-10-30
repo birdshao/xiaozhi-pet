@@ -111,7 +111,10 @@ class QuizIntegrationTests(unittest.TestCase):
     def test_quiet_prevents_start_and_answer(self):
         self.quiz.import_card(*QUIZZES[0], approved=True)
         self.assertEqual(self.start().json()["learning_state"],"question")
-        from tests.test_p3_pet_learning_api import event
+        def event(device, seq, message_id, action):
+            return {"schema_version":"1.0","message_id":message_id,
+                    "device_id":device,"seq":seq,"type":"pet.event",
+                    "payload":{"event":action}}
         sent=self.client.post("/v1/devices/pet-unit-A/events",
                               headers=self.a,json={"events":[event("pet-unit-A",1,"pet-unit-A:1",
                                                                    "QUIET_HOURS_START")]})
@@ -147,10 +150,11 @@ class QuizIntegrationTests(unittest.TestCase):
         for card in QUIZZES:
             self.quiz.import_card(*card,approved=True)
         self.assertIsNotNone(self.store.page(BOOK["book_id"],1))
-        for i in range(4):
+        for card in sorted(QUIZZES, key=lambda c:c[0]):
             question=self.start().json()
             self.assertEqual(question["learning_state"],"question")
-            self.answer(1 if QUIZZES[i][4]==1 else 2)
+            self.assertIn(card[1], question["tts_text"])
+            self.answer(card[4])
         self.assertEqual(self.quiz.status("pet-unit-A")["completed"],4)
 
     def test_private_or_unexpected_speech_never_becomes_a_question(self):
