@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .intent import resolve
+from .quiz import QuizEngine
 from .store import PetStore
 
 
@@ -44,15 +45,21 @@ class VoiceQuery(StrictModel):
     text: str = Field(min_length=1, max_length=120)
 
 
+class QuizAnswer(StrictModel):
+    choice: Literal[1, 2]
+
+
 def create_app(filename: str | Path | None = None) -> FastAPI:
     database = filename or os.environ.get("KID_PET_DB", "data/pet_learning.sqlite3")
     store = PetStore(database)
+    quiz = QuizEngine(database)
     app = FastAPI(
         title="xiaozhi-pet PetLearning MVP",
         version="0.1.0",
         description="Authenticated pet replay receipts and reviewed local learning content.",
     )
     app.state.pet_store = store
+    app.state.quiz_engine = quiz
 
     def require_device(device_id: str, authorization: str | None) -> None:
         # No user identity or bearer token is returned in error messages.
@@ -96,11 +103,39 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="APPROVED_PAGE_NOT_FOUND")
         return item
 
+    @app.post("/v1/devices/{device_id}/quiz/start")
+    def start_quiz(device_id: str, authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        if store.snapshot(device_id)["quiet"]:
+            return {"kind": "fallback", "action": None,
+                    "tts_text": "现在是安静时间，我们下次再一起玩吧。",
+                    "learning_state": "idle"}
+        return quiz.start(device_id)
+
+    @app.post("/v1/devices/{device_id}/quiz/answer")
+    def answer_quiz(device_id: str, answer: QuizAnswer,
+                    authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        if store.snapshot(device_id)["quiet"]:
+            return {"kind": "fallback", "action": None,
+                    "tts_text": "现在是安静时间，我们下次再一起玩吧。",
+                    "learning_state": "idle"}
+        return quiz.answer(device_id, answer.choice)
+
+    @app.get("/v1/devices/{device_id}/quiz/status")
+    def quiz_status(device_id: str,
+                    authorization: str | None = Header(default=None)) -> dict:
+        require_device(device_id, authorization)
+        return quiz.status(device_id)
+
     @app.post("/v1/devices/{device_id}/intent")
     def classify_intent(device_id: str, query: VoiceQuery,
                         authorization: str | None = Header(default=None)) -> dict:
         require_device(device_id, authorization)
         context = store.snapshot(device_id)
+        learning_reply = quiz.intent(device_id, query.text, quiet=context["quiet"])
+        if learning_reply is not None:
+            return learning_reply
         return resolve(query.text, context, store.page)
 
     return app
