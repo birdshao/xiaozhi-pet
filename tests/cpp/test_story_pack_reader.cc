@@ -1,5 +1,6 @@
 #include "kid_app/story_pack_file_port.h"
 #include "kid_app/story_pack_reader.h"
+#include "kid_app/scene_model.h"
 
 #include <algorithm>
 #include <cassert>
@@ -53,6 +54,10 @@ int main(int argc, char** argv) {
     assert(pixels[0]==0x00); // fixture draws a black pixel at (0,0).
     assert(pixels[1]!=0x00); // neighboring pixel is white.
     assert(parser.ReadImage(2,pixels.data(),pixels.size()));
+    MonoFrame screen;
+    assert(parser.ReadFrame(1,screen));
+    assert(screen.IsBlack(0,0));
+    assert(!screen.IsBlack(8,0));
 
     char text[1280]{};
     assert(parser.ReadText(1,text,sizeof(text)));
