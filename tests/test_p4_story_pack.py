@@ -85,6 +85,7 @@ class StoryPackTests(unittest.TestCase):
             "g++","-std=c++17","-O2","-Wall","-Wextra","-Werror",
             "-I"+str(ROOT/"firmware/components/kid_app/include"),
             str(ROOT/"firmware/components/kid_app/src/story_pack_reader.cc"),
+            str(ROOT/"firmware/components/kid_app/src/scene_model.cc"),
             str(ROOT/"firmware/components/kid_app/src/story_pack_file_port.cc"),
             str(ROOT/"tests/cpp/test_story_pack_reader.cc"),
             "-o",str(binary)
