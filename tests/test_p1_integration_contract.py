@@ -183,6 +183,24 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('ClearRtcAlarm(false)', off)
         self.assertIn('std::atomic<int> woke_by_alarm_', patched)
 
+    def test_alarm_wake_note_survives_usb_chip_reset(self):
+        # V2-09 trial: after the alarm power-on, the host reopening USB
+        # caused rst:0x15 (USB_UART_CHIP_RESET); the second boot no longer
+        # saw AF and re-ran the scenario. Keep a short-lived note in
+        # RTC no-init memory (kept across chip resets, lost on power loss).
+        patched = self._board()
+        self.assertIn('RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_magic', patched)
+        self.assertIn('RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_epoch', patched)
+        self.assertIn('#include "esp_attr.h"', patched)
+        note = patched[patched.index('bool NoteAlarmWake('):]
+        note = note[:note.index('\n    }\n')]
+        self.assertIn('esp_reset_reason() == ESP_RST_POWERON', note)
+        self.assertIn('kAlarmWakeNoteSeconds', note)
+        self.assertIn('static constexpr uint32_t kAlarmWakeNoteSeconds = 60;', patched)
+        clear = patched[patched.index('void ClearRtcAlarm('):]
+        clear = clear[:clear.index('\n    }\n')]
+        self.assertIn('NoteAlarmWake(alarm_flag', clear)
+
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()
         run = patched[patched.index('void MaybeRunSelfTest()'):]

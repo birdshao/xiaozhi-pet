@@ -721,14 +721,43 @@ BOARD_WORKER = r'''
                kid_app::Pcf85063::DecodeTime(regs, out, stopped);
     }
 
+    static constexpr uint32_t kAlarmWakeMagic = 0xA1A2B0C5;
+    static constexpr uint32_t kAlarmWakeNoteSeconds = 60;
+
+    // True if this boot is an RTC-alarm wake, or a chip reset shortly after
+    // one (the alarm flag was already cleared by that first boot).
+    bool NoteAlarmWake(bool alarm_now) {
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        const bool rtc_ok = RtcRead(&rtc, &stopped) && !stopped;
+        const uint32_t now = rtc_ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc)) : 0;
+        if (alarm_now) {
+            g_pet_alarm_wake_magic = kAlarmWakeMagic;
+            g_pet_alarm_wake_epoch = now;
+            return true;
+        }
+        if (esp_reset_reason() == ESP_RST_POWERON) {  // no-init RAM is garbage
+            g_pet_alarm_wake_magic = 0;
+            return false;
+        }
+        return g_pet_alarm_wake_magic == kAlarmWakeMagic && rtc_ok &&
+               now >= g_pet_alarm_wake_epoch &&
+               now - g_pet_alarm_wake_epoch <= kAlarmWakeNoteSeconds;
+    }
+
     // record_wake: only the board-init call reports why this boot happened.
     void ClearRtcAlarm(bool record_wake = true) {
         uint8_t reg = kid_app::Pcf85063::kControl2, control2 = 0;
         if (!DiagI2c(0x51, &reg, 1, &control2, 1)) return;
         const int alarm_flag = (control2 & kid_app::Pcf85063::kAlarmFlag) ? 1 : 0;
-        if (record_wake) woke_by_alarm_.store(alarm_flag);
-        ESP_LOGI(TAG, "PET_DIAG_WAKE alarm_flag=%d alarm_irq_enabled=%d", alarm_flag,
-                 (control2 & kid_app::Pcf85063::kAlarmInterruptEnable) ? 1 : 0);
+        int carried = 0;
+        if (record_wake) {
+            const bool woke = NoteAlarmWake(alarm_flag != 0);
+            carried = woke && !alarm_flag;
+            woke_by_alarm_.store(woke ? 1 : 0);
+        }
+        ESP_LOGI(TAG, "PET_DIAG_WAKE alarm_flag=%d alarm_irq_enabled=%d carried=%d", alarm_flag,
+                 (control2 & kid_app::Pcf85063::kAlarmInterruptEnable) ? 1 : 0, carried);
         if (!(control2 & (kid_app::Pcf85063::kAlarmFlag |
                           kid_app::Pcf85063::kAlarmInterruptEnable)))
             return;
@@ -963,6 +992,13 @@ def patch_board(text: str) -> str:
         '#include "kid_app/refresh_planner.h"\n'
         '#include "kid_app/selftest_script.h"\n'
         '#include "kid_app/sleep_flow.h"\n'
+        '#include "esp_attr.h"\n'
+        '#include "esp_system.h"\n'
+        '// Alarm-wake note: kept across chip resets (e.g. the USB-JTAG reset\n'
+        '// when a host reopens the port right after an alarm power-on), lost\n'
+        '// on power loss. See NoteAlarmWake().\n'
+        'RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_magic;\n'
+        'RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_epoch;\n'
         '#include "esp_ota_ops.h"\n'
         '#include "esp_partition.h"\n'
         '#include <esp_heap_caps.h>\n'
