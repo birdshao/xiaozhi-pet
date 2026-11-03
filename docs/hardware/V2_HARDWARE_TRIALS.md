@@ -32,3 +32,25 @@
 **人工确认（用户，2026-11-03）**：局刷时没有整屏闪烁；连续局刷后无残影；边框没有变灰。
 
 **过程问题**：第一次判定显示全部失败，原因是 Windows PowerShell 5 的 `Tee-Object` 把日志存成 UTF-16，判定工具按 UTF-8 读不到内容。已让判定工具自动识别编码并补测试；同一份原始日志重判为 PASS。
+
+## 第 2 轮：哄睡关机流程（2026-11-03，自动）
+
+| 项目 | 内容 |
+|---|---|
+| 固件 | PR #47 构建 [#41641217308](https://github.com/birdshao/xiaozhi-pet/actions/runs/41641217308)，合并提交 `19d8b7ab`（头提交 `280b628`），SHA256 `0e09d769…`，2,943,360 B |
+| 场景 | `tools/selftest/v2_home_rail.pettest`（回归，同固件前一版 `f122b98f`：11/11 通过）+ `tools/selftest/v2_sleep.pettest` |
+| 流程 | 只写 OTA1 并读回 → 写脚本扇区 → 切 OTA1 监控 200 s → 选择器写回并核对 → 擦除脚本扇区 |
+| 结果 | **13/13 通过**；无 panic / watchdog |
+
+| 步骤 | 日志 | 结论 |
+|---|---|---|
+| 首页选"睡觉"并按下 | `PET_SLEEP_REQUESTED` → 4.3 s 后 `PET_SLEEP_SHOWN` | 熟睡画面全刷 |
+| 3 s 内拨动 | `PET_SLEEP_CANCELLED`，回首页 | 取消有效 |
+| 按 PWR（注入） | `PET_SLEEP_REQUESTED` → `SHOWN` → 3 s 后 `PET_RTC_ALARM armed_for=21:16:17`、`PET_SLEEP_POWEROFF settled=1 alarm_s=45 armed=1` | 存档已落盘后关机 |
+| **USB 供电下关机** | 无 `PET_SLEEP_POWEROFF_RETURNED`，串口断开 | **插着 USB 电源芯片也能真正断电** |
+| 45 s 后 | 板子重新上电；随后主机重开串口引起 `rst:0x15`，`PET_DIAG_WAKE ... carried=1`，心跳 `woke_by_alarm=1` | 闹钟准时开机；唤醒原因跨芯片复位保留 |
+| 唤醒后 | `PET_SELFTEST_NONE reason=alarm_wake` | 不重复执行脚本 |
+
+**上一轮的问题**（同 PR 前一版固件 `f122b98f`）：闹钟开机后主机重开 USB 串口导致芯片复位，第二次启动已看不到闹钟标志，于是把场景又跑了一遍并再次关机（恢复重试 5 次后成功）。修复：把"闹钟唤醒"连同 RTC 时间记在复位后保留的 RTC 内存里，非上电复位后 60 s 内有效。
+
+**仍待实测**：电池供电下实体 PWR 键能否触发（USB 供电时 GPIO1 无按键边沿，见 V1）。
