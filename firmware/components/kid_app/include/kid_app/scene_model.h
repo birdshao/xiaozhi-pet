@@ -19,6 +19,11 @@ struct SceneModel {
     uint8_t home_selection = 1;
 };
 
+// One-word scene snapshot shared between board tasks (atomic<uint32_t>):
+// bits 0-3 kind, 4-7 home selection, 8-15 emotion, 16-31 book page.
+uint32_t PackScene(const SceneModel& scene);
+SceneModel UnpackScene(uint32_t bits);
+
 class MonoFrame {
 public:
     static constexpr int kWidth = 800;

@@ -6,6 +6,22 @@
 
 namespace kid_app {
 
+uint32_t PackScene(const SceneModel& scene) {
+    return (static_cast<uint32_t>(scene.book_page) << 16) |
+           (static_cast<uint32_t>(scene.emotion) << 8) |
+           ((static_cast<uint32_t>(scene.home_selection) & 0x0F) << 4) |
+           (static_cast<uint32_t>(scene.kind) & 0x0F);
+}
+
+SceneModel UnpackScene(uint32_t bits) {
+    SceneModel scene;
+    scene.kind = static_cast<SceneKind>(bits & 0x0F);
+    scene.home_selection = static_cast<uint8_t>((bits >> 4) & 0x0F);
+    scene.emotion = static_cast<Emotion>((bits >> 8) & 0xFF);
+    scene.book_page = static_cast<uint16_t>(bits >> 16);
+    return scene;
+}
+
 void MonoFrame::Clear() { pixels_.fill(0xFF); }
 
 void MonoFrame::SetPixel(int x, int y, bool black) {

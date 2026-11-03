@@ -204,6 +204,32 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('refresh_planner_.Plan(scene)', patched)
         self.assertIn('ShowPetSceneFast(scene)', patched)
         self.assertIn('refresh_planner_.ForceFull()', patched)
+        self.assertIn('kid_app::PackScene(scene)', patched)
+        self.assertIn('kid_app::UnpackScene(bits)', patched)
+
+    def test_v2_scene_state_is_published_under_one_lock(self):
+        patched = self._board()
+        commit = patched[patched.index('static void PetCommitted('):]
+        commit = commit[:commit.index('\n    }\n')]
+        locked = commit[commit.index('SceneStateLock lock(self->scene_state_mutex_)'):]
+        # Scene stored and published before the mode becomes visible.
+        self.assertLess(locked.index('last_pet_scene_.store('), locked.index('pet_event_mode_.store('))
+        self.assertLess(locked.index('pet_mailbox_.Publish('), locked.index('pet_event_mode_.store('))
+        self.assertEqual(commit.count('pet_event_mode_.store('), 1)
+        handle = patched[patched.index('void HandleInputEvent('):]
+        handle = handle[:handle.index('\n    }\n')]
+        self.assertIn('SceneStateLock lock(scene_state_mutex_)', handle)
+        # Durable action posted after the lock scope closes.
+        self.assertGreater(handle.index('PostLocal(decision.action)'),
+                           handle.index('SceneStateLock lock(scene_state_mutex_)'))
+        self.assertNotIn('compare_exchange', patched)
+
+    def test_v2_border_waveform_per_refresh_mode(self):
+        impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
+        fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
+        fast = fast[:fast.index('\n}\n')]
+        self.assertLess(fast.index('EPD_SendData(0x80)'), fast.index('EPD_SendCommand(0x24)'))
+        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 2)
 
     def test_round3_hardware_diag_stays_read_only(self):
         patched = self._board()

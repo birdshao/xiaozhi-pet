@@ -71,6 +71,28 @@ int main() {
             assert(!story.IsBlack(x, SceneComposer::kRailTop - 2));
     }
 
+    // Packed scene word shared between board tasks: every field survives.
+    {
+        for (SceneKind kind : {SceneKind::Home, SceneKind::Reader}) {
+            for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
+                                    Emotion::Sleepy, Emotion::Surprised}) {
+                for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
+                    for (uint8_t sel = 0; sel < 5; ++sel) {
+                        const SceneModel in{kind, emotion, page, sel};
+                        const SceneModel out = kid_app::UnpackScene(kid_app::PackScene(in));
+                        assert(out.kind == kind && out.emotion == emotion &&
+                               out.book_page == page && out.home_selection == sel);
+                    }
+                }
+            }
+        }
+        // Selection is 4 bits: larger values are masked, never spill.
+        const SceneModel wide{SceneKind::Reader, Emotion::Happy, 7, 0x1F};
+        const SceneModel masked = kid_app::UnpackScene(kid_app::PackScene(wide));
+        assert(masked.kind == SceneKind::Reader && masked.home_selection == 0x0F);
+        assert(masked.emotion == Emotion::Happy && masked.book_page == 7);
+    }
+
     std::cout << "PASS: 1-bit frame size, clipping, deterministic scene changes, home rail\n";
     return 0;
 }
