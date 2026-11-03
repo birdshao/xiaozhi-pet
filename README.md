@@ -99,6 +99,12 @@
 - [完整 IDF6.1 板卡编译通过](https://github.com/birdshao/xiaozhi-pet/actions/runs/40252096543)：测试 App 2,857,408 B，单 OTA 槽 4,128,768 B。
 - [BIRDSHAO 新 Runner + OTA 测试步骤](docs/hardware/BIRDSHAO_RUNNER.md)。确认端口、备份、分区/官方 OTA0 状态和可恢复性之前，不进行 OTA1 物理写入。原纯官方 OTA0 仍保留。
 
+## 真机首次启动 Pet 固件（2026-11-02）
+
+- OTA1 升级为 main 固件 [build #41076469802](https://github.com/birdshao/xiaozhi-pet/actions/runs/41076469802)（4b18663，SHA `b3760e14…`），读回校验通过。
+- 有人值守的 60 秒试验：`Running partition: ota_1`、被动启动标记、长按 BOOT 后 `PET_RUNTIME_ON`，无 panic/WDT；随后 OTADATA 精确恢复，官方 OTA0 重新启动。
+- 画面质量、点击事件、SD 绘本音频、语音和回滚能力仍待验证。[详细记录](docs/hardware/OTA1_BOOT_TRIAL_2026-11-02.md)。
+
 ## 文档导航
 
 - [产品需求（PRD）](docs/PRODUCT_REQUIREMENTS.md)：年龄、功能边界、安全与 MVP。
