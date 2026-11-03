@@ -147,3 +147,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_sleep_flow.cc" \
   -o "$BUILD/test_sleep_flow"
 "$BUILD/test_sleep_flow"
+
+# V3-01 rhythm: day phases, quiet hours across midnight, next RTC wake-up.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/tests/cpp/test_rhythm_scheduler.cc" \
+  -o "$BUILD/test_rhythm_scheduler"
+"$BUILD/test_rhythm_scheduler"
