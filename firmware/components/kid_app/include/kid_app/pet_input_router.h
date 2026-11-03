@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/input_hub.h"
 #include "kid_app/pet_controller.h"
 
 #include <cstdint>
@@ -20,6 +21,9 @@ struct PetInputDecision {
 class PetInputRouter {
 public:
     static PetInputDecision Decide(PetMode mode, PetClick click);
+    // Three-way dial semantics from InputHub. Talk/BootLong/SleepRequest/
+    // ParentCombo are owned by the board and never become Pet actions here.
+    static PetInputDecision DecideDial(PetMode mode, InputKind kind);
 };
 
 }  // namespace kid_app

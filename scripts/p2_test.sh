@@ -92,7 +92,16 @@ CXX="${CXX:-g++}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_scene_presenter.cc" \
+  "$ROOT/firmware/components/kid_app/src/input_hub.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_input_router.cc" \
   "$ROOT/tests/cpp/test_pet_input_router.cc" \
   -o "$BUILD/test_pet_input_router"
 "$BUILD/test_pet_input_router"
+
+# Three-way dial / BOOT / PWR semantics: press-down feedback, bounded
+# auto-repeat, long press, parent combo and voice-session gating.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/input_hub.cc" \
+  "$ROOT/tests/cpp/test_input_hub.cc" \
+  -o "$BUILD/test_input_hub"
+"$BUILD/test_input_hub"

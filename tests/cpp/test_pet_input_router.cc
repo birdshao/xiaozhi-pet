@@ -41,4 +41,39 @@ int main() {
                      &effects) == PetResult::Applied);
     assert(pet.Snapshot().interaction_count == 1);
     std::cout << "PASS: BOOT click routing enters, advances, exits reader and feeds only at home\n";
+
+    // Dial routing (ADR-009) until the V2 home action rail exists:
+    // home press = say hi; reader down = next page, long = back home.
+    assert(PetInputRouter::DecideDial(PetMode::Idle, InputKind::DialPress).action ==
+           PetAction::Pickup);
+    assert(PetInputRouter::DecideDial(PetMode::Interact, InputKind::DialPress).valid);
+    assert(PetInputRouter::DecideDial(PetMode::Story, InputKind::DialDown).action ==
+           PetAction::NextPage);
+    assert(PetInputRouter::DecideDial(PetMode::Story, InputKind::DialLong).action ==
+           PetAction::StopStory);
+    assert(!PetInputRouter::DecideDial(PetMode::Story, InputKind::DialPress).valid);
+    assert(!PetInputRouter::DecideDial(PetMode::Idle, InputKind::DialLong).valid);
+    for (InputKind kind : {InputKind::Talk, InputKind::BootLong, InputKind::SleepRequest,
+                           InputKind::ParentCombo}) {
+        // Voice, mode toggle, sleep and parent stay with board-level owners.
+        for (PetMode mode : {PetMode::Idle, PetMode::Story})
+            assert(!PetInputRouter::DecideDial(mode, kind).valid);
+    }
+    for (PetMode mode : {PetMode::Quiet, PetMode::Listening, PetMode::Speaking}) {
+        for (InputKind kind : {InputKind::DialUp, InputKind::DialDown, InputKind::DialPress,
+                               InputKind::DialLong})
+            assert(!PetInputRouter::DecideDial(mode, kind).valid);
+    }
+
+    PetController reader;
+    assert(reader.Apply({10, PetAction::StartStory}, &effects) == PetResult::Applied);
+    assert(reader.Apply({11, PetInputRouter::DecideDial(reader.Snapshot().mode,
+                                                        InputKind::DialDown).action},
+                        &effects) == PetResult::Applied);
+    assert(reader.Snapshot().active_page == 2);
+    assert(reader.Apply({12, PetInputRouter::DecideDial(reader.Snapshot().mode,
+                                                        InputKind::DialLong).action},
+                        &effects) == PetResult::Applied);
+    assert(reader.Snapshot().mode == PetMode::Idle);
+    std::cout << "PASS: dial routing advances and leaves reader, says hi at home\n";
 }
