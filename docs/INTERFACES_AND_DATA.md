@@ -40,7 +40,7 @@
 
 | InputEvent / SensorEvent | 来源 | 说明 |
 |---|---|---|
-| `DIAL_UP` / `DIAL_DOWN` | 拨轮 GPIO4 / GPIO6 | 换选项 / 翻页；列表中按住自动重复 ≤3 次/秒 |
+| `DIAL_UP` / `DIAL_DOWN` | 拨轮 GPIO6 / GPIO4（真机核对） | 换选项 / 翻页；列表中按住自动重复 ≤3 次/秒 |
 | `DIAL_PRESS` / `DIAL_LONG` | 拨轮 GPIO5 | 确认 / 回首页（≥1 s） |
 | `TALK` | BOOT GPIO0 | 开始/结束语音会话 |
 | `SLEEP_REQUEST` | PWR GPIO1 | 进入睡觉流程，3 s 内拨轮可取消 |

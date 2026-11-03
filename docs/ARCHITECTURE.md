@@ -14,7 +14,7 @@ flowchart TB
       DIAL["三向拨轮 GPIO4/5/6"]
       BOOT["BOOT GPIO0"]
       PWR["PWR GPIO1"]
-      IMU["QMI8658 0x6A/6B, INT2=GPIO40"]
+      IMU["QMI8658 0x6B, INT2=GPIO40"]
       RTC["PCF85063 0x51, INT=GPIO45"]
       ENV["SHTC3 0x70"]
       PMU["TG28/AXP2101 0x34, IRQ=GPIO38"]
@@ -92,13 +92,15 @@ scripts/p1_integrate.py    # 小智板卡最薄 overlay：注册拨轮、改 BOO
 
 ## 4. 输入：InputHub
 
-### 4.1 物理映射（原理图 + 官方示例核对）
+### 4.1 物理映射（原理图 + 官方示例 + 2026-11-02 真机核对）
+
+原理图的 Button_Up/Button_Down 是按板子自身方向标的；按孩子推拨轮的方向，V1 第 1 轮试验确认**上 = GPIO6、下 = GPIO4**（[V1 记录](hardware/V1_HARDWARE_ACCEPTANCE.md)）。拨轮中键按住时有触点抖动，InputHub 以 120 ms 释放去抖合并。
 
 | 物理件 | GPIO | 电平 | 语义（儿童模式） |
 |---|---|---|---|
-| 拨轮上 | 4 | 低有效、内部上拉 | `DialUp`：上一个 / 上一页 |
+| 拨轮上 | 6（原理图标 Button_Down） | 低有效、内部上拉 | `DialUp`：上一个 / 上一页 |
 | 拨轮按下 | 5 | 低有效 | `DialPress`：确认；长按 ≥1 s → `DialLong`：回首页 |
-| 拨轮下 | 6 | 低有效 | `DialDown`：下一个 / 下一页 |
+| 拨轮下 | 4（原理图标 Button_Up） | 低有效 | `DialDown`：下一个 / 下一页 |
 | BOOT | 0 | 低有效 | `Talk`：开始/结束语音（保留小智原语义） |
 | PWR | 1（PWR_OUT） | 高有效 | `SleepRequest`：进入睡觉流程（不再直接关机） |
 | BOOT + 拨轮按下 5 s | — | — | `ParentCombo`：家长入口 |
