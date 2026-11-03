@@ -213,7 +213,7 @@ BOARD_WORKER = r'''
 
     static bool StoryAudioBegin(uint64_t token, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
-        if (!self || !self->pet_mode_.load() ||
+        if (!self || !self->pet_mode_.load() || self->sleep_active_.load() ||
             Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
             return false;
         return Application::GetInstance().GetAudioService().BeginLocalStoryPcm(token);
@@ -221,7 +221,7 @@ BOARD_WORKER = r'''
     static bool StoryAudioPush(uint64_t token, const int16_t* pcm,
                                size_t count, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
-        if (!self || !self->pet_mode_.load() ||
+        if (!self || !self->pet_mode_.load() || self->sleep_active_.load() ||
             Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
             return false;
         return Application::GetInstance().GetAudioService().TryQueueLocalStoryPcm(
@@ -249,7 +249,7 @@ BOARD_WORKER = r'''
                 // Only speak after EPD shows a validated book page;
                 // invalid/out-of-range pages must cancel prior narration.
                 if (self->story_pcm_.Ready()) {
-                    if (okay) self->story_pcm_.RequestPage(scene.book_page);
+                    if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage(scene.book_page);
                     else self->story_pcm_.Stop();
                 }
             }
@@ -533,6 +533,7 @@ BOARD_WORKER = r'''
     std::atomic<uint32_t> sleep_shown_ms_{0};
     std::atomic<bool> sleep_active_{false};
     std::atomic<uint16_t> sleep_alarm_s_{0};  // self-test only: wake after N s
+    uint16_t sleep_seq_ = 0;  // makes each sleep frame distinct for the gate
 
     void HandleSleepAction(kid_app::SleepAction action) {
         switch (action) {
@@ -546,6 +547,9 @@ BOARD_WORKER = r'''
                 kid_app::SceneModel scene{};
                 scene.kind = kid_app::SceneKind::Sleep;
                 scene.emotion = kid_app::Emotion::Sleepy;
+                // SceneComposer ignores the page for Sleep; a fresh value stops
+                // the gate from skipping a request right after a cancel.
+                scene.book_page = ++sleep_seq_;
                 SceneStateLock lock(scene_state_mutex_);
                 pet_mailbox_.Publish(scene);
                 ESP_LOGI(TAG, "PET_SLEEP_REQUESTED");
@@ -578,7 +582,10 @@ BOARD_WORKER = r'''
         vTaskDelay(pdMS_TO_TICKS(3000));
         // Still running: the PMIC did not cut power (e.g. USB VBUS present).
         ESP_LOGW(TAG, "PET_SLEEP_POWEROFF_RETURNED");
-        if (alarm) ClearRtcAlarm();
+        if (alarm) ClearRtcAlarm(false);
+        // Presses queued while blocked must not replay (e.g. a new sleep).
+        xQueueReset(pet_input_queue_);
+        input_hub_ = kid_app::InputHub{};
         sleep_flow_.PowerOffReturned();
         HandleSleepAction(kid_app::SleepAction::RestoreScene);
     }
@@ -597,6 +604,10 @@ BOARD_WORKER = r'''
             input_hub_.Tick(NowMs());
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
+            if (!pet_mode_.load() && sleep_flow_.Cancel()) {
+                sleep_active_.store(false);
+                ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
+            }
             if (sleep_flow_.Active()) {
                 if (sleep_flow_.Phase() == kid_app::SleepPhase::Showing) {
                     const uint32_t shown_ms = sleep_shown_ms_.exchange(0);
@@ -702,7 +713,7 @@ BOARD_WORKER = r'''
     std::atomic<uint32_t> sleep_requests_{0};
     std::atomic<uint32_t> epd_refreshes_{0};
     bool rtc_synced_ = false;
-    int woke_by_alarm_ = -1;
+    std::atomic<int> woke_by_alarm_{-1};  // set once at board init
 
     bool RtcRead(kid_app::CivilTime* out, bool* stopped) {
         uint8_t reg = kid_app::Pcf85063::kTimeRegister, regs[7] = {};
@@ -710,11 +721,13 @@ BOARD_WORKER = r'''
                kid_app::Pcf85063::DecodeTime(regs, out, stopped);
     }
 
-    void ClearRtcAlarm() {
+    // record_wake: only the board-init call reports why this boot happened.
+    void ClearRtcAlarm(bool record_wake = true) {
         uint8_t reg = kid_app::Pcf85063::kControl2, control2 = 0;
         if (!DiagI2c(0x51, &reg, 1, &control2, 1)) return;
-        woke_by_alarm_ = (control2 & kid_app::Pcf85063::kAlarmFlag) ? 1 : 0;
-        ESP_LOGI(TAG, "PET_DIAG_WAKE alarm_flag=%d alarm_irq_enabled=%d", woke_by_alarm_,
+        const int alarm_flag = (control2 & kid_app::Pcf85063::kAlarmFlag) ? 1 : 0;
+        if (record_wake) woke_by_alarm_.store(alarm_flag);
+        ESP_LOGI(TAG, "PET_DIAG_WAKE alarm_flag=%d alarm_irq_enabled=%d", alarm_flag,
                  (control2 & kid_app::Pcf85063::kAlarmInterruptEnable) ? 1 : 0);
         if (!(control2 & (kid_app::Pcf85063::kAlarmFlag |
                           kid_app::Pcf85063::kAlarmInterruptEnable)))
@@ -822,7 +835,7 @@ BOARD_WORKER = r'''
             return;
         }
         // A trial that powered off with an alarm must not loop on wake-up.
-        if (woke_by_alarm_ == 1) {
+        if (woke_by_alarm_.load() == 1) {
             ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=alarm_wake");
             return;
         }
@@ -927,7 +940,7 @@ BOARD_WORKER = r'''
                          static_cast<unsigned>(pwr_edges_.load()),
                          static_cast<unsigned>(sleep_requests_.load()),
                          pmic_ ? pmic_->GetBatteryLevel() : -1,
-                         pmic_ && pmic_->IsCharging() ? 1 : 0, woke_by_alarm_,
+                         pmic_ && pmic_->IsCharging() ? 1 : 0, woke_by_alarm_.load(),
                          rtc_synced_ ? 1 : 0, static_cast<unsigned>(epd_refreshes_.load()));
             }
             vTaskDelay(pdMS_TO_TICKS(20));

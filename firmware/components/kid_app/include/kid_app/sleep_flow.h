@@ -27,6 +27,12 @@ public:
     SleepAction Tick(uint32_t now_ms);
     // PowerOff() returned (power was not cut, e.g. on USB).
     void PowerOffReturned() { phase_ = SleepPhase::Awake; }
+    // Abort before power-off (Pet mode left mid-flow). True if it aborted.
+    bool Cancel() {
+        if (phase_ != SleepPhase::Showing && phase_ != SleepPhase::Countdown) return false;
+        phase_ = SleepPhase::Awake;
+        return true;
+    }
 
     SleepPhase Phase() const { return phase_; }
     bool Active() const { return phase_ != SleepPhase::Awake; }

@@ -157,11 +157,37 @@ class DisplayOverlayTest(unittest.TestCase):
         for marker in ('PET_SLEEP_REQUESTED', 'PET_SLEEP_CANCELLED', 'PET_SLEEP_POWEROFF'):
             self.assertIn(marker, patched)
 
+    def test_v2_sleep_flow_review_fixes(self):
+        patched = self._board()
+        # Each sleep request is a distinct frame, so the refresh gate never
+        # skips a second request as "already shown".
+        self.assertIn('scene.book_page = ++sleep_seq_', patched)
+        # No story narration while going to sleep.
+        for fn in ('static bool StoryAudioBegin(', 'static bool StoryAudioPush('):
+            body = patched[patched.index(fn):]
+            body = body[:body.index('\n    }\n')]
+            self.assertIn('self->sleep_active_.load()', body)
+        self.assertIn('if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage(',
+                      patched)
+        # Leaving Pet mode aborts the flow; it never powers off from XiaoZhi.
+        loop = patched[patched.index('void InputTaskLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertLess(loop.index('!pet_mode_.load() && sleep_flow_.Cancel()'),
+                        loop.index('sleep_flow_.Tick(NowMs())'))
+        # After a returned power-off: drop presses queued while blocked and
+        # keep the boot's wake reason.
+        off = patched[patched.index('void PowerOffForSleep()'):]
+        off = off[:off.index('\n    }\n')]
+        self.assertIn('xQueueReset(pet_input_queue_)', off)
+        self.assertIn('input_hub_ = kid_app::InputHub{}', off)
+        self.assertIn('ClearRtcAlarm(false)', off)
+        self.assertIn('std::atomic<int> woke_by_alarm_', patched)
+
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()
         run = patched[patched.index('void MaybeRunSelfTest()'):]
         run = run[:run.index('\n    }\n')]
-        self.assertIn('woke_by_alarm_ == 1', run)
+        self.assertIn('woke_by_alarm_.load() == 1', run)
         self.assertIn('reason=alarm_wake', run)
         self.assertIn('kid_app::SelfTestOp::Alarm', run)
         self.assertIn('sleep_alarm_s_.store(', run)

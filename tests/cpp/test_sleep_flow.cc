@@ -72,6 +72,25 @@ int main() {
         assert(!flow.Active());
     }
 
+    // Pet mode turned off mid-flow (BOOT long / toggle): abort, never power
+    // off from ordinary XiaoZhi mode.
+    {
+        SleepFlow flow;
+        assert(!flow.Cancel());  // nothing to cancel
+        flow.Request(0);
+        flow.OnSceneShown(4000);
+        assert(flow.Cancel());
+        assert(!flow.Active());
+        assert(flow.Tick(9000) == SleepAction::None);
+        flow.Request(10000);
+        assert(flow.Cancel() && !flow.Active());
+        flow.Request(20000);
+        flow.OnSceneShown(24000);
+        assert(flow.Tick(27000) == SleepAction::PowerOff);
+        assert(!flow.Cancel());  // power-off already started
+        assert(flow.Phase() == SleepPhase::PoweringOff);
+    }
+
     // uint32 millisecond wrap-around.
     {
         SleepFlow flow;
