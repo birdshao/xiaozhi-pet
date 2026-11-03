@@ -54,6 +54,30 @@ class SelfTestReportTests(unittest.TestCase):
         report = evaluate(SCENARIO, GOOD_LOG.replace("wdt=0", "wdt=2"))
         self.assertIn("watchdog", report["failed"])
 
+    def test_missing_summary_or_crash_text_fails_closed(self):
+        no_summary = "\n".join(l for l in GOOD_LOG.splitlines() if not l.startswith("SUMMARY"))
+        self.assertIn("summary", evaluate(SCENARIO, no_summary)["failed"])
+        crashed = GOOD_LOG + "Guru Meditation Error: Core  0 panic'ed\n"
+        self.assertIn("panic", evaluate(SCENARIO, crashed)["failed"])
+        # Several monitor sessions: every SUMMARY counts.
+        two = GOOD_LOG + "SUMMARY lines=3 panic=0 wdt=1\n"
+        self.assertIn("watchdog", evaluate(SCENARIO, two)["failed"])
+
+    def test_counting_starts_at_the_begin_mark(self):
+        warmup = ("[ 15s] I (1) b: PET_HOME_SELECT index=4\n"
+                  "[ 15s] I (1) b: PET_EVENT_COMMITTED id_class=local\n"
+                  "[ 16s] I (1) b: PET_DIAG_EPD kind=1 page=1 sel=1 mode=full ok=1 ms=4300 n=1\n"
+                  "[ 17s] I (1) b: PET_SELFTEST_MARK name=begin\n")
+        lines = GOOD_LOG.splitlines()
+        log = "\n".join(lines[:2] + [warmup] + lines[2:])
+        report = evaluate(SCENARIO, log)
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["observed"]["commits"], 2)
+
+    def test_abort_fails_even_if_done_follows(self):
+        log = GOOD_LOG + "W (1) b: PET_SELFTEST_ABORT reason=pet_toggle step=1\n"
+        self.assertIn("selftest_done", evaluate(SCENARIO, log)["failed"])
+
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)
         self.assertEqual(len(data), 4096)

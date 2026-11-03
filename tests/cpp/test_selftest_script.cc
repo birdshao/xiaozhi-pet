@@ -38,6 +38,19 @@ int main() {
                                        (1200 + 3000) + (80 + 1000));
     }
 
+    // mark <name>: a log marker the host report counts from.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nmark begin\nend\n"));
+        assert(script.Count() == 1 && script.Steps()[0].op == SelfTestOp::Mark);
+        assert(std::strcmp(script.Steps()[0].name, "begin") == 0);
+        assert(script.TotalMs() == 0);
+        assert(!script.Parse("PETSELFTEST1\nmark\nend\n"));                     // no name
+        assert(!script.Parse("PETSELFTEST1\nmark a b\nend\n"));                 // two names
+        assert(!script.Parse("PETSELFTEST1\nmark name_is_far_too_long\nend\n")); // > 15
+        assert(!script.Parse("PETSELFTEST1\nmark be-gin\nend\n"));              // [a-z0-9_]
+    }
+
     // Raw flash sector: text followed by erased 0xFF bytes.
     {
         char sector[4096];

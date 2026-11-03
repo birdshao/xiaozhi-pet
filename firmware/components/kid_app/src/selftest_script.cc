@@ -36,6 +36,17 @@ bool Number(const char* text, uint32_t* out) {
     return true;
 }
 
+bool MarkName(const char* name, char out[16]) {
+    const size_t len = std::strlen(name);
+    if (len == 0 || len > 15) return false;
+    for (size_t i = 0; i < len; ++i) {
+        const char ch = name[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+    }
+    std::memcpy(out, name, len + 1);
+    return true;
+}
+
 bool Key(const char* name, InputKey* out) {
     struct Entry {
         const char* name;
@@ -94,6 +105,9 @@ bool SelfTestScript::Parse(const char* text) {
         if (std::strcmp(words[0], "wait") == 0) {
             if (n != 2 || !Number(words[1], &step.ms)) return false;
             step.op = SelfTestOp::Wait;
+        } else if (std::strcmp(words[0], "mark") == 0) {
+            if (n != 2 || !MarkName(words[1], step.name)) return false;
+            step.op = SelfTestOp::Mark;
         } else if (std::strcmp(words[0], "pet") == 0) {
             if (n != 1) return false;
             step.op = SelfTestOp::TogglePet;

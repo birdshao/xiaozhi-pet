@@ -10,7 +10,9 @@ Supported expectations: home_select (comma list of PET_HOME_SELECT
 indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
 PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts).
-Panics and watchdog resets always fail.
+Behaviour is counted after the last ``mark begin`` (warm-up excluded).
+Panics, watchdog resets, a PET_SELFTEST_ABORT, or a log without the
+monitor's SUMMARY line always fail.
 """
 from __future__ import annotations
 
@@ -42,19 +44,33 @@ def sector_bytes(scenario: str) -> bytes:
     return text + b"\xff" * (SECTOR - len(text))
 
 
+CRASH_TEXT = re.compile(r"Guru Meditation|abort\(\) was called|Task watchdog got triggered")
+
+
 def _observe(log: str) -> dict:
-    epd = re.findall(r"PET_DIAG_EPD .*?mode=(\w+) ok=(\d) ms=(\d+)", log)
-    summary = re.search(r"SUMMARY .*", log)
-    counts = dict(re.findall(r"(\w+)=(\d+)", summary.group(0))) if summary else {}
+    # Health is judged on the whole log; behaviour only after the last
+    # "mark begin" so warm-up/normalization steps are not counted.
+    marks = [m.end() for m in re.finditer(r"PET_SELFTEST_MARK name=begin", log)]
+    body = log[marks[-1]:] if marks else log
+    epd = re.findall(r"PET_DIAG_EPD .*?mode=(\w+) ok=(\d) ms=(\d+)", body)
+    summaries = re.findall(r"^SUMMARY .*$", log, re.MULTILINE)
+    panic = wdt = 0
+    for line in summaries:
+        counts = dict(re.findall(r"(\w+)=(\d+)", line))
+        panic += int(counts.get("panic", 0))
+        wdt += int(counts.get("wdt", 0))
+    panic += len(CRASH_TEXT.findall(log))
     return {
-        "home_select": ",".join(re.findall(r"PET_HOME_SELECT index=(\d+)", log)),
-        "commits": len(re.findall(r"PET_EVENT_COMMITTED", log)),
-        "selftest_done": 1 if "PET_SELFTEST_DONE" in log else 0,
+        "home_select": ",".join(re.findall(r"PET_HOME_SELECT index=(\d+)", body)),
+        "commits": len(re.findall(r"PET_EVENT_COMMITTED", body)),
+        "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
+                               "PET_SELFTEST_ABORT" not in log) else 0,
         "partial_ms": [int(ms) for mode, ok, ms in epd if mode == "partial" and ok == "1"],
         "full_ms": [int(ms) for mode, ok, ms in epd if mode == "full" and ok == "1"],
         "failed_refreshes": sum(1 for _, ok, _ in epd if ok != "1"),
-        "panic": int(counts.get("panic", 0)),
-        "watchdog": int(counts.get("wdt", 0)),
+        "summaries": len(summaries),
+        "panic": panic,
+        "watchdog": wdt,
     }
 
 
@@ -77,6 +93,8 @@ def evaluate(scenario: str, log: str) -> dict:
             checks[name] = len(obs["full_ms"]) == int(want)
         else:
             checks[name] = False  # unknown expectation is a scenario bug
+    # No monitor SUMMARY means the log is incomplete: fail closed.
+    checks["summary"] = obs["summaries"] > 0
     checks["panic"] = obs["panic"] == 0
     checks["watchdog"] = obs["watchdog"] == 0
     checks["refresh_errors"] = obs["failed_refreshes"] == 0

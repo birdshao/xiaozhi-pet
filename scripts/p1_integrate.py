@@ -753,8 +753,30 @@ BOARD_WORKER = r'''
                 case kid_app::SelfTestOp::Wait:
                     vTaskDelay(pdMS_TO_TICKS(step.ms));
                     break;
-                case kid_app::SelfTestOp::TogglePet:
-                    RequestPetModeToggle();
+                case kid_app::SelfTestOp::TogglePet: {
+                    // A toggle is silently dropped while XiaoZhi is not idle
+                    // or a previous toggle runs: retry, and abort the whole
+                    // script rather than testing the wrong mode.
+                    const bool before = pet_mode_.load();
+                    bool changed = false;
+                    for (int attempt = 0; attempt < 15 && !changed; ++attempt) {
+                        RequestPetModeToggle();
+                        for (int poll = 0; poll < 20 && !changed; ++poll) {
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                            changed = pet_mode_.load() != before;
+                        }
+                    }
+                    if (!changed) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_ABORT reason=pet_toggle step=%u",
+                                 static_cast<unsigned>(i));
+                        delete script;
+                        return;
+                    }
+                    ESP_LOGI(TAG, "PET_SELFTEST_PET on=%d", pet_mode_.load() ? 1 : 0);
+                    break;
+                }
+                case kid_app::SelfTestOp::Mark:
+                    ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);
                     break;
                 case kid_app::SelfTestOp::Hold:
                     // Same raw-edge queue as the physical buttons.
@@ -773,7 +795,7 @@ BOARD_WORKER = r'''
         if (xTaskCreate([](void* context) {
                 static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->MaybeRunSelfTest();
                 vTaskDelete(nullptr);
-            }, "pet_selftest", 8192, this, 1, nullptr) != pdPASS)
+            }, "pet_selftest", 12288, this, 1, nullptr) != pdPASS)
             ESP_LOGW(TAG, "PET_SELFTEST_TASK_FAILED");
     }
 
