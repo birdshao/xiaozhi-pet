@@ -35,6 +35,10 @@ struct InputHubConfig {
     uint32_t repeat_delay_ms = 500;
     uint32_t repeat_interval_ms = 350;  // <= 3 events per second
     uint32_t parent_combo_ms = 5000;
+    // A re-press within this window after a release is contact chatter and
+    // continues the same hold (V1 trial: the dial centre chatters when held).
+    // Release-based events are therefore delivered bounce_ms late.
+    uint32_t bounce_ms = 120;
 };
 
 // Single-owner, hardware-agnostic key semantics. Button callbacks must
@@ -63,13 +67,18 @@ public:
 private:
     struct KeyState {
         bool down = false;
-        bool consumed = false;  // long/combo already handled this hold
+        bool releasing = false;  // released, waiting out the bounce window
+        bool consumed = false;   // long/combo already handled this hold
         uint32_t since_ms = 0;
+        uint32_t released_ms = 0;
         uint32_t next_repeat_ms = 0;
     };
 
     KeyState& State(InputKey key) { return keys_[static_cast<size_t>(key)]; }
+    bool Held(InputKey key) const;
     bool ComboHeld() const;
+    void FinalizeRelease(InputKey key);
+    void Settle(uint32_t now_ms);
     void Emit(InputKind kind, uint32_t at_ms, bool repeat = false);
 
     InputHubConfig config_;

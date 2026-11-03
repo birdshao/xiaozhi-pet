@@ -80,10 +80,12 @@ class DisplayOverlayTest(unittest.TestCase):
 
     def test_three_way_dial_feeds_single_input_task(self):
         patched = self._board()
-        # Waveshare schematic: Button_Up GP4, Button_Function GP5, Button_Down GP6.
-        self.assertIn('Button dial_up_{GPIO_NUM_4}', patched)
+        # Schematic labels Button_Up GP4 / Button_Down GP6, but the
+        # 2026-11-02 V1 trial showed the child-facing direction is the
+        # opposite: physical up = GPIO6, physical down = GPIO4.
+        self.assertIn('Button dial_up_{GPIO_NUM_6}', patched)
         self.assertIn('Button dial_press_{GPIO_NUM_5}', patched)
-        self.assertIn('Button dial_down_{GPIO_NUM_6}', patched)
+        self.assertIn('Button dial_down_{GPIO_NUM_4}', patched)
         self.assertIn('#include "kid_app/input_hub.h"', patched)
         self.assertIn('kid_app::InputHub input_hub_', patched)
         for key in ('DialUp', 'DialPress', 'DialDown', 'Boot', 'Power'):

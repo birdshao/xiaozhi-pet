@@ -4,6 +4,9 @@ namespace kid_app {
 
 namespace {
 constexpr std::array<InputKey, 2> kRepeatKeys = {InputKey::DialUp, InputKey::DialDown};
+constexpr std::array<InputKey, kInputKeyCount> kAllKeys = {
+    InputKey::DialUp, InputKey::DialPress, InputKey::DialDown, InputKey::Boot,
+    InputKey::Power};
 
 // Unsigned subtraction keeps durations correct across uint32 wrap-around.
 uint32_t Elapsed(uint32_t now_ms, uint32_t since_ms) { return now_ms - since_ms; }
@@ -12,15 +15,39 @@ bool Reached(uint32_t now_ms, uint32_t deadline_ms) {
 }
 }  // namespace
 
+bool InputHub::Held(InputKey key) const {
+    const KeyState& state = keys_[static_cast<size_t>(key)];
+    return state.down || state.releasing;
+}
+
 bool InputHub::ComboHeld() const {
-    return keys_[static_cast<size_t>(InputKey::Boot)].down &&
-           keys_[static_cast<size_t>(InputKey::DialPress)].down;
+    return Held(InputKey::Boot) && Held(InputKey::DialPress);
+}
+
+void InputHub::Settle(uint32_t now_ms) {
+    // Releases older than the bounce window are final, even without a Tick.
+    for (InputKey key : kAllKeys) {
+        const KeyState& state = State(key);
+        if (state.releasing && Elapsed(now_ms, state.released_ms) >= config_.bounce_ms)
+            FinalizeRelease(key);
+    }
 }
 
 void InputHub::Press(InputKey key, uint32_t now_ms) {
+    Settle(now_ms);
     KeyState& state = State(key);
     if (state.down) return;
-    state = {true, false, now_ms, now_ms + config_.repeat_delay_ms};
+    if (state.releasing) {
+        // Still inside the bounce window (Settle finalized older releases):
+        // contact chatter, so the same hold continues (timing, consumed).
+        state.releasing = false;
+        state.down = true;
+        return;
+    }
+    state.down = true;
+    state.consumed = false;
+    state.since_ms = now_ms;
+    state.next_repeat_ms = now_ms + config_.repeat_delay_ms;
 
     if (ComboHeld()) {
         if (key == InputKey::Boot || key == InputKey::DialPress) {
@@ -41,30 +68,40 @@ void InputHub::Press(InputKey key, uint32_t now_ms) {
 }
 
 void InputHub::Release(InputKey key, uint32_t now_ms) {
+    Settle(now_ms);
     KeyState& state = State(key);
     if (!state.down) return;
-    const bool consumed = state.consumed;
     state.down = false;
+    state.releasing = true;
+    state.released_ms = now_ms;
+}
+
+void InputHub::FinalizeRelease(InputKey key) {
+    KeyState& state = State(key);
+    state.releasing = false;
     if (key == InputKey::Boot || key == InputKey::DialPress) combo_armed_ = false;
-    if (consumed) return;
+    if (state.consumed) return;
 
     // A starved owner task may see press and release before any Tick;
     // the real hold duration still decides short versus long.
-    const bool held_long = Elapsed(now_ms, state.since_ms) >= config_.long_ms;
+    const uint32_t at_ms = state.released_ms;
+    const bool held_long = Elapsed(at_ms, state.since_ms) >= config_.long_ms;
     switch (key) {
         case InputKey::DialPress:
-            Emit(held_long ? InputKind::DialLong : InputKind::DialPress, now_ms);
+            Emit(held_long ? InputKind::DialLong : InputKind::DialPress, at_ms);
             break;
         case InputKey::Boot:
-            Emit(held_long ? InputKind::BootLong : InputKind::Talk, now_ms);
+            Emit(held_long ? InputKind::BootLong : InputKind::Talk, at_ms);
             break;
-        case InputKey::Power: Emit(InputKind::SleepRequest, now_ms); break;
+        case InputKey::Power: Emit(InputKind::SleepRequest, at_ms); break;
         case InputKey::DialUp:
         case InputKey::DialDown: break;  // already emitted on press-down
     }
 }
 
 void InputHub::Tick(uint32_t now_ms) {
+    Settle(now_ms);
+
     if (combo_armed_) {
         if (Elapsed(now_ms, combo_since_ms_) >= config_.parent_combo_ms) {
             combo_armed_ = false;

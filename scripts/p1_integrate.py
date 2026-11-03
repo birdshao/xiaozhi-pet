@@ -322,12 +322,14 @@ BOARD_WORKER = r'''
         }
     }
 
-    // Three-way dial per Waveshare schematic: Button_Up GPIO4,
-    // Button_Function GPIO5, Button_Down GPIO6 (active low, pulled up).
+    // Three-way dial (active low, pulled up). The schematic labels GPIO4
+    // Button_Up and GPIO6 Button_Down, but the 2026-11-02 V1 trial showed
+    // the direction a child pushes is the opposite: physical up = GPIO6,
+    // physical down = GPIO4. Centre press = GPIO5 (Button_Function).
     // Button callbacks only enqueue raw edges; one task owns InputHub.
-    Button dial_up_{GPIO_NUM_4};
+    Button dial_up_{GPIO_NUM_6};
     Button dial_press_{GPIO_NUM_5};
-    Button dial_down_{GPIO_NUM_6};
+    Button dial_down_{GPIO_NUM_4};
     QueueHandle_t pet_input_queue_ = nullptr;
     kid_app::InputHub input_hub_;
 
@@ -443,7 +445,7 @@ BOARD_WORKER = r'''
     }
 
     void RunHardwareDiag() {
-        ESP_LOGI(TAG, "PET_DIAG_DIAL idle_levels up=%d press=%d down=%d",
+        ESP_LOGI(TAG, "PET_DIAG_DIAL idle_levels gpio4=%d gpio5=%d gpio6=%d",
                  gpio_get_level(GPIO_NUM_4), gpio_get_level(GPIO_NUM_5),
                  gpio_get_level(GPIO_NUM_6));
         // ES8311, TG28/AXP2101, PCF85063, QMI8658 (SA0 low/high), SHTC3.
