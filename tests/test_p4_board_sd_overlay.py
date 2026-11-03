@@ -30,7 +30,11 @@ class WaveshareSdOverlayTests(unittest.TestCase):
         self.assertIn("story_sd_.Ready()",BOARD_WORKER)
         self.assertIn("scene.kind == kid_app::SceneKind::Reader",BOARD_WORKER)
         self.assertIn("ShowStoryPage(",BOARD_WORKER)
-        self.assertIn("if (!okay) okay = self->display_->ShowPetScene(scene)",BOARD_WORKER)
+        # Missing SD / out-of-range page still falls back to the pet scene
+        # (V2: full or partial chosen by the refresh planner).
+        fallback = BOARD_WORKER[BOARD_WORKER.index("ShowStoryPage("):]
+        fallback = fallback[fallback.index("if (!okay) {"):]
+        self.assertIn(": self->display_->ShowPetScene(scene);", fallback[:400])
         self.assertIn("ShowPetScene",DISPLAY_IMPL)
         self.assertIn("reader.ReadFrame(page, *frame)",DISPLAY_IMPL)
         self.assertIn("EPD_DisplayPartBaseImage()",DISPLAY_IMPL)

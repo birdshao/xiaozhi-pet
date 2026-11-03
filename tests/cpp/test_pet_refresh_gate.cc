@@ -60,5 +60,14 @@ int main() {
     assert(gate.Acquire(23001, &output));
     assert(output.emotion == Emotion::Sleepy);
     assert(gate.Complete(true, 24000));
+
+    // A home-rail highlight move is a real scene change even when the
+    // pet's expression and page are the same.
+    const SceneModel sleepy_feed{SceneKind::Home, Emotion::Sleepy, 1, 3};
+    assert(gate.Request(sleepy_feed));
+    assert(gate.Acquire(29000, &output));
+    assert(output.home_selection == 3);
+    assert(gate.Complete(true, 29100));
+    assert(!gate.Request(sleepy_feed));
     std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }

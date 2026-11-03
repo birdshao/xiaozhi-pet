@@ -17,7 +17,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = patch_display_h(original)
         self.assertIn("bool ShowPetScene(const kid_app::SceneModel& scene);", patched)
         self.assertIn("bool ShowPetPreview(kid_app::Emotion emotion);", patched)
-        self.assertEqual(patched.count("bool ShowPetScene"), 1)
+        self.assertEqual(patched.count("bool ShowPetScene("), 1)
 
     def test_preview_forwards_to_shared_renderer(self):
         source = '#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n'
@@ -171,6 +171,39 @@ class DisplayOverlayTest(unittest.TestCase):
         # PWR edges are counted even if no InputHub event follows.
         self.assertIn('pwr_edges_', patched)
         self.assertIn('sleep_requests_', patched)
+
+    def test_v2_partial_refresh_display_path(self):
+        header = patch_display_h('#include "lcd_display.h"\nclass Dummy {\n'
+                                 '    void EPD_Sleep();\n    uint8_t* buffer = NULL;\n};\n')
+        self.assertIn('bool ShowPetSceneFast(const kid_app::SceneModel& scene);', header)
+        impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
+        fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
+        fast = fast[:fast.index('\n}\n')]
+        # New frame into RAM 0x24, partial waveform, then the same frame into
+        # RAM 0x26 so the next partial diffs against what is on the panel.
+        self.assertLess(fast.index('EPD_SendCommand(0x24)'), fast.index('EPD_TurnOnDisplayPart()'))
+        self.assertLess(fast.index('EPD_TurnOnDisplayPart()'), fast.index('EPD_SendCommand(0x26)'))
+        self.assertIn('lvgl_port_lock(5000)', fast)
+        self.assertIn('heap_caps_free(memory)', fast)
+
+    def test_v2_home_rail_board_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/home_menu.h"', patched)
+        self.assertIn('#include "kid_app/refresh_planner.h"', patched)
+        self.assertIn('kid_app::HomeMenu home_menu_', patched)
+        self.assertIn('kid_app::RefreshPlanner refresh_planner_', patched)
+        self.assertIn('PetInputRouter::IsHomeRail(', patched)
+        self.assertIn('PetInputRouter::DecideHome(', patched)
+        self.assertIn('home_menu_.Move(', patched)
+        self.assertIn('PET_HOME_SELECT', patched)
+        # Selection survives the packed atomic scene snapshot.
+        self.assertIn('scene.home_selection', patched)
+        # Partial refreshes need a short pacing interval.
+        self.assertIn('pet_display_worker_{pet_mailbox_, 500}', patched)
+        self.assertNotIn('pet_display_worker_{pet_mailbox_, 5000}', patched)
+        self.assertIn('refresh_planner_.Plan(scene)', patched)
+        self.assertIn('ShowPetSceneFast(scene)', patched)
+        self.assertIn('refresh_planner_.ForceFull()', patched)
 
     def test_round3_hardware_diag_stays_read_only(self):
         patched = self._board()

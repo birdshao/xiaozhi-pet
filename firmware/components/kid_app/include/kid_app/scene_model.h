@@ -15,6 +15,8 @@ struct SceneModel {
     SceneKind kind = SceneKind::Home;
     Emotion emotion = Emotion::Neutral;
     uint16_t book_page = 1;
+    // Highlighted HomeItem index on the home action rail (UI-only state).
+    uint8_t home_selection = 1;
 };
 
 class MonoFrame {
@@ -40,6 +42,10 @@ private:
 
 class SceneComposer {
 public:
+    // Home layout: pet portrait above, five-slot action rail below.
+    static constexpr int kRailTop = 380;
+    static constexpr int kRailSlotWidth = 160;
+
     static void Render(const SceneModel& model, MonoFrame& output);
 };
 

@@ -42,11 +42,10 @@ int main() {
     assert(pet.Snapshot().interaction_count == 1);
     std::cout << "PASS: BOOT click routing enters, advances, exits reader and feeds only at home\n";
 
-    // Dial routing (ADR-009) until the V2 home action rail exists:
-    // home press = say hi; reader down = next page, long = back home.
-    assert(PetInputRouter::DecideDial(PetMode::Idle, InputKind::DialPress).action ==
-           PetAction::Pickup);
-    assert(PetInputRouter::DecideDial(PetMode::Interact, InputKind::DialPress).valid);
+    // Dial routing (ADR-009): at home the dial drives the action rail
+    // (see test_home_menu); in the reader down = next page, long = home.
+    assert(!PetInputRouter::DecideDial(PetMode::Idle, InputKind::DialPress).valid);
+    assert(!PetInputRouter::DecideDial(PetMode::Interact, InputKind::DialPress).valid);
     assert(PetInputRouter::DecideDial(PetMode::Story, InputKind::DialDown).action ==
            PetAction::NextPage);
     assert(PetInputRouter::DecideDial(PetMode::Story, InputKind::DialLong).action ==
@@ -75,5 +74,5 @@ int main() {
                                                         InputKind::DialLong).action},
                         &effects) == PetResult::Applied);
     assert(reader.Snapshot().mode == PetMode::Idle);
-    std::cout << "PASS: dial routing advances and leaves reader, says hi at home\n";
+    std::cout << "PASS: dial routing advances and leaves reader; home is the action rail\n";
 }

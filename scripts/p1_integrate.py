@@ -43,6 +43,8 @@ def patch_display_h(text: str) -> str:
     // P1 manual-only pet display prototype; no voice/LLM dependency.
     bool ShowPetPreview(kid_app::Emotion emotion);
     bool ShowPetScene(const kid_app::SceneModel& scene);
+    // Partial waveform on the whole buffer (no flash); base must be shown.
+    bool ShowPetSceneFast(const kid_app::SceneModel& scene);
     bool ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page);\n    void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
@@ -74,6 +76,37 @@ bool CustomEpdDisplay::ShowPetScene(const kid_app::SceneModel& scene) {
             pet_preview_enabled_ = true;
             // Prototype full refresh: physical partial refresh remains an open P1 task.
             EPD_DisplayPartBaseImage();
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    frame->~MonoFrame();
+    heap_caps_free(memory);
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowPetSceneFast(const kid_app::SceneModel& scene) {
+    void* memory = heap_caps_malloc(sizeof(kid_app::MonoFrame),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) {
+        ESP_LOGE(TAG, "Pet framebuffer PSRAM allocation failed");
+        return false;
+    }
+    auto* frame = new (memory) kid_app::MonoFrame();
+    kid_app::SceneComposer::Render(scene, *frame);
+    bool okay = false;
+    if (lvgl_port_lock(5000)) {
+        if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
+            memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
+            pet_preview_enabled_ = true;
+            // New image into RAM 0x24 and the partial waveform, then the same
+            // image into RAM 0x26 so the next partial diffs against what the
+            // panel now shows. A full ShowPetScene() must precede the first.
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, epd_spi_data.buffer_len);
+            EPD_TurnOnDisplayPart();
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, epd_spi_data.buffer_len);
             okay = true;
         }
         lvgl_port_unlock();
@@ -136,24 +169,33 @@ BOARD_WORKER = r'''
     // remains pristine; this code is overlaid only in a disposable checkout.
     kid_app::FreertosPetSceneMailbox pet_mailbox_;
     kid_app::FreertosPetService pet_service_;
-    kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 5000};
+    // 500 ms pacing: full refreshes are only triggered by scene changes or
+    // the planner's ghosting limit; highlights use partial refreshes.
+    kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 500};
     SemaphoreHandle_t pet_screen_mutex_ = nullptr;
     std::atomic<bool> pet_mode_{false};
     std::atomic<bool> pet_toggle_busy_{false};
     std::atomic<bool> pet_runtime_ready_{false};
     std::atomic<kid_app::PetMode> pet_event_mode_{kid_app::PetMode::Idle};
     std::atomic<uint32_t> last_pet_scene_{0};
+    kid_app::HomeMenu home_menu_;              // pet_input task only
+    std::atomic<uint8_t> home_selection_{kid_app::HomeMenu::kDefaultIndex};
+    kid_app::RefreshPlanner refresh_planner_;  // kid_epd task only
+    std::atomic<bool> planner_reset_{false};
 
+    // bits 0-3 kind, 4-7 home selection, 8-15 emotion, 16-31 page.
     static uint32_t PackPetScene(const kid_app::SceneModel& scene) {
         return (static_cast<uint32_t>(scene.book_page) << 16) |
                (static_cast<uint32_t>(scene.emotion) << 8) |
-               static_cast<uint32_t>(scene.kind);
+               ((static_cast<uint32_t>(scene.home_selection) & 0x0F) << 4) |
+               (static_cast<uint32_t>(scene.kind) & 0x0F);
     }
 
     static kid_app::SceneModel UnpackPetScene(uint32_t bits) {
-        return {static_cast<kid_app::SceneKind>(bits & 0xFF),
+        return {static_cast<kid_app::SceneKind>(bits & 0x0F),
                 static_cast<kid_app::Emotion>((bits >> 8) & 0xFF),
-                static_cast<uint16_t>(bits >> 16)};
+                static_cast<uint16_t>(bits >> 16),
+                static_cast<uint8_t>((bits >> 4) & 0x0F)};
     }
 
     static bool StoryAudioBegin(uint64_t token, void* context) {
@@ -200,10 +242,19 @@ BOARD_WORKER = r'''
             }
             // Missing SD or a page outside a reviewed book falls back to
             // the pre-existing monochrome reader placeholder.
-            if (!okay) okay = self->display_->ShowPetScene(scene);
-            // V1-08: full-refresh duration; ghosting is judged by eye.
-            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u ok=%d ms=%u n=%u",
-                     static_cast<int>(scene.kind), scene.book_page, okay ? 1 : 0,
+            if (self->planner_reset_.exchange(false)) self->refresh_planner_.ForceFull();
+            kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
+            if (!okay) {
+                mode = self->refresh_planner_.Plan(scene);
+                okay = mode == kid_app::RefreshMode::Partial
+                           ? self->display_->ShowPetSceneFast(scene)
+                           : self->display_->ShowPetScene(scene);
+            }
+            self->refresh_planner_.Completed(scene, mode, okay);
+            // V1-08 / V2-06: refresh duration per mode; ghosting by eye.
+            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u sel=%u mode=%s ok=%d ms=%u n=%u",
+                     static_cast<int>(scene.kind), scene.book_page, scene.home_selection,
+                     mode == kid_app::RefreshMode::Partial ? "partial" : "full", okay ? 1 : 0,
                      static_cast<unsigned>(NowMs() - epd_started_ms),
                      static_cast<unsigned>(++self->epd_refreshes_));
         }
@@ -227,7 +278,8 @@ BOARD_WORKER = r'''
             StoryAudioCancel(self);
             self->story_pcm_.Stop();
         }
-        const auto scene = kid_app::PetScenePresenter::Present(snapshot);
+        auto scene = kid_app::PetScenePresenter::Present(snapshot);
+        scene.home_selection = self->home_selection_.load();
         self->last_pet_scene_.store(PackPetScene(scene));
         if (effects.repaint) self->pet_mailbox_.Publish(scene);
         // Deliberately do NOT play audio here. AudioCoordinator/AudioPort
@@ -251,7 +303,8 @@ BOARD_WORKER = r'''
         if (!pet_event_task_ready_) {
             kid_app::PetSnapshot restored{};
             if (!pet_service_.Start(&PetCommitted, this, &restored)) return false;
-            const auto scene = kid_app::PetScenePresenter::Present(restored);
+            auto scene = kid_app::PetScenePresenter::Present(restored);
+            scene.home_selection = home_selection_.load();
             last_pet_scene_.store(PackPetScene(scene));
             pet_event_mode_.store(restored.mode);
             pet_event_task_ready_ = true;
@@ -292,6 +345,7 @@ BOARD_WORKER = r'''
                 xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(30000)) == pdTRUE) {
                 pet_mode_.store(false);
                 display_->ExitPetPreview();
+                planner_reset_.store(true);
                 xSemaphoreGive(pet_screen_mutex_);
                 ESP_LOGI(TAG, "PET_RUNTIME_OFF");
             } else {
@@ -390,8 +444,41 @@ BOARD_WORKER = r'''
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
-        const auto decision =
-            kid_app::PetInputRouter::DecideDial(pet_event_mode_.load(), event.kind);
+        const auto pet_mode = pet_event_mode_.load();
+        if (kid_app::PetInputRouter::IsHomeRail(pet_mode)) {
+            HandleHomeRail(event, pet_mode);
+            return;
+        }
+        const auto decision = kid_app::PetInputRouter::DecideDial(pet_mode, event.kind);
+        if (decision.valid && !pet_service_.PostLocal(decision.action))
+            ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+    }
+
+    // Home action rail (V2-03): moving the highlight is UI-only (no NVS);
+    // a dial press turns the selected item into a durable Pet action.
+    void HandleHomeRail(const kid_app::InputEvent& event, kid_app::PetMode pet_mode) {
+        if (event.kind == kid_app::InputKind::DialUp ||
+            event.kind == kid_app::InputKind::DialDown) {
+            if (!home_menu_.Move(event.kind == kid_app::InputKind::DialUp ? -1 : +1)) return;
+            const uint8_t index = home_menu_.Index();
+            home_selection_.store(index);
+            // Update only the selection bits; the pet task owns the rest.
+            uint32_t bits = last_pet_scene_.load(), next = 0;
+            do {
+                auto scene = UnpackPetScene(bits);
+                scene.home_selection = index;
+                next = PackPetScene(scene);
+            } while (!last_pet_scene_.compare_exchange_weak(bits, next));
+            pet_mailbox_.Publish(UnpackPetScene(next));
+            ESP_LOGI(TAG, "PET_HOME_SELECT index=%u", index);
+            return;
+        }
+        if (event.kind != kid_app::InputKind::DialPress) return;
+        if (home_menu_.Selected() == kid_app::HomeItem::Sleep) {
+            ESP_LOGI(TAG, "PET_SLEEP_REQUEST_PENDING source=home_rail");
+            return;
+        }
+        const auto decision = kid_app::PetInputRouter::DecideHome(pet_mode, home_menu_.Selected());
         if (decision.valid && !pet_service_.PostLocal(decision.action))
             ESP_LOGW(TAG, "PET_INPUT_REJECTED");
     }
@@ -650,6 +737,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_local_event_id.h"\n'
         '#include "kid_app/pet_input_router.h"\n'
         '#include "kid_app/input_hub.h"\n'
+        '#include "kid_app/home_menu.h"\n'
+        '#include "kid_app/refresh_planner.h"\n'
         '#include "kid_app/rtc_clock.h"\n'
         '#include "kid_app/motion_stats.h"\n'
         '#include <ctime>\n'

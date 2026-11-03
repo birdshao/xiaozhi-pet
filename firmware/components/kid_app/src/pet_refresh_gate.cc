@@ -4,7 +4,7 @@ namespace kid_app {
 
 bool PetRefreshGate::Equal(const SceneModel& a, const SceneModel& b) {
     return a.kind == b.kind && a.emotion == b.emotion &&
-           a.book_page == b.book_page;
+           a.book_page == b.book_page && a.home_selection == b.home_selection;
 }
 
 bool PetRefreshGate::Request(const SceneModel& scene) {

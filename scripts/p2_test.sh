@@ -93,10 +93,29 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_scene_presenter.cc" \
   "$ROOT/firmware/components/kid_app/src/input_hub.cc" \
+  "$ROOT/firmware/components/kid_app/src/home_menu.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_input_router.cc" \
   "$ROOT/tests/cpp/test_pet_input_router.cc" \
   -o "$BUILD/test_pet_input_router"
 "$BUILD/test_pet_input_router"
+
+# V2 home action rail: clamped selection and item -> Pet action mapping.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/input_hub.cc" \
+  "$ROOT/firmware/components/kid_app/src/home_menu.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_input_router.cc" \
+  "$ROOT/tests/cpp/test_home_menu.cc" \
+  -o "$BUILD/test_home_menu"
+"$BUILD/test_home_menu"
+
+# V2 ePaper refresh planner: partial for highlights, full for scene/page
+# changes, after failures and every N partials.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
+  "$ROOT/tests/cpp/test_refresh_planner.cc" \
+  -o "$BUILD/test_refresh_planner"
+"$BUILD/test_refresh_planner"
 
 # Three-way dial / BOOT / PWR semantics: press-down feedback, bounded
 # auto-repeat, long press, parent combo and voice-session gating.
