@@ -89,6 +89,22 @@ class SelfTestReportTests(unittest.TestCase):
                 path.write_bytes(GOOD_LOG.encode(encoding))
                 self.assertTrue(evaluate(SCENARIO, read_log(path))["passed"], encoding)
 
+    def test_marker_expectations(self):
+        scenario = ("PETSELFTEST1\n# expect min:PET_SLEEP_SHOWN 2\n"
+                    "# expect min:woke_by_alarm=1 1\n"
+                    "# expect none:PET_SLEEP_POWEROFF_RETURNED 0\nend\n")
+        log = ("I: PET_SELFTEST_MARK name=begin\nI: PET_SLEEP_SHOWN\nI: PET_SLEEP_SHOWN\n"
+               "I: PET_DIAG_HEARTBEAT woke_by_alarm=1 rtc_synced=1\n"
+               "SUMMARY lines=3 panic=0 wdt=0\n")
+        self.assertTrue(evaluate(scenario, log)["passed"])
+        self.assertEqual(evaluate(scenario, log.replace("I: PET_SLEEP_SHOWN\n", "", 1))["failed"],
+                         ["min:PET_SLEEP_SHOWN"])
+        bad = log + "W: PET_SLEEP_POWEROFF_RETURNED\n"
+        self.assertEqual(evaluate(scenario, bad)["failed"], ["none:PET_SLEEP_POWEROFF_RETURNED"])
+        # Markers before "mark begin" are warm-up and do not count.
+        early = "I: PET_SLEEP_SHOWN\nI: PET_SLEEP_SHOWN\n" + log.replace("I: PET_SLEEP_SHOWN\n", "")
+        self.assertIn("min:PET_SLEEP_SHOWN", evaluate(scenario, early)["failed"])
+
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)
         self.assertEqual(len(data), 4096)

@@ -140,3 +140,10 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_selftest_script.cc" \
   -o "$BUILD/test_selftest_script"
 "$BUILD/test_selftest_script"
+
+# V2-09 sleep flow: show, 3 s cancel window after display, power off once.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/sleep_flow.cc" \
+  "$ROOT/tests/cpp/test_sleep_flow.cc" \
+  -o "$BUILD/test_sleep_flow"
+"$BUILD/test_sleep_flow"

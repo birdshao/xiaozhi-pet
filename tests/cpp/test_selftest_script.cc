@@ -51,6 +51,19 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nmark be-gin\nend\n"));              // [a-z0-9_]
     }
 
+    // alarm <seconds>: RTC wake-up for the next sleep, so an unattended
+    // trial can power off and come back without a person pressing PWR.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nalarm 45\nend\n"));
+        assert(script.Count() == 1 && script.Steps()[0].op == SelfTestOp::Alarm);
+        assert(script.Steps()[0].ms == 45);  // seconds for this op
+        assert(script.TotalMs() == 0);
+        assert(!script.Parse("PETSELFTEST1\nalarm 9\nend\n"));    // < 10 s
+        assert(!script.Parse("PETSELFTEST1\nalarm 601\nend\n"));  // > 10 min
+        assert(!script.Parse("PETSELFTEST1\nalarm\nend\n"));
+    }
+
     // Raw flash sector: text followed by erased 0xFF bytes.
     {
         char sector[4096];

@@ -19,15 +19,16 @@ namespace kid_app {
 //   tap <key> [gap_ms]      press 80 ms, release, then gap (default 1000)
 //   hold <key> <ms> [gap]   press <ms>, release, then gap (default 1000)
 //   mark <name>             log marker ([a-z0-9_], <= 15 chars)
+//   alarm <seconds>         RTC wake-up 10..600 s after the next sleep power-off
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
-enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark };
+enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm };
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;
     InputKey key = InputKey::DialPress;
-    uint32_t ms = 0;      // wait duration or key hold time
+    uint32_t ms = 0;      // wait/hold ms; seconds for Alarm
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark only
 };

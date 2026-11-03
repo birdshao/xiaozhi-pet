@@ -71,9 +71,28 @@ int main() {
             assert(!story.IsBlack(x, SceneComposer::kRailTop - 2));
     }
 
+    // Sleep scene: what the ePaper keeps after power-off. No action rail
+    // (nothing to press while asleep), sleeping eyes, a moon and "Zzz".
+    {
+        MonoFrame sleep, home;
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Happy, 3, 2}, sleep);
+        SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Sleepy, 1, 1}, home);
+        assert(sleep.Data() != home.Data());
+        for (int x = 0; x < MonoFrame::kWidth; ++x)
+            assert(!sleep.IsBlack(x, SceneComposer::kRailTop));  // no rail line
+        // Always the sleeping face, whatever emotion/page/selection it gets.
+        MonoFrame other;
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Surprised, 9, 0}, other);
+        assert(other.Data() == sleep.Data());
+        bool moon = false;  // top-right corner holds the moon
+        for (int y = 30; y < 140 && !moon; ++y)
+            for (int x = 600; x < 760 && !moon; ++x) moon = sleep.IsBlack(x, y);
+        assert(moon);
+    }
+
     // Packed scene word shared between board tasks: every field survives.
     {
-        for (SceneKind kind : {SceneKind::Home, SceneKind::Reader}) {
+        for (SceneKind kind : {SceneKind::Home, SceneKind::Reader, SceneKind::Sleep}) {
             for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
                                     Emotion::Sleepy, Emotion::Surprised}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {

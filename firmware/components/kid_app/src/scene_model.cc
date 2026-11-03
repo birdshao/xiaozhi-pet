@@ -196,6 +196,21 @@ void ActionRail(MonoFrame& f, uint8_t selection) {
         Rectangle(f, selection * slot_w + 6 + i, top + 6 + i, slot_w - 12 - 2 * i, 88 - 2 * i);
 }
 
+// Fixed picture kept on the unpowered ePaper: sleeping face, moon, Zzz.
+void SleepScene(MonoFrame& f) {
+    PetFace(f, 400, 260, 100, Emotion::Sleepy);
+    Crescent(f, 680, 85, 42, 20);
+    ThickLine(f, 740, 50, 756, 50, 2);
+    ThickLine(f, 748, 42, 748, 58, 2);
+    // Three growing "Z" letters rising to the right of the head.
+    for (int i = 0; i < 3; ++i) {
+        const int size = 16 + i * 10, x = 540 + i * 32, y = 232 - i * 40;
+        ThickLine(f, x, y, x + size, y, 3);
+        ThickLine(f, x + size, y, x, y + size, 3);
+        ThickLine(f, x, y + size, x + size, y + size, 3);
+    }
+}
+
 void HomeScene(MonoFrame& f, const SceneModel& model) {
     PetFace(f, 400, 215, 90, model.emotion);
     ActionRail(f, model.home_selection);
@@ -219,6 +234,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
     output.Clear();
     if (model.kind == SceneKind::Reader) {
         ReaderScene(output, model);
+    } else if (model.kind == SceneKind::Sleep) {
+        SleepScene(output);
     } else {
         HomeScene(output, model);
     }

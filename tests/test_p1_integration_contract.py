@@ -118,8 +118,97 @@ class DisplayOverlayTest(unittest.TestCase):
         start = patched.index('pwr_button_.OnClick([this]() {')
         body = patched[start:start + 400]
         self.assertIn('if (pet_mode_.load())', body)
-        self.assertIn('PET_SLEEP_REQUEST_PENDING', body)
+        self.assertIn('PET_PWR_CLICK_PET_MODE', body)
         self.assertIn('return;', body)
+        # The sleep flow, not a pending marker, now owns SleepRequest.
+        self.assertNotIn('PET_SLEEP_REQUEST_PENDING', patched)
+
+    def test_v2_sleep_flow_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/sleep_flow.h"', patched)
+        self.assertIn('kid_app::SleepFlow sleep_flow_', patched)
+        handle = patched[patched.index('void HandleInputEvent('):]
+        handle = handle[:handle.index('\n    }\n')]
+        # While going to sleep, inputs only cancel (checked before anything
+        # else, including the parent combo), and PWR starts the flow.
+        self.assertLess(handle.index('sleep_flow_.OnInput('), handle.index('ArmRtcWakeTest()'))
+        self.assertIn('sleep_flow_.Request(NowMs())', handle)
+        # Home rail "Sleep" item also starts it.
+        rail = patched[patched.index('PetInputDecision HandleHomeRailLocked('):]
+        rail = rail[:rail.index('\n    }\n')]
+        self.assertIn('kid_app::HomeItem::Sleep', rail)
+        self.assertIn('*begin_sleep = true', rail)
+        loop = patched[patched.index('void InputTaskLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertIn('sleep_flow_.OnSceneShown(', loop)
+        self.assertIn('sleep_flow_.Tick(NowMs())', loop)
+        # The EPD worker reports when the sleep scene is on the panel.
+        self.assertIn('kid_app::SceneKind::Sleep', patched)
+        self.assertIn('PET_SLEEP_SHOWN', patched)
+        # Pet commits do not overwrite the sleep scene.
+        self.assertIn('effects.repaint && !self->sleep_active_.load()', patched)
+        off = patched[patched.index('void PowerOffForSleep()'):]
+        off = off[:off.index('\n    }\n')]
+        self.assertLess(off.index('pet_service_.Settled()'), off.index('pmic_->PowerOff()'))
+        self.assertLess(off.index('CancelLocalStoryPcm()'), off.index('pmic_->PowerOff()'))
+        self.assertIn('ArmRtcAlarmIn(', off)
+        self.assertIn('PET_SLEEP_POWEROFF_RETURNED', off)
+        self.assertIn('sleep_flow_.PowerOffReturned()', off)
+        for marker in ('PET_SLEEP_REQUESTED', 'PET_SLEEP_CANCELLED', 'PET_SLEEP_POWEROFF'):
+            self.assertIn(marker, patched)
+
+    def test_v2_sleep_flow_review_fixes(self):
+        patched = self._board()
+        # Each sleep request is a distinct frame, so the refresh gate never
+        # skips a second request as "already shown".
+        self.assertIn('scene.book_page = ++sleep_seq_', patched)
+        # No story narration while going to sleep.
+        for fn in ('static bool StoryAudioBegin(', 'static bool StoryAudioPush('):
+            body = patched[patched.index(fn):]
+            body = body[:body.index('\n    }\n')]
+            self.assertIn('self->sleep_active_.load()', body)
+        self.assertIn('if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage(',
+                      patched)
+        # Leaving Pet mode aborts the flow; it never powers off from XiaoZhi.
+        loop = patched[patched.index('void InputTaskLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertLess(loop.index('!pet_mode_.load() && sleep_flow_.Cancel()'),
+                        loop.index('sleep_flow_.Tick(NowMs())'))
+        # After a returned power-off: drop presses queued while blocked and
+        # keep the boot's wake reason.
+        off = patched[patched.index('void PowerOffForSleep()'):]
+        off = off[:off.index('\n    }\n')]
+        self.assertIn('xQueueReset(pet_input_queue_)', off)
+        self.assertIn('input_hub_ = kid_app::InputHub{}', off)
+        self.assertIn('ClearRtcAlarm(false)', off)
+        self.assertIn('std::atomic<int> woke_by_alarm_', patched)
+
+    def test_alarm_wake_note_survives_usb_chip_reset(self):
+        # V2-09 trial: after the alarm power-on, the host reopening USB
+        # caused rst:0x15 (USB_UART_CHIP_RESET); the second boot no longer
+        # saw AF and re-ran the scenario. Keep a short-lived note in
+        # RTC no-init memory (kept across chip resets, lost on power loss).
+        patched = self._board()
+        self.assertIn('RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_magic', patched)
+        self.assertIn('RTC_NOINIT_ATTR static uint32_t g_pet_alarm_wake_epoch', patched)
+        self.assertIn('#include "esp_attr.h"', patched)
+        note = patched[patched.index('bool NoteAlarmWake('):]
+        note = note[:note.index('\n    }\n')]
+        self.assertIn('esp_reset_reason() == ESP_RST_POWERON', note)
+        self.assertIn('kAlarmWakeNoteSeconds', note)
+        self.assertIn('static constexpr uint32_t kAlarmWakeNoteSeconds = 60;', patched)
+        clear = patched[patched.index('void ClearRtcAlarm('):]
+        clear = clear[:clear.index('\n    }\n')]
+        self.assertIn('NoteAlarmWake(alarm_flag', clear)
+
+    def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
+        patched = self._board()
+        run = patched[patched.index('void MaybeRunSelfTest()'):]
+        run = run[:run.index('\n    }\n')]
+        self.assertIn('woke_by_alarm_.load() == 1', run)
+        self.assertIn('reason=alarm_wake', run)
+        self.assertIn('kid_app::SelfTestOp::Alarm', run)
+        self.assertIn('sleep_alarm_s_.store(', run)
 
     def test_read_only_hardware_diagnostics(self):
         patched = self._board()
@@ -156,8 +245,13 @@ class DisplayOverlayTest(unittest.TestCase):
                       patched)
         arm = patched[patched.index('void ArmRtcWakeTest()'):]
         arm = arm[:arm.index('\n    }\n')]
-        self.assertIn('refused=rtc_not_set', arm)
+        # V2-09: the RTC-not-set refusal lives in the shared alarm helper.
+        self.assertIn('if (!ArmRtcAlarmIn(90))', arm)
         self.assertIn('pmic_->PowerOff()', arm)
+        helper = patched[patched.index('bool ArmRtcAlarmIn('):]
+        helper = helper[:helper.index('\n    }\n')]
+        self.assertIn('refused=rtc_not_set', helper)
+        self.assertIn('PlausibleWallClock', helper)
         # A boot after the test clears and disables the alarm again, and
         # does so at board init: a held RTC INT on the PMIC power-on pin
         # would otherwise read as a long PWR press and cut power.
