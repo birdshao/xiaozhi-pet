@@ -7,6 +7,8 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include <atomic>
+
 namespace kid_app {
 
 // Callback is executed ONLY on the dedicated pet task after durable commit.
@@ -38,6 +40,9 @@ public:
     bool PostLocal(PetAction action);
     // Safe from an ISR. Caller may request a reschedule if woken=true.
     bool PostFromISR(const PetEvent& event, BaseType_t* higher_priority_woken);
+    // True once every posted event has been committed (or rejected) and the
+    // inbox is empty. Used before PMIC power-off; best effort, not a lock.
+    bool Settled() const { return settled_.load(); }
 
 private:
     static void TaskEntry(void* context);
@@ -52,6 +57,7 @@ private:
     TaskHandle_t worker_ = nullptr;
     PetCommitCallback callback_ = nullptr;
     void* callback_context_ = nullptr;
+    std::atomic<bool> settled_{true};
 };
 
 }  // namespace kid_app

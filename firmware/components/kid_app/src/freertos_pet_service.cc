@@ -50,7 +50,9 @@ bool FreertosPetService::Start(PetCommitCallback callback, void* context,
 
 bool FreertosPetService::Post(const PetEvent& event) {
     if (!inbox_ || !IsExternalEventId(event.id)) return false;
-    return xQueueSend(inbox_, &event, 0) == pdTRUE;
+    if (xQueueSend(inbox_, &event, 0) != pdTRUE) return false;
+    settled_.store(false);
+    return true;
 }
 
 bool FreertosPetService::PostLocal(PetAction action) {
@@ -58,7 +60,9 @@ bool FreertosPetService::PostLocal(PetAction action) {
     // id==0 is only a private FreeRTOS-inbox sentinel, never accepted by
     // PetEventRuntime or PetController. Single worker assigns its durable ID.
     const PetEvent pending{0, action};
-    return xQueueSend(inbox_, &pending, 0) == pdTRUE;
+    if (xQueueSend(inbox_, &pending, 0) != pdTRUE) return false;
+    settled_.store(false);  // after the send: the worker re-checks the inbox
+    return true;
 }
 
 bool FreertosPetService::PostFromISR(const PetEvent& event,
@@ -97,7 +101,12 @@ void FreertosPetService::TaskLoop() {
         PetEffects effects{};
         PetEvent completed{};
         const PumpResult outcome = runtime_.PumpOne(&effects, &completed);
-        if (outcome == PumpResult::Idle) continue;
+        if (outcome == PumpResult::Idle) {
+            // Mark settled, then re-check so a concurrent Post cannot be lost.
+            settled_.store(true);
+            if (uxQueueMessagesWaiting(inbox_) > 0) settled_.store(false);
+            continue;
+        }
         if (outcome == PumpResult::StorageBlocked) {
             // Rate-limited warning without dumping child events or NVS contents.
             if (++failures == 1 || failures % 60 == 0)

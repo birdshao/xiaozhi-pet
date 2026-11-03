@@ -1,0 +1,30 @@
+PETSELFTEST1
+# V2-09 "put the pet to sleep": cancel once from the home rail, then
+# sleep via PWR, power off through the PMIC and wake by RTC alarm.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:PET_SLEEP_REQUESTED 2
+# expect min:PET_SLEEP_SHOWN 2
+# expect min:PET_SLEEP_CANCELLED 1
+# expect min:alarm_s=45 1
+# expect min:armed=1 1
+# expect min:woke_by_alarm=1 1
+# expect min:reason=alarm_wake 1
+# expect none:PET_SLEEP_POWEROFF_RETURNED 0
+# expect none:PET_SELFTEST_ABORT 0
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# Rail: Story(1) -> Sleep(4), press, then cancel inside the 3 s window.
+tap down 2500
+tap down 2500
+tap down 2500
+tap press 5500
+tap up 7000
+# PWR: sleep, power off, RTC alarm wakes the board 45 s later.
+alarm 45
+tap pwr 30000
+end

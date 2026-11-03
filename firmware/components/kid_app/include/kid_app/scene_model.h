@@ -8,7 +8,8 @@ namespace kid_app {
 
 // Hardware-agnostic scene state. No Xiaozhi, LVGL, or ESP-IDF headers here.
 class StoryPackReader;
-enum class SceneKind : uint8_t { Home, Reader };
+// Sleep: shown before PMIC power-off and kept by the ePaper while off.
+enum class SceneKind : uint8_t { Home, Reader, Sleep };
 enum class Emotion : uint8_t { Neutral, Happy, Curious, Sleepy, Surprised };
 
 struct SceneModel {

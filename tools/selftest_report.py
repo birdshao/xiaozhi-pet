@@ -9,7 +9,8 @@
 Supported expectations: home_select (comma list of PET_HOME_SELECT
 indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
-PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts).
+PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts),
+min:<TEXT> N (TEXT appears at least N times), none:<TEXT> 0 (never appears).
 Behaviour is counted after the last ``mark begin`` (warm-up excluded).
 Panics, watchdog resets, a PET_SELFTEST_ABORT, or a log without the
 monitor's SUMMARY line always fail.
@@ -29,7 +30,7 @@ HEADER = "PETSELFTEST1"
 def expectations(scenario: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for line in scenario.splitlines():
-        m = re.match(r"\s*#\s*expect\s+(\w+)\s+(\S+)\s*$", line)
+        m = re.match(r"\s*#\s*expect\s+(\S+)\s+(\S+)\s*$", line)
         if m:
             found[m.group(1)] = m.group(2)
     return found
@@ -77,6 +78,7 @@ def _observe(log: str) -> dict:
         "full_ms": [int(ms) for mode, ok, ms in epd if mode == "full" and ok == "1"],
         "failed_refreshes": sum(1 for _, ok, _ in epd if ok != "1"),
         "summaries": len(summaries),
+        "body": body,
         "panic": panic,
         "watchdog": wdt,
     }
@@ -99,6 +101,10 @@ def evaluate(scenario: str, log: str) -> dict:
             checks[name] = len(obs["partial_ms"]) == int(want)
         elif name == "full_refreshes":
             checks[name] = len(obs["full_ms"]) == int(want)
+        elif name.startswith("min:"):
+            checks[name] = obs["body"].count(name[4:]) >= int(want)
+        elif name.startswith("none:"):
+            checks[name] = name[5:] not in obs["body"]
         else:
             checks[name] = False  # unknown expectation is a scenario bug
     # No monitor SUMMARY means the log is incomplete: fail closed.
