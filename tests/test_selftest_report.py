@@ -1,7 +1,9 @@
 """Host-side self-test report: expectations from a scenario vs a serial log."""
+import tempfile
 import unittest
+from pathlib import Path
 
-from tools.selftest_report import evaluate, expectations, sector_bytes
+from tools.selftest_report import evaluate, expectations, read_log, sector_bytes
 
 SCENARIO = """PETSELFTEST1
 # expect home_select 0,1,2
@@ -77,6 +79,15 @@ class SelfTestReportTests(unittest.TestCase):
     def test_abort_fails_even_if_done_follows(self):
         log = GOOD_LOG + "W (1) b: PET_SELFTEST_ABORT reason=pet_toggle step=1\n"
         self.assertIn("selftest_done", evaluate(SCENARIO, log)["failed"])
+
+    def test_log_encodings_from_windows_powershell(self):
+        # Windows PowerShell 5 Tee-Object writes UTF-16LE with a BOM; the
+        # 2026-11-03 V2 trial log looked empty until decoded correctly.
+        for encoding in ("utf-16", "utf-8-sig", "utf-8"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "trial.log"
+                path.write_bytes(GOOD_LOG.encode(encoding))
+                self.assertTrue(evaluate(SCENARIO, read_log(path))["passed"], encoding)
 
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)

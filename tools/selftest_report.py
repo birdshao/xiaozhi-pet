@@ -44,6 +44,14 @@ def sector_bytes(scenario: str) -> bytes:
     return text + b"\xff" * (SECTOR - len(text))
 
 
+def read_log(path: Path) -> str:
+    """Decode a trial log; Windows PowerShell 5 Tee-Object writes UTF-16."""
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
 CRASH_TEXT = re.compile(r"Guru Meditation|abort\(\) was called|Task watchdog got triggered")
 
 
@@ -120,7 +128,7 @@ def main() -> int:
         args.output.write_bytes(sector_bytes(scenario))
         print(f"sector image: {args.output} ({SECTOR} bytes)")
         return 0
-    report = evaluate(scenario, args.log.read_text(encoding="utf-8", errors="replace"))
+    report = evaluate(scenario, read_log(args.log))
     for name, ok in report["checks"].items():
         want = report["expected"].get(name, "")
         print(f"{'PASS' if ok else 'FAIL'}  {name:18s} expected={want}")
