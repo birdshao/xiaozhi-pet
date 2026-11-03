@@ -136,6 +136,54 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertNotIn('WriteReg', diag)
         self.assertNotIn('PowerOff', diag)
         self.assertIn('i2c_master_bus_rm_device', patched)
+    def test_v1_round3_measurement_loop(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/rtc_clock.h"', patched)
+        self.assertIn('#include "kid_app/motion_stats.h"', patched)
+        self.assertIn('RunDiagLoop()', patched)
+        # QMI8658: little-endian auto-increment, +/-4 g at 62.5 Hz, accel only.
+        for cfg in ('{0x02, 0x40}', '{0x03, 0x17}', '{0x08, 0x01}'):
+            self.assertIn(cfg, patched)
+        for marker in ('PET_DIAG_ACC', 'PET_DIAG_HEARTBEAT', 'PET_DIAG_RTC_SYNC',
+                       'PET_DIAG_WAKE', 'PET_DIAG_ALARM_TEST', 'PET_DIAG_EPD'):
+            self.assertIn(marker, patched)
+        # RTC is only written from a plausible system clock (server time).
+        sync = patched[patched.index('void SyncRtcFromSystemTime()'):]
+        sync = sync[:sync.index('\n    }\n')]
+        self.assertIn('PlausibleWallClock', sync)
+        # Timed power-on test: Pet mode + parent combo only, RTC must be set.
+        self.assertIn('event.kind == kid_app::InputKind::ParentCombo && pet_mode_.load()',
+                      patched)
+        arm = patched[patched.index('void ArmRtcWakeTest()'):]
+        arm = arm[:arm.index('\n    }\n')]
+        self.assertIn('refused=rtc_not_set', arm)
+        self.assertIn('pmic_->PowerOff()', arm)
+        # A boot after the test clears and disables the alarm again, and
+        # does so at board init: a held RTC INT on the PMIC power-on pin
+        # would otherwise read as a long PWR press and cut power.
+        board_init = patched.index('PET_FIRMWARE_BOOT_MARKER phase=board_init')
+        self.assertIn('ClearRtcAlarm();', patched[board_init:board_init + 400])
+        self.assertNotIn('self->ClearRtcAlarm()', patched)
+        # Newlib-nano printf has no 64-bit integers.
+        self.assertNotIn('%lld', patched)
+        # Let the accelerometer produce a first sample before reading.
+        self.assertIn('vTaskDelay(pdMS_TO_TICKS(50));  // first accel sample', patched)
+        # PWR edges are counted even if no InputHub event follows.
+        self.assertIn('pwr_edges_', patched)
+        self.assertIn('sleep_requests_', patched)
+
+    def test_round3_hardware_diag_stays_read_only(self):
+        patched = self._board()
+        diag = patched[patched.index('void RunHardwareDiag()'):]
+        diag = diag[:diag.index('\n    }\n')]
+        self.assertNotIn('PowerOff', diag)
+        self.assertNotIn('EncodeTime', diag)
+        self.assertNotIn('EncodeAlarm', diag)
+
+    def test_diag_waits_fit_tick(self):
+        patched = self._board()
+        diag = patched[patched.index('void RunHardwareDiag()'):]
+        diag = diag[:diag.index('\n    }\n')]
         # 100 Hz FreeRTOS tick: waits must stay >= SHTC3 wake/measure times.
         self.assertNotIn('pdMS_TO_TICKS(1)', diag)
         self.assertIn('measure, sizeof(measure), env, sizeof(env), 40)', diag)

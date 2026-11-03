@@ -185,6 +185,7 @@ BOARD_WORKER = r'''
         // This mutex also serializes ExitPetPreview, so no late pet frame
         // can overwrite the original XiaoZhi LVGL screen after exit.
         bool okay = false;
+        const uint32_t epd_started_ms = NowMs();
         if (self->pet_mode_.load()) {
             if (scene.kind == kid_app::SceneKind::Reader &&
                 self->story_sd_.Ready()) {
@@ -200,6 +201,11 @@ BOARD_WORKER = r'''
             // Missing SD or a page outside a reviewed book falls back to
             // the pre-existing monochrome reader placeholder.
             if (!okay) okay = self->display_->ShowPetScene(scene);
+            // V1-08: full-refresh duration; ghosting is judged by eye.
+            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u ok=%d ms=%u n=%u",
+                     static_cast<int>(scene.kind), scene.book_page, okay ? 1 : 0,
+                     static_cast<unsigned>(NowMs() - epd_started_ms),
+                     static_cast<unsigned>(++self->epd_refreshes_));
         }
         xSemaphoreGive(self->pet_screen_mutex_);
         return okay;
@@ -348,6 +354,7 @@ BOARD_WORKER = r'''
     static bool DialPressHeld() { return gpio_get_level(GPIO_NUM_5) == 0; }
 
     void PostKeyEdge(kid_app::InputKey key, bool down) {
+        if (key == kid_app::InputKey::Power && down) pwr_edges_.fetch_add(1);
         if (!pet_input_queue_) return;
         const RawKeyEdge edge{static_cast<uint8_t>(key),
                               static_cast<uint8_t>(down ? 1 : 0), NowMs()};
@@ -373,6 +380,13 @@ BOARD_WORKER = r'''
                  event.repeat ? 1 : 0, pet_mode_.load() ? 1 : 0);
         // A child using the dial is activity; do not auto-power-off.
         if (power_save_timer_) power_save_timer_->WakeUp();
+        if (event.kind == kid_app::InputKind::SleepRequest) sleep_requests_.fetch_add(1);
+        // V1-05 only: until the parent menu exists, the parent combo in Pet
+        // mode runs the RTC-alarm power-on test.
+        if (event.kind == kid_app::InputKind::ParentCombo && pet_mode_.load()) {
+            ArmRtcWakeTest();
+            return;
+        }
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
@@ -460,6 +474,7 @@ BOARD_WORKER = r'''
         const bool imu_ok = imu_address && DiagI2c(imu_address, &reg, 1, &who, 1);
         ESP_LOGI(TAG, "PET_DIAG_IMU addr=0x%02x ok=%d who_am_i=0x%02x",
                  imu_address, imu_ok ? 1 : 0, who);
+        if (imu_ok && who == 0x05) imu_address_ = imu_address;
         const uint8_t wake[] = {0x35, 0x17}, measure[] = {0x78, 0x66}, sleep[] = {0xB0, 0x98};
         uint8_t env[6] = {};
         // Waits assume a 100 Hz tick: >= 10 ms after wake (240 us needed),
@@ -483,6 +498,145 @@ BOARD_WORKER = r'''
                      pmic_->IsDischarging() ? 1 : 0);
         }
     }
+
+    // ---- V1 round 3: measurement loop (diagnostic firmware only) ----
+    // Writes are limited to: QMI8658 sensor configuration (volatile), the
+    // PCF85063 time from a plausible server clock, and the alarm used by the
+    // explicit parent-combo power-on test. Nothing is stored or uploaded.
+    uint8_t imu_address_ = 0;
+    std::atomic<uint32_t> pwr_edges_{0};
+    std::atomic<uint32_t> sleep_requests_{0};
+    std::atomic<uint32_t> epd_refreshes_{0};
+    bool rtc_synced_ = false;
+    int woke_by_alarm_ = -1;
+
+    bool RtcRead(kid_app::CivilTime* out, bool* stopped) {
+        uint8_t reg = kid_app::Pcf85063::kTimeRegister, regs[7] = {};
+        return DiagI2c(0x51, &reg, 1, regs, sizeof(regs)) &&
+               kid_app::Pcf85063::DecodeTime(regs, out, stopped);
+    }
+
+    void ClearRtcAlarm() {
+        uint8_t reg = kid_app::Pcf85063::kControl2, control2 = 0;
+        if (!DiagI2c(0x51, &reg, 1, &control2, 1)) return;
+        woke_by_alarm_ = (control2 & kid_app::Pcf85063::kAlarmFlag) ? 1 : 0;
+        ESP_LOGI(TAG, "PET_DIAG_WAKE alarm_flag=%d alarm_irq_enabled=%d", woke_by_alarm_,
+                 (control2 & kid_app::Pcf85063::kAlarmInterruptEnable) ? 1 : 0);
+        if (!(control2 & (kid_app::Pcf85063::kAlarmFlag |
+                          kid_app::Pcf85063::kAlarmInterruptEnable)))
+            return;
+        // One-shot test: disable every alarm field and the interrupt again.
+        const uint8_t disable[] = {kid_app::Pcf85063::kAlarmRegister,
+                                   0x80, 0x80, 0x80, 0x80, 0x80};
+        DiagI2c(0x51, disable, sizeof(disable), nullptr, 0);
+        const uint8_t clear[] = {kid_app::Pcf85063::kControl2,
+                                 static_cast<uint8_t>(control2 & 0x3F)};
+        DiagI2c(0x51, clear, sizeof(clear), nullptr, 0);
+    }
+
+    void SyncRtcFromSystemTime() {
+        // XiaoZhi sets system time from the server, already shifted to
+        // local time, so the epoch value maps directly to the wall clock.
+        const time_t now = time(nullptr);
+        const auto system = kid_app::CivilFromEpoch(static_cast<int64_t>(now));
+        if (!kid_app::PlausibleWallClock(system)) return;
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        const bool readable = RtcRead(&rtc, &stopped);
+        const int64_t drift = readable ? kid_app::EpochFromCivil(rtc) - now : 0;
+        if (readable && !stopped && drift >= -2 && drift <= 2) {
+            rtc_synced_ = true;
+            return;
+        }
+        uint8_t write[8] = {kid_app::Pcf85063::kTimeRegister};
+        kid_app::Pcf85063::EncodeTime(system, write + 1);
+        rtc_synced_ = DiagI2c(0x51, write, sizeof(write), nullptr, 0);
+        const int drift_s = drift > 2000000000 ? 2000000000
+                          : drift < -2000000000 ? -2000000000
+                                                : static_cast<int>(drift);
+        ESP_LOGI(TAG, "PET_DIAG_RTC_SYNC ok=%d was_stopped=%d drift_s=%d "
+                 "now=%04u-%02u-%02u %02u:%02u:%02u", rtc_synced_ ? 1 : 0,
+                 stopped ? 1 : 0, drift_s, system.year,
+                 system.month, system.day, system.hour, system.minute, system.second);
+    }
+
+    void ArmRtcWakeTest() {
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        if (!RtcRead(&rtc, &stopped) || stopped || !kid_app::PlausibleWallClock(rtc)) {
+            ESP_LOGW(TAG, "PET_DIAG_ALARM_TEST refused=rtc_not_set");
+            return;
+        }
+        const auto at = kid_app::CivilFromEpoch(kid_app::EpochFromCivil(rtc) + 90);
+        uint8_t alarm[6] = {kid_app::Pcf85063::kAlarmRegister};
+        kid_app::Pcf85063::EncodeAlarm(at, alarm + 1);
+        uint8_t reg = kid_app::Pcf85063::kControl2, control2 = 0;
+        const bool armed = DiagI2c(0x51, alarm, sizeof(alarm), nullptr, 0) &&
+                           DiagI2c(0x51, &reg, 1, &control2, 1);
+        const uint8_t enable[] = {kid_app::Pcf85063::kControl2,
+            static_cast<uint8_t>((control2 | kid_app::Pcf85063::kAlarmInterruptEnable) &
+                                 ~kid_app::Pcf85063::kAlarmFlag)};
+        if (!armed || !DiagI2c(0x51, enable, sizeof(enable), nullptr, 0)) {
+            ESP_LOGW(TAG, "PET_DIAG_ALARM_TEST refused=i2c_error");
+            return;
+        }
+        ESP_LOGI(TAG, "PET_DIAG_ALARM_TEST armed_for=%02u:%02u:%02u powering_off_in_ms=1500",
+                 at.hour, at.minute, at.second);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        if (pmic_) pmic_->PowerOff();
+    }
+
+    bool ConfigureImu() {
+        if (!imu_address_) return false;
+        // CTRL1 little-endian + auto-increment; CTRL2 +/-4 g, 62.5 Hz;
+        // CTRL7 accelerometer only (gyro stays off).
+        const uint8_t ctrl1[] = {0x02, 0x40}, ctrl2[] = {0x03, 0x17}, ctrl7[] = {0x08, 0x01};
+        return DiagI2c(imu_address_, ctrl1, 2, nullptr, 0) &&
+               DiagI2c(imu_address_, ctrl2, 2, nullptr, 0) &&
+               DiagI2c(imu_address_, ctrl7, 2, nullptr, 0);
+    }
+
+    bool ReadAccel(int16_t* x, int16_t* y, int16_t* z) {
+        uint8_t reg = 0x35, data[6] = {};  // AX_L .. AZ_H
+        if (!DiagI2c(imu_address_, &reg, 1, data, sizeof(data))) return false;
+        *x = static_cast<int16_t>(data[0] | (data[1] << 8));
+        *y = static_cast<int16_t>(data[2] | (data[3] << 8));
+        *z = static_cast<int16_t>(data[4] | (data[5] << 8));
+        return true;
+    }
+
+    void RunDiagLoop() {
+        const bool imu_ok = ConfigureImu();
+        ESP_LOGI(TAG, "PET_DIAG_ACC configured=%d", imu_ok ? 1 : 0);
+        vTaskDelay(pdMS_TO_TICKS(50));  // first accel sample
+        kid_app::MotionStats motion;
+        uint32_t last_summary_ms = NowMs(), last_heartbeat_ms = 0;
+        for (;;) {
+            int16_t x = 0, y = 0, z = 0;
+            if (imu_ok && ReadAccel(&x, &y, &z)) motion.Add(x, y, z);
+            const uint32_t now = NowMs();
+            if (imu_ok && now - last_summary_ms >= 500) {
+                last_summary_ms = now;
+                const auto s = motion.TakeSummary();
+                ESP_LOGI(TAG, "PET_DIAG_ACC n=%u mean_mg=%d,%d,%d mag_mg=%u..%u dev_mg=%u",
+                         s.samples, s.mean_x_mg, s.mean_y_mg, s.mean_z_mg, s.min_mag_mg,
+                         s.max_mag_mg, s.max_dev_mg);
+            }
+            if (now - last_heartbeat_ms >= 10000) {
+                last_heartbeat_ms = now;
+                SyncRtcFromSystemTime();
+                ESP_LOGI(TAG, "PET_DIAG_HEARTBEAT up_s=%u pet=%d pwr_edges=%u sleep_req=%u "
+                         "batt=%d chg=%d woke_by_alarm=%d rtc_synced=%d epd_n=%u",
+                         static_cast<unsigned>(now / 1000), pet_mode_.load() ? 1 : 0,
+                         static_cast<unsigned>(pwr_edges_.load()),
+                         static_cast<unsigned>(sleep_requests_.load()),
+                         pmic_ ? pmic_->GetBatteryLevel() : -1,
+                         pmic_ && pmic_->IsCharging() ? 1 : 0, woke_by_alarm_,
+                         rtc_synced_ ? 1 : 0, static_cast<unsigned>(epd_refreshes_.load()));
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
 '''
 
 
@@ -496,6 +650,9 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_local_event_id.h"\n'
         '#include "kid_app/pet_input_router.h"\n'
         '#include "kid_app/input_hub.h"\n'
+        '#include "kid_app/rtc_clock.h"\n'
+        '#include "kid_app/motion_stats.h"\n'
+        '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
         '#include "kid_app/waveshare_story_sd.h"\n'
@@ -551,6 +708,10 @@ def patch_board(text: str) -> str:
         // Distinct Pet app identity at board setup; the upstream official
         // OTA0 firmware never emits this marker. Logging does not enable Pet.
         ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=board_init");
+        // If the timed power-on test woke us, the PCF85063 keeps INT low
+        // until AF/AIE are cleared; on the PMIC power-on pin that would read
+        // as a long PWR press, so clear it before anything else.
+        ClearRtcAlarm();
         // A single short-lived low-priority task repeats the marker after
         // serial monitoring can attach following esptool hard_reset.
         // No NVS, networking, GPIO, audio or EPD changes.
@@ -561,7 +722,9 @@ def patch_board(text: str) -> str:
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay5s");
                 vTaskDelay(pdMS_TO_TICKS(7000));
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
-                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->RunHardwareDiag();
+                auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+                self->RunHardwareDiag();
+                self->RunDiagLoop();  // never returns
                 vTaskDelete(nullptr);
             }, "pet_boot_diag", 4096, this, 1, nullptr);
         if (pet_diag_started != pdPASS)
