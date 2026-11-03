@@ -1,6 +1,6 @@
 # 接口、状态与资源包规范（草案）
 
-状态：v0.1 / 待 P2–P4 实现与契约测试。示例仅定义**计划中的自有业务协议**，不代表小智官方已有这些接口。
+状态：v0.2（2026-11-02 按实物硬件更新 §3、§5、§6）/ 待 V2–V5 实现与契约测试。示例仅定义**计划中的自有业务协议**，不代表小智官方已有这些接口。
 
 ## 1. 通用边界
 
@@ -34,19 +34,39 @@
 - 返回 `ack` 包括 `message_id`、`accepted`、`server_state_version` 和失败 `reason_code`。
 - 网络重试采用有界指数退避；客户端保存有限事件队列并避免无限写 Flash。
 
-## 3. 设备事件（候选）
+## 3. 设备事件（v0.2，按实物硬件）
 
-| event | 来源 | 是否离线执行 | 说明 |
+### 3.1 本地输入与传感事件（不出设备，只进 PetCore）
+
+| InputEvent / SensorEvent | 来源 | 说明 |
+|---|---|---|
+| `DIAL_UP` / `DIAL_DOWN` | 拨轮 GPIO4 / GPIO6 | 换选项 / 翻页；列表中按住自动重复 ≤3 次/秒 |
+| `DIAL_PRESS` / `DIAL_LONG` | 拨轮 GPIO5 | 确认 / 回首页（≥1 s） |
+| `TALK` | BOOT GPIO0 | 开始/结束语音会话 |
+| `SLEEP_REQUEST` | PWR GPIO1 | 进入睡觉流程，3 s 内拨轮可取消 |
+| `PARENT_COMBO` | BOOT + 拨轮按下 5 s | 家长入口 |
+| `PICKUP` / `GENTLE_SHAKE` / `HARD_SHAKE` / `FACE_DOWN` / `FACE_UP` | QMI8658 | 去抖 + 持续时间判定 |
+| `TILT(x,y)` | QMI8658 | 仅游戏中按帧提供 |
+| `ENV_CHANGED(temp_c10, hum_pct)` | SHTC3 | 越过阈值才发 |
+| `BLOW` / `CLAP` | 麦克风 RMS 包络 | 仅游戏中；不缓存 PCM |
+| `BATTERY(pct, charging)` | TG28 | 变化 ≥5% 或充电状态变化 |
+| `DAY_PHASE(phase)` / `QUIET_BEGIN` / `QUIET_END` | RhythmScheduler（RTC） | 作息相位变化 |
+| `WAKE(reason)` | PowerManager | `button` / `rtc_alarm` / `usb` / `motion` |
+
+### 3.2 可上报的宠物事件（进入账本和外发队列）
+
+| event | 触发 | 是否离线执行 | 说明 |
 |---|---|---|---|
-| PET_PICKUP | IMU | 是 | 去抖后唤起宠物表情和本地音效 |
-| PET_FEED | 按键/菜单 | 是 | 使用事先允许的 item_id，幂等更新 |
-| PET_PLAY | 按键/菜单 | 是 | 进入指定本地小游戏 |
-| STORY_OPEN | 内容播放器 | 是 | 书籍/页码来自已审核资源 |
-| PAGE_NEXT / PAGE_PREV | 输入 | 是 | 页码有边界检查 |
+| PET_FEED / PET_GROOM / PET_DRESS | 动作条/互动页 | 是 | item_id 来自白名单，幂等 |
+| PET_GREETED | `PICKUP` / 早安开机 | 是 | 每日计数有上限，不刷奖励 |
+| STORY_OPEN / PAGE_NEXT / PAGE_PREV / STORY_FINISHED | 绘本 | 是 | 页码有边界检查 |
+| QUIZ_ANSWERED | 页内题/游戏 | 是 | 记录选项 ID；不对"答错"惩罚 |
+| PREFERENCE_CHOSEN | 喜好选择题 | 是 | 唯一写喜好记忆的路径 |
+| GAME_COMPLETED | 规则/体感游戏 | 是 | 只能由可信游戏规则产生，不能由 LLM 伪造 |
+| PET_SLEPT / PET_WOKE | 睡觉流程 / 唤醒 | 是 | 附唤醒原因 |
+| MEMORY_CLEARED | 家长 | 是 | 账本事务内清空 |
 | VOICE_STARTED / VOICE_ENDED | 语音适配层 | 是 | 影响显示和音频优先级 |
-| GAME_COMPLETED | 游戏逻辑 | 是 | 只能由可信游戏规则产生，不能由 LLM 伪造 |
 | NETWORK_RESTORED | 设备服务 | 是 | 触发可靠同步 |
-| QUIET_HOURS_START | 策略计时器 | 是 | 本地保护规则优先 |
 
 ### 关键规则
 
@@ -68,28 +88,51 @@
 | `GET /v1/content/packages/{id}` | 设备端 | 下载已批准打包资源 | 二进制内容 |
 | `GET/PUT /v1/parent/policy` | 家长面板 | 时长、网络、聊天与内容白名单 | policy/version |
 | `DELETE /v1/parent/memories` | 家长面板 | 删除允许删除的宠物偏好/历史 | 确认回执 |
+| `GET /v1/parent/memories` | 家长面板 | 查看喜好、成长、每日摘要 | 记忆列表 |
+| `GET /v1/pets/{id}/memory-summary` | VoiceAdapter | 最小化记忆摘要（§5.1） | 允许字段 |
+| `GET/PUT /v1/parent/rhythm` | 家长面板 | 作息表、安静时段、音量上限 | policy/version |
+| `PUT /v1/parent/personality` | 家长面板 | 名字、性格、声音包 | version |
 
 安全要求：device token 只可访问对应设备；voice adapter 只拿最小上下文；parent token 需要独立认证。API 不能直接裸露公网且无鉴权，开发初期可以只在可信 LAN 内运行。
 
-## 5. 宠物本地数据模型（候选）
+## 5. 宠物本地数据模型（v2 候选）
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "pet_id": "pet-a1",
   "name": "团团",
+  "personality": { "trait": "curious", "voice_pack": "tuantuan_v1", "catchphrase_id": 3 },
   "pet_state_version": 18,
-  "level": 2,
-  "cosmetics": ["hat_01"],
-  "current_scene": "HOME",
+  "scene": "HOME",
+  "home_selection": 1,
   "mood": "HAPPY",
-  "daily_interaction_count": 3,
+  "cosmetics": ["scarf_01"],
   "active_book_id": "animals_001",
   "active_page": 2,
-  "parent_policy_version": 5,
+  "rhythm": { "wake": "07:00", "evening": "19:30", "quiet": ["20:30", "07:00"], "policy_version": 5 },
+  "limits": { "volume_max": 60, "night_volume_max": 30, "open_chat": false },
   "last_acked_seq": 1008
 }
 ```
+
+### 5.1 记忆（v2 新增，进入同一账本事务）
+
+```json
+{
+  "today": { "date": "2026-11-02", "feed": 2, "books_read": 1, "games": 3, "greetings": 4 },
+  "preferences": [
+    { "slot": "favorite_animal", "option_id": "elephant", "source_event": "dev-a1:00000301" },
+    { "slot": "favorite_color", "option_id": "blue", "source_event": "dev-a1:00000302" }
+  ],
+  "milestones": ["first_book", "five_books"],
+  "recent_books": ["animals_001", "forest_friends"]
+}
+```
+
+- `preferences` 最多 16 条，`slot` 与 `option_id` 都来自内容包白名单；只能由 `PREFERENCE_CHOSEN` 写入，必须带来源事件。
+- `today` 每日归档为计数摘要后上报，设备端只保留当天。
+- 给语音服务的摘要只含 `name`、`personality.trait`、`preferences` 的选项名、`today` 计数；不含家长备注。
 
 **禁止**长期存储原始孩子语音、详细地址、不必要的生日、秘密或敏感身份属性。昵称、喜好等均由家长审核允许，具备删除机制。
 
@@ -132,7 +175,9 @@ animals_001/
 
 `sha256` 位置仅是格式示意，最终应定义究竟对哪个规范化字节序列计算哈希，避免将 manifest 中自己的 hash 再参与哈希产生循环依赖。计划采用单独的包索引文件记录每个文件哈希与整体打包产物哈希。
 
-画面格式 `.bin`、语音 `.opus` 是候选；P4 根据实际播放器/解码器选择（可替换为 PCM/WAV 或其他具备稳定硬解码/软解码路径的格式）。对传入素材应限制尺寸、时长和解码后缓冲预算；未标记 `approved` 的内容不得同步给儿童设备。
+**已落地格式**：P4 实现了单文件 KPB1（1-bit 页 + 24 kHz PCM16），见 [P4_OFFLINE_STORY_PACK](P4_OFFLINE_STORY_PACK.md)。v0.2 计划扩展为 **KPB2**：页帧可为 1-bit（48,000 B）或 4 灰度（96,000 B）；每页可带 0–2 个选择题（题干音频、2–3 个选项的图标区域坐标与选项音频、正确项或"无对错"）；包类型 `book | game | soundpack | costume | phrases`；KPB1 继续可读。
+
+画面格式 `.bin`、语音 `.opus` 是早期候选；P4 根据实际播放器/解码器选择（可替换为 PCM/WAV 或其他具备稳定硬解码/软解码路径的格式）。对传入素材应限制尺寸、时长和解码后缓冲预算；未标记 `approved` 的内容不得同步给儿童设备。
 
 ## 7. VoiceAdapter 接口（规划）
 
