@@ -27,9 +27,23 @@ PetInputDecision PetInputRouter::DecideDial(PetMode mode, InputKind kind) {
         if (kind == InputKind::DialLong) return {true, PetAction::StopStory};
         return {};  // no previous-page action in the v1 PetController yet
     }
-    if (mode == PetMode::Idle || mode == PetMode::Interact) {
-        // Home action rail (V2-03) will give DialUp/DialDown meaning.
-        if (kind == InputKind::DialPress) return {true, PetAction::Pickup};
+    // At home the dial drives the action rail (DecideHome).
+    return {};
+}
+
+bool PetInputRouter::IsHomeRail(PetMode mode) {
+    return mode == PetMode::Idle || mode == PetMode::Interact;
+}
+
+PetInputDecision PetInputRouter::DecideHome(PetMode mode, HomeItem item) {
+    if (!IsHomeRail(mode)) return {};
+    switch (item) {
+        case HomeItem::Story: return {true, PetAction::StartStory};
+        case HomeItem::Feed: return {true, PetAction::Feed};
+        // Chat (V6) and games (V4) are not built yet: the pet says hi.
+        case HomeItem::Chat:
+        case HomeItem::Game: return {true, PetAction::Pickup};
+        case HomeItem::Sleep: return {};  // board-owned sleep flow (V2-09)
     }
     return {};
 }

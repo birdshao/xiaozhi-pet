@@ -43,6 +43,8 @@ def patch_display_h(text: str) -> str:
     // P1 manual-only pet display prototype; no voice/LLM dependency.
     bool ShowPetPreview(kid_app::Emotion emotion);
     bool ShowPetScene(const kid_app::SceneModel& scene);
+    // Partial waveform on the whole buffer (no flash); base must be shown.
+    bool ShowPetSceneFast(const kid_app::SceneModel& scene);
     bool ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page);\n    void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
@@ -72,8 +74,42 @@ bool CustomEpdDisplay::ShowPetScene(const kid_app::SceneModel& scene) {
         if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
             memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
             pet_preview_enabled_ = true;
-            // Prototype full refresh: physical partial refresh remains an open P1 task.
+            EPD_SendCommand(0x3C);  // border waveform as in EPD_Init (full)
+            EPD_SendData(0x01);
             EPD_DisplayPartBaseImage();
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    frame->~MonoFrame();
+    heap_caps_free(memory);
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowPetSceneFast(const kid_app::SceneModel& scene) {
+    void* memory = heap_caps_malloc(sizeof(kid_app::MonoFrame),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) {
+        ESP_LOGE(TAG, "Pet framebuffer PSRAM allocation failed");
+        return false;
+    }
+    auto* frame = new (memory) kid_app::MonoFrame();
+    kid_app::SceneComposer::Render(scene, *frame);
+    bool okay = false;
+    if (lvgl_port_lock(5000)) {
+        if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
+            memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
+            pet_preview_enabled_ = true;
+            // New image into RAM 0x24 and the partial waveform, then the same
+            // image into RAM 0x26 so the next partial diffs against what the
+            // panel now shows. A full ShowPetScene() must precede the first.
+            EPD_SendCommand(0x3C);  // border waveform: hold during partial
+            EPD_SendData(0x80);
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, epd_spi_data.buffer_len);
+            EPD_TurnOnDisplayPart();
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, epd_spi_data.buffer_len);
             okay = true;
         }
         lvgl_port_unlock();
@@ -95,6 +131,8 @@ bool CustomEpdDisplay::ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t 
         if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
             memcpy(buffer, frame->Data().data(), kid_app::MonoFrame::kSize);
             pet_preview_enabled_ = true;
+            EPD_SendCommand(0x3C);  // border waveform as in EPD_Init (full)
+            EPD_SendData(0x01);
             EPD_DisplayPartBaseImage();
             okay = true;
         }
@@ -136,25 +174,42 @@ BOARD_WORKER = r'''
     // remains pristine; this code is overlaid only in a disposable checkout.
     kid_app::FreertosPetSceneMailbox pet_mailbox_;
     kid_app::FreertosPetService pet_service_;
-    kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 5000};
+    // 500 ms pacing: full refreshes are only triggered by scene changes or
+    // the planner's ghosting limit; highlights use partial refreshes.
+    kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 500};
     SemaphoreHandle_t pet_screen_mutex_ = nullptr;
     std::atomic<bool> pet_mode_{false};
     std::atomic<bool> pet_toggle_busy_{false};
     std::atomic<bool> pet_runtime_ready_{false};
     std::atomic<kid_app::PetMode> pet_event_mode_{kid_app::PetMode::Idle};
     std::atomic<uint32_t> last_pet_scene_{0};
+    kid_app::HomeMenu home_menu_;              // pet_input task only
+    std::atomic<uint8_t> home_selection_{kid_app::HomeMenu::kDefaultIndex};
+    kid_app::RefreshPlanner refresh_planner_;  // kid_epd task only
+    std::atomic<bool> planner_reset_{false};
 
+    // Host-tested layout lives in kid_app::PackScene / UnpackScene.
     static uint32_t PackPetScene(const kid_app::SceneModel& scene) {
-        return (static_cast<uint32_t>(scene.book_page) << 16) |
-               (static_cast<uint32_t>(scene.emotion) << 8) |
-               static_cast<uint32_t>(scene.kind);
+        return kid_app::PackScene(scene);
+    }
+    static kid_app::SceneModel UnpackPetScene(uint32_t bits) {
+        return kid_app::UnpackScene(bits);
     }
 
-    static kid_app::SceneModel UnpackPetScene(uint32_t bits) {
-        return {static_cast<kid_app::SceneKind>(bits & 0xFF),
-                static_cast<kid_app::Emotion>((bits >> 8) & 0xFF),
-                static_cast<uint16_t>(bits >> 16)};
-    }
+    // Guards pet_event_mode_ + last_pet_scene_ + home_selection_ + the
+    // mailbox publish as one step, shared by the pet and input tasks, so a
+    // stale expression or a highlight different from the selected item
+    // can never be the last frame published.
+    SemaphoreHandle_t scene_state_mutex_ = nullptr;
+    struct SceneStateLock {
+        explicit SceneStateLock(SemaphoreHandle_t m) : mutex(m) {
+            if (mutex) xSemaphoreTake(mutex, portMAX_DELAY);
+        }
+        ~SceneStateLock() {
+            if (mutex) xSemaphoreGive(mutex);
+        }
+        SemaphoreHandle_t mutex;
+    };
 
     static bool StoryAudioBegin(uint64_t token, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
@@ -200,10 +255,19 @@ BOARD_WORKER = r'''
             }
             // Missing SD or a page outside a reviewed book falls back to
             // the pre-existing monochrome reader placeholder.
-            if (!okay) okay = self->display_->ShowPetScene(scene);
-            // V1-08: full-refresh duration; ghosting is judged by eye.
-            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u ok=%d ms=%u n=%u",
-                     static_cast<int>(scene.kind), scene.book_page, okay ? 1 : 0,
+            if (self->planner_reset_.exchange(false)) self->refresh_planner_.ForceFull();
+            kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
+            if (!okay) {
+                mode = self->refresh_planner_.Plan(scene);
+                okay = mode == kid_app::RefreshMode::Partial
+                           ? self->display_->ShowPetSceneFast(scene)
+                           : self->display_->ShowPetScene(scene);
+            }
+            self->refresh_planner_.Completed(scene, mode, okay);
+            // V1-08 / V2-06: refresh duration per mode; ghosting by eye.
+            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u sel=%u mode=%s ok=%d ms=%u n=%u",
+                     static_cast<int>(scene.kind), scene.book_page, scene.home_selection,
+                     mode == kid_app::RefreshMode::Partial ? "partial" : "full", okay ? 1 : 0,
                      static_cast<unsigned>(NowMs() - epd_started_ms),
                      static_cast<unsigned>(++self->epd_refreshes_));
         }
@@ -217,7 +281,6 @@ BOARD_WORKER = r'''
                               const kid_app::PetSnapshot& snapshot, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || outcome != kid_app::PumpResult::Committed) return;
-        self->pet_event_mode_.store(snapshot.mode);
         // Suspend the old page immediately when a new page/scene is
         // committed. The new page starts only after the slow EPD refresh.
         if (self->story_pcm_.Ready() &&
@@ -227,9 +290,16 @@ BOARD_WORKER = r'''
             StoryAudioCancel(self);
             self->story_pcm_.Stop();
         }
-        const auto scene = kid_app::PetScenePresenter::Present(snapshot);
-        self->last_pet_scene_.store(PackPetScene(scene));
-        if (effects.repaint) self->pet_mailbox_.Publish(scene);
+        {
+            SceneStateLock lock(self->scene_state_mutex_);
+            auto scene = kid_app::PetScenePresenter::Present(snapshot);
+            scene.home_selection = self->home_selection_.load();
+            self->last_pet_scene_.store(PackPetScene(scene));
+            if (effects.repaint) self->pet_mailbox_.Publish(scene);
+            // Mode after scene: the input task never sees a home mode
+            // paired with a stale reader scene.
+            self->pet_event_mode_.store(snapshot.mode);
+        }
         // Deliberately do NOT play audio here. AudioCoordinator/AudioPort
         // will be wired separately; only committed events can emit effects.
         ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s",
@@ -240,6 +310,8 @@ BOARD_WORKER = r'''
         if (pet_runtime_ready_.load()) return true;
         if (!pet_screen_mutex_) pet_screen_mutex_ = xSemaphoreCreateMutex();
         if (!pet_screen_mutex_) return false;
+        if (!scene_state_mutex_) scene_state_mutex_ = xSemaphoreCreateMutex();
+        if (!scene_state_mutex_) return false;
         if (!pet_mailbox_ready_) {
             if (!pet_mailbox_.Initialize()) return false;
             pet_mailbox_ready_ = true;
@@ -251,7 +323,8 @@ BOARD_WORKER = r'''
         if (!pet_event_task_ready_) {
             kid_app::PetSnapshot restored{};
             if (!pet_service_.Start(&PetCommitted, this, &restored)) return false;
-            const auto scene = kid_app::PetScenePresenter::Present(restored);
+            auto scene = kid_app::PetScenePresenter::Present(restored);
+            scene.home_selection = home_selection_.load();
             last_pet_scene_.store(PackPetScene(scene));
             pet_event_mode_.store(restored.mode);
             pet_event_task_ready_ = true;
@@ -292,6 +365,7 @@ BOARD_WORKER = r'''
                 xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(30000)) == pdTRUE) {
                 pet_mode_.store(false);
                 display_->ExitPetPreview();
+                planner_reset_.store(true);
                 xSemaphoreGive(pet_screen_mutex_);
                 ESP_LOGI(TAG, "PET_RUNTIME_OFF");
             } else {
@@ -309,7 +383,10 @@ BOARD_WORKER = r'''
         }
         pet_mode_.store(true);
         pet_display_worker_.SetEnabled(true);
-        pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
+        }
         ESP_LOGI(TAG, "PET_RUNTIME_ON");
     }
 
@@ -390,10 +467,43 @@ BOARD_WORKER = r'''
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
-        const auto decision =
-            kid_app::PetInputRouter::DecideDial(pet_event_mode_.load(), event.kind);
+        kid_app::PetInputDecision decision{};
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            const auto pet_mode = pet_event_mode_.load();
+            decision = kid_app::PetInputRouter::IsHomeRail(pet_mode)
+                           ? HandleHomeRailLocked(event, pet_mode)
+                           : kid_app::PetInputRouter::DecideDial(pet_mode, event.kind);
+        }
+        // The durable action is queued outside the lock; the pet task
+        // takes the same lock when it commits.
         if (decision.valid && !pet_service_.PostLocal(decision.action))
             ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+    }
+
+    // Home action rail (V2-03): moving the highlight is UI-only (no NVS);
+    // a dial press turns the selected item into a durable Pet action.
+    // Caller holds scene_state_mutex_.
+    kid_app::PetInputDecision HandleHomeRailLocked(const kid_app::InputEvent& event,
+                                                   kid_app::PetMode pet_mode) {
+        if (event.kind == kid_app::InputKind::DialUp ||
+            event.kind == kid_app::InputKind::DialDown) {
+            if (!home_menu_.Move(event.kind == kid_app::InputKind::DialUp ? -1 : +1)) return {};
+            const uint8_t index = home_menu_.Index();
+            home_selection_.store(index);
+            auto scene = UnpackPetScene(last_pet_scene_.load());
+            scene.home_selection = index;
+            last_pet_scene_.store(PackPetScene(scene));
+            pet_mailbox_.Publish(scene);
+            ESP_LOGI(TAG, "PET_HOME_SELECT index=%u", index);
+            return {};
+        }
+        if (event.kind != kid_app::InputKind::DialPress) return {};
+        if (home_menu_.Selected() == kid_app::HomeItem::Sleep) {
+            ESP_LOGI(TAG, "PET_SLEEP_REQUEST_PENDING source=home_rail");
+            return {};
+        }
+        return kid_app::PetInputRouter::DecideHome(pet_mode, home_menu_.Selected());
     }
 
     void InputTaskLoop() {
@@ -605,6 +715,90 @@ BOARD_WORKER = r'''
         return true;
     }
 
+    // ---- Host-scripted self-test (unattended hardware trials) ----
+    // The host writes a PETSELFTEST1 script into the last 4 KiB of ota_1
+    // (beyond the app image) before a trial and erases it afterwards. The
+    // firmware only reads it; without a valid script nothing happens.
+    static constexpr size_t kSelfTestSectorBytes = 4096;
+
+    void MaybeRunSelfTest() {
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        if (!running || running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1 ||
+            running->size < 2 * kSelfTestSectorBytes) {
+            ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=not_ota1");
+            return;
+        }
+        auto* sector = static_cast<uint8_t*>(heap_caps_malloc(kSelfTestSectorBytes,
+                                                              MALLOC_CAP_8BIT));
+        auto* script = new (std::nothrow) kid_app::SelfTestScript();
+        const bool ok = sector && script &&
+            esp_partition_read(running, running->size - kSelfTestSectorBytes, sector,
+                               kSelfTestSectorBytes) == ESP_OK &&
+            script->ParseSector(sector, kSelfTestSectorBytes);
+        heap_caps_free(sector);
+        if (!ok) {
+            ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=no_script");
+            delete script;
+            return;
+        }
+        ESP_LOGI(TAG, "PET_SELFTEST_START steps=%u total_ms=%u",
+                 static_cast<unsigned>(script->Count()),
+                 static_cast<unsigned>(script->TotalMs()));
+        for (size_t i = 0; i < script->Count(); ++i) {
+            const auto& step = script->Steps()[i];
+            ESP_LOGI(TAG, "PET_SELFTEST_STEP i=%u op=%u key=%u ms=%u", static_cast<unsigned>(i),
+                     static_cast<unsigned>(step.op), static_cast<unsigned>(step.key),
+                     static_cast<unsigned>(step.ms));
+            switch (step.op) {
+                case kid_app::SelfTestOp::Wait:
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    break;
+                case kid_app::SelfTestOp::TogglePet: {
+                    // A toggle is silently dropped while XiaoZhi is not idle
+                    // or a previous toggle runs: retry, and abort the whole
+                    // script rather than testing the wrong mode.
+                    const bool before = pet_mode_.load();
+                    bool changed = false;
+                    for (int attempt = 0; attempt < 15 && !changed; ++attempt) {
+                        RequestPetModeToggle();
+                        for (int poll = 0; poll < 20 && !changed; ++poll) {
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                            changed = pet_mode_.load() != before;
+                        }
+                    }
+                    if (!changed) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_ABORT reason=pet_toggle step=%u",
+                                 static_cast<unsigned>(i));
+                        delete script;
+                        return;
+                    }
+                    ESP_LOGI(TAG, "PET_SELFTEST_PET on=%d", pet_mode_.load() ? 1 : 0);
+                    break;
+                }
+                case kid_app::SelfTestOp::Mark:
+                    ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);
+                    break;
+                case kid_app::SelfTestOp::Hold:
+                    // Same raw-edge queue as the physical buttons.
+                    PostKeyEdge(step.key, true);
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    PostKeyEdge(step.key, false);
+                    vTaskDelay(pdMS_TO_TICKS(step.gap_ms));
+                    break;
+            }
+        }
+        ESP_LOGI(TAG, "PET_SELFTEST_DONE steps=%u", static_cast<unsigned>(script->Count()));
+        delete script;
+    }
+
+    void StartSelfTestTask() {
+        if (xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->MaybeRunSelfTest();
+                vTaskDelete(nullptr);
+            }, "pet_selftest", 12288, this, 1, nullptr) != pdPASS)
+            ESP_LOGW(TAG, "PET_SELFTEST_TASK_FAILED");
+    }
+
     void RunDiagLoop() {
         const bool imu_ok = ConfigureImu();
         ESP_LOGI(TAG, "PET_DIAG_ACC configured=%d", imu_ok ? 1 : 0);
@@ -650,6 +844,13 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_local_event_id.h"\n'
         '#include "kid_app/pet_input_router.h"\n'
         '#include "kid_app/input_hub.h"\n'
+        '#include "kid_app/home_menu.h"\n'
+        '#include "kid_app/refresh_planner.h"\n'
+        '#include "kid_app/selftest_script.h"\n'
+        '#include "esp_ota_ops.h"\n'
+        '#include "esp_partition.h"\n'
+        '#include <esp_heap_caps.h>\n'
+        '#include <new>\n'
         '#include "kid_app/rtc_clock.h"\n'
         '#include "kid_app/motion_stats.h"\n'
         '#include <ctime>\n'
@@ -724,6 +925,7 @@ def patch_board(text: str) -> str:
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
                 auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
                 self->RunHardwareDiag();
+                self->StartSelfTestTask();
                 self->RunDiagLoop();  // never returns
                 vTaskDelete(nullptr);
             }, "pet_boot_diag", 4096, this, 1, nullptr);

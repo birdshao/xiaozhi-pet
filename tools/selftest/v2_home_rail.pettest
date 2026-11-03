@@ -1,0 +1,46 @@
+PETSELFTEST1
+# V2 home action rail + partial refresh, no person needed.
+# Rail: 0 chat, 1 story (default), 2 game, 3 feed, 4 sleep.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect home_select 0,1,2,3,4,3,2,1,0,1,2,3,2,1
+# expect commits 4
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+# expect partial_refreshes 14
+# expect full_refreshes 4
+# Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
+wait 20000
+pet
+wait 7000
+# Normalize the restored pet state to "home, neutral": press opens the
+# preselected Story (no-op if already reading), hold returns home.
+tap press 7000
+hold press 1500 7000
+mark begin
+# 9 highlight moves: 8 partials, then the planner forces a full refresh.
+tap up 2500
+tap down 2500
+tap down 2500
+tap down 2500
+tap down 2500
+# Clamped at Sleep: no move, no refresh.
+tap down 2500
+tap up 2500
+tap up 2500
+tap up 6000
+tap up 6000
+# Feed (index 3): durable Feed, happy face via partial refresh.
+tap down 2500
+tap down 2500
+tap down 2500
+tap press 6000
+# Story (index 1): reader page 1, next page, then back home.
+tap up 2500
+tap up 2500
+tap press 7000
+tap down 7000
+hold press 1500 7000
+pet
+wait 5000
+end

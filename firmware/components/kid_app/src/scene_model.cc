@@ -6,6 +6,22 @@
 
 namespace kid_app {
 
+uint32_t PackScene(const SceneModel& scene) {
+    return (static_cast<uint32_t>(scene.book_page) << 16) |
+           (static_cast<uint32_t>(scene.emotion) << 8) |
+           ((static_cast<uint32_t>(scene.home_selection) & 0x0F) << 4) |
+           (static_cast<uint32_t>(scene.kind) & 0x0F);
+}
+
+SceneModel UnpackScene(uint32_t bits) {
+    SceneModel scene;
+    scene.kind = static_cast<SceneKind>(bits & 0x0F);
+    scene.home_selection = static_cast<uint8_t>((bits >> 4) & 0x0F);
+    scene.emotion = static_cast<Emotion>((bits >> 8) & 0xFF);
+    scene.book_page = static_cast<uint16_t>(bits >> 16);
+    return scene;
+}
+
 void MonoFrame::Clear() { pixels_.fill(0xFF); }
 
 void MonoFrame::SetPixel(int x, int y, bool black) {
@@ -113,13 +129,76 @@ void PetFace(MonoFrame& f, int cx, int cy, int scale, Emotion emotion) {
     }
 }
 
-void HomeScene(MonoFrame& f, Emotion emotion) {
-    PetFace(f, 400, 252, 100, emotion);
-    // Minimal non-text navigation indicators, adapted later by LVGL.
-    Rectangle(f, 100, 425, 600, 2);
-    Ellipse(f, 345, 452, 7, 7, true);
-    Ellipse(f, 400, 452, 7, 7, false);
-    Ellipse(f, 455, 452, 7, 7, false);
+void Crescent(MonoFrame& f, int cx, int cy, int r, int offset) {
+    for (int y = cy - r; y <= cy + r; ++y) {
+        for (int x = cx - r; x <= cx + r; ++x) {
+            const int dx = x - cx, dy = y - cy, ox = dx - offset;
+            if (dx * dx + dy * dy <= r * r && ox * ox + dy * dy > r * r)
+                f.SetPixel(x, y, true);
+        }
+    }
+}
+
+// Rail icons: bold line art centred on (cx, cy), readable without text.
+void RailIcon(MonoFrame& f, int slot, int cx, int cy) {
+    switch (slot) {
+        case 0:  // Chat: speech bubble with tail and three dots
+            Ellipse(f, cx, cy - 6, 36, 24, false);
+            Ellipse(f, cx, cy - 6, 35, 23, false);
+            ThickLine(f, cx - 18, cy + 14, cx - 28, cy + 30, 3);
+            ThickLine(f, cx - 28, cy + 30, cx - 4, cy + 17, 3);
+            for (int i = -1; i <= 1; ++i) Ellipse(f, cx + i * 14, cy - 6, 4, 4, true);
+            break;
+        case 1:  // Story: open book
+            Rectangle(f, cx - 38, cy - 24, 38, 48);
+            Rectangle(f, cx - 37, cy - 23, 36, 46);
+            Rectangle(f, cx, cy - 24, 38, 48);
+            Rectangle(f, cx + 1, cy - 23, 36, 46);
+            for (int i = 0; i < 3; ++i) {
+                Line(f, cx - 30, cy - 12 + i * 12, cx - 8, cy - 12 + i * 12);
+                Line(f, cx + 8, cy - 12 + i * 12, cx + 30, cy - 12 + i * 12);
+            }
+            break;
+        case 2:  // Game: die showing five
+            Rectangle(f, cx - 28, cy - 28, 56, 56);
+            Rectangle(f, cx - 27, cy - 27, 54, 54);
+            for (int dx : {-14, 14})
+                for (int dy : {-14, 14}) Ellipse(f, cx + dx, cy + dy, 5, 5, true);
+            Ellipse(f, cx, cy, 5, 5, true);
+            break;
+        case 3:  // Feed: carrot with leaves
+            ThickLine(f, cx - 16, cy - 16, cx + 6, cy + 30, 3);
+            ThickLine(f, cx + 16, cy - 16, cx + 6, cy + 30, 3);
+            ThickLine(f, cx - 16, cy - 16, cx + 16, cy - 16, 3);
+            Line(f, cx - 6, cy - 16, cx - 14, cy - 34);
+            Line(f, cx, cy - 16, cx, cy - 36);
+            Line(f, cx + 6, cy - 16, cx + 14, cy - 34);
+            break;
+        case 4:  // Sleep: crescent moon and a star
+            Crescent(f, cx - 6, cy, 28, 14);
+            ThickLine(f, cx + 22, cy - 22, cx + 34, cy - 22, 2);
+            ThickLine(f, cx + 28, cy - 28, cx + 28, cy - 16, 2);
+            break;
+        default:
+            break;
+    }
+}
+
+void ActionRail(MonoFrame& f, uint8_t selection) {
+    const int top = SceneComposer::kRailTop, slot_w = SceneComposer::kRailSlotWidth;
+    ThickLine(f, 0, top, MonoFrame::kWidth - 1, top, 2);
+    for (int slot = 0; slot < 5; ++slot) {
+        RailIcon(f, slot, slot * slot_w + slot_w / 2, top + 50);
+    }
+    if (selection >= 5) return;  // nothing highlighted
+    // Thick 4 px frame around the selected slot.
+    for (int i = 0; i < 4; ++i)
+        Rectangle(f, selection * slot_w + 6 + i, top + 6 + i, slot_w - 12 - 2 * i, 88 - 2 * i);
+}
+
+void HomeScene(MonoFrame& f, const SceneModel& model) {
+    PetFace(f, 400, 215, 90, model.emotion);
+    ActionRail(f, model.home_selection);
 }
 
 void ReaderScene(MonoFrame& f, const SceneModel& model) {
@@ -141,7 +220,7 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
     if (model.kind == SceneKind::Reader) {
         ReaderScene(output, model);
     } else {
-        HomeScene(output, model.emotion);
+        HomeScene(output, model);
     }
 }
 

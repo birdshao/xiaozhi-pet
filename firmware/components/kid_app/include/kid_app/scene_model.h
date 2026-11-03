@@ -15,7 +15,14 @@ struct SceneModel {
     SceneKind kind = SceneKind::Home;
     Emotion emotion = Emotion::Neutral;
     uint16_t book_page = 1;
+    // Highlighted HomeItem index on the home action rail (UI-only state).
+    uint8_t home_selection = 1;
 };
+
+// One-word scene snapshot shared between board tasks (atomic<uint32_t>):
+// bits 0-3 kind, 4-7 home selection, 8-15 emotion, 16-31 book page.
+uint32_t PackScene(const SceneModel& scene);
+SceneModel UnpackScene(uint32_t bits);
 
 class MonoFrame {
 public:
@@ -40,6 +47,10 @@ private:
 
 class SceneComposer {
 public:
+    // Home layout: pet portrait above, five-slot action rail below.
+    static constexpr int kRailTop = 380;
+    static constexpr int kRailSlotWidth = 160;
+
     static void Render(const SceneModel& model, MonoFrame& output);
 };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/home_menu.h"
 #include "kid_app/input_hub.h"
 #include "kid_app/pet_controller.h"
 
@@ -21,9 +22,14 @@ struct PetInputDecision {
 class PetInputRouter {
 public:
     static PetInputDecision Decide(PetMode mode, PetClick click);
-    // Three-way dial semantics from InputHub. Talk/BootLong/SleepRequest/
-    // ParentCombo are owned by the board and never become Pet actions here.
+    // Three-way dial semantics from InputHub outside the home rail (reader).
+    // Talk/BootLong/SleepRequest/ParentCombo are owned by the board and
+    // never become Pet actions here.
     static PetInputDecision DecideDial(PetMode mode, InputKind kind);
+    // Modes in which the dial drives the home action rail.
+    static bool IsHomeRail(PetMode mode);
+    // Dial press on a home rail item. Sleep is the board's sleep flow.
+    static PetInputDecision DecideHome(PetMode mode, HomeItem item);
 };
 
 }  // namespace kid_app

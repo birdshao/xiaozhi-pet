@@ -16,6 +16,9 @@ import struct
 
 BOARD = "waveshare/esp32-s3-epaper-3.97"
 SLOT_BYTES = 0x3F0000
+# Last 4 KiB of the slot holds the host-written PETSELFTEST1 script
+# (tools/selftest_report.py); the app must never reach into it.
+SELFTEST_RESERVE_BYTES = 0x1000
 APP_DESC_MAGIC = 0xABCD5432
 NAME = "xiaozhi-pet-esp32s3-app.bin"
 
@@ -23,6 +26,8 @@ NAME = "xiaozhi-pet-esp32s3-app.bin"
 def metadata(image: bytes) -> dict:
     if not 100_000 < len(image) <= SLOT_BYTES:
         raise ValueError("Application size exceeds the OTA slot or is unexpectedly small")
+    if len(image) > SLOT_BYTES - SELFTEST_RESERVE_BYTES:
+        raise ValueError("Application reaches into the reserved self-test sector")
     if image[0] != 0xE9 or not (1 <= image[1] <= 16):
         raise ValueError("Not an ESP-IDF application image")
     # App descriptor must immediately follow the first segment header.

@@ -17,7 +17,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = patch_display_h(original)
         self.assertIn("bool ShowPetScene(const kid_app::SceneModel& scene);", patched)
         self.assertIn("bool ShowPetPreview(kid_app::Emotion emotion);", patched)
-        self.assertEqual(patched.count("bool ShowPetScene"), 1)
+        self.assertEqual(patched.count("bool ShowPetScene("), 1)
 
     def test_preview_forwards_to_shared_renderer(self):
         source = '#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n'
@@ -171,6 +171,88 @@ class DisplayOverlayTest(unittest.TestCase):
         # PWR edges are counted even if no InputHub event follows.
         self.assertIn('pwr_edges_', patched)
         self.assertIn('sleep_requests_', patched)
+
+    def test_v2_partial_refresh_display_path(self):
+        header = patch_display_h('#include "lcd_display.h"\nclass Dummy {\n'
+                                 '    void EPD_Sleep();\n    uint8_t* buffer = NULL;\n};\n')
+        self.assertIn('bool ShowPetSceneFast(const kid_app::SceneModel& scene);', header)
+        impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
+        fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
+        fast = fast[:fast.index('\n}\n')]
+        # New frame into RAM 0x24, partial waveform, then the same frame into
+        # RAM 0x26 so the next partial diffs against what is on the panel.
+        self.assertLess(fast.index('EPD_SendCommand(0x24)'), fast.index('EPD_TurnOnDisplayPart()'))
+        self.assertLess(fast.index('EPD_TurnOnDisplayPart()'), fast.index('EPD_SendCommand(0x26)'))
+        self.assertIn('lvgl_port_lock(5000)', fast)
+        self.assertIn('heap_caps_free(memory)', fast)
+
+    def test_v2_home_rail_board_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/home_menu.h"', patched)
+        self.assertIn('#include "kid_app/refresh_planner.h"', patched)
+        self.assertIn('kid_app::HomeMenu home_menu_', patched)
+        self.assertIn('kid_app::RefreshPlanner refresh_planner_', patched)
+        self.assertIn('PetInputRouter::IsHomeRail(', patched)
+        self.assertIn('PetInputRouter::DecideHome(', patched)
+        self.assertIn('home_menu_.Move(', patched)
+        self.assertIn('PET_HOME_SELECT', patched)
+        # Selection survives the packed atomic scene snapshot.
+        self.assertIn('scene.home_selection', patched)
+        # Partial refreshes need a short pacing interval.
+        self.assertIn('pet_display_worker_{pet_mailbox_, 500}', patched)
+        self.assertNotIn('pet_display_worker_{pet_mailbox_, 5000}', patched)
+        self.assertIn('refresh_planner_.Plan(scene)', patched)
+        self.assertIn('ShowPetSceneFast(scene)', patched)
+        self.assertIn('refresh_planner_.ForceFull()', patched)
+        self.assertIn('kid_app::PackScene(scene)', patched)
+        self.assertIn('kid_app::UnpackScene(bits)', patched)
+
+    def test_v2_scene_state_is_published_under_one_lock(self):
+        patched = self._board()
+        commit = patched[patched.index('static void PetCommitted('):]
+        commit = commit[:commit.index('\n    }\n')]
+        locked = commit[commit.index('SceneStateLock lock(self->scene_state_mutex_)'):]
+        # Scene stored and published before the mode becomes visible.
+        self.assertLess(locked.index('last_pet_scene_.store('), locked.index('pet_event_mode_.store('))
+        self.assertLess(locked.index('pet_mailbox_.Publish('), locked.index('pet_event_mode_.store('))
+        self.assertEqual(commit.count('pet_event_mode_.store('), 1)
+        handle = patched[patched.index('void HandleInputEvent('):]
+        handle = handle[:handle.index('\n    }\n')]
+        self.assertIn('SceneStateLock lock(scene_state_mutex_)', handle)
+        # Durable action posted after the lock scope closes.
+        self.assertGreater(handle.index('PostLocal(decision.action)'),
+                           handle.index('SceneStateLock lock(scene_state_mutex_)'))
+        self.assertNotIn('compare_exchange', patched)
+
+    def test_selftest_script_runner(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/selftest_script.h"', patched)
+        self.assertIn('#include "esp_ota_ops.h"', patched)
+        run = patched[patched.index('void MaybeRunSelfTest()'):]
+        run = run[:run.index('\n    }\n')]
+        # Only ever from the running ota_1 slot's last 4 KiB sector.
+        self.assertIn('esp_ota_get_running_partition()', run)
+        self.assertIn('ESP_PARTITION_SUBTYPE_APP_OTA_1', run)
+        self.assertIn('running->size - kSelfTestSectorBytes', run)
+        self.assertIn('ParseSector(', run)
+        # Injected presses go through the same raw-edge queue as real keys.
+        self.assertIn('PostKeyEdge(step.key, true)', run)
+        self.assertIn('PostKeyEdge(step.key, false)', run)
+        self.assertIn('RequestPetModeToggle()', run)
+        for marker in ('PET_SELFTEST_NONE', 'PET_SELFTEST_START', 'PET_SELFTEST_STEP',
+                       'PET_SELFTEST_DONE'):
+            self.assertIn(marker, run)
+        # Never writes flash itself.
+        self.assertNotIn('esp_partition_write', patched)
+        self.assertNotIn('esp_partition_erase', patched)
+        self.assertIn('"pet_selftest"', patched)
+
+    def test_v2_border_waveform_per_refresh_mode(self):
+        impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
+        fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
+        fast = fast[:fast.index('\n}\n')]
+        self.assertLess(fast.index('EPD_SendData(0x80)'), fast.index('EPD_SendCommand(0x24)'))
+        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 2)
 
     def test_round3_hardware_diag_stays_read_only(self):
         patched = self._board()

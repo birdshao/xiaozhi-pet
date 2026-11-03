@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from p1_app_only_artifact import NAME, SLOT_BYTES, metadata, package
+from p1_app_only_artifact import NAME, SELFTEST_RESERVE_BYTES, SLOT_BYTES, metadata, package
 
 
 def valid_image(length=100_001):
@@ -36,6 +36,14 @@ class AppOnlyArtifactTests(unittest.TestCase):
     def test_rejects_oversize(self):
         with self.assertRaisesRegex(ValueError, "OTA slot"):
             metadata(valid_image(SLOT_BYTES + 1))
+
+    def test_keeps_last_sector_free_for_selftest_script(self):
+        # The host writes/erases a PETSELFTEST1 script at the slot's last
+        # 4 KiB; an app reaching into it would be damaged by the erase.
+        self.assertEqual(SELFTEST_RESERVE_BYTES, 4096)
+        metadata(valid_image(SLOT_BYTES - SELFTEST_RESERVE_BYTES))
+        with self.assertRaisesRegex(ValueError, "self-test"):
+            metadata(valid_image(SLOT_BYTES - SELFTEST_RESERVE_BYTES + 1))
 
     def test_rejects_bad_header(self):
         corrupted = bytearray(valid_image())
