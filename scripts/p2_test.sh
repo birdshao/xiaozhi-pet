@@ -105,3 +105,12 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_input_hub.cc" \
   -o "$BUILD/test_input_hub"
 "$BUILD/test_input_hub"
+
+# V1 round 3 diagnostics: PCF85063 BCD/alarm codec, civil time math and
+# accelerometer window statistics used for gesture thresholds.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/motion_stats.cc" \
+  "$ROOT/tests/cpp/test_v1_diag_codecs.cc" \
+  -o "$BUILD/test_v1_diag_codecs"
+"$BUILD/test_v1_diag_codecs"
