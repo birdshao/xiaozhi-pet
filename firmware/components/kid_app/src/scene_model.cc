@@ -1,6 +1,7 @@
 #include "kid_app/scene_model.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 
@@ -40,12 +41,77 @@ bool MonoFrame::IsBlack(int x, int y) const {
 
 namespace {
 
-void Line(MonoFrame& f, int x0, int y0, int x1, int y1) {
+// ---- 1-bit drawing kit ------------------------------------------------------
+// Every primitive takes an ink colour (true = black) so the same shapes can be
+// drawn white-on-black, e.g. the selected rail card. Grey does not exist on
+// the panel; Shade() fakes it with an ordered 4x4 Bayer dither.
+
+constexpr int kW = MonoFrame::kWidth, kH = MonoFrame::kHeight;
+constexpr double kPi = 3.14159265358979323846;
+
+int Clamp(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
+
+bool InEllipse(int x, int y, int cx, int cy, int rx, int ry) {
+    if (rx <= 0 || ry <= 0) return false;
+    const int64_t dx = x - cx, dy = y - cy, rx2 = int64_t{rx} * rx, ry2 = int64_t{ry} * ry;
+    return dx * dx * ry2 + dy * dy * rx2 <= rx2 * ry2;
+}
+
+void FillEllipse(MonoFrame& f, int cx, int cy, int rx, int ry, bool ink = true) {
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
+        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
+            if (InEllipse(x, y, cx, cy, rx, ry)) f.SetPixel(x, y, ink);
+}
+
+// Elliptical band of width w (inner edge = outer shrunk by w).
+void Ring(MonoFrame& f, int cx, int cy, int rx, int ry, int w, bool ink = true) {
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
+        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
+            if (InEllipse(x, y, cx, cy, rx, ry) && !InEllipse(x, y, cx, cy, rx - w, ry - w))
+                f.SetPixel(x, y, ink);
+}
+
+// Hot path: Stroke() stamps one disk per pixel, so stay in 32-bit math.
+void Disk(MonoFrame& f, int cx, int cy, int r, bool ink = true) {
+    const int r2 = r * r;
+    for (int dy = -r; dy <= r; ++dy)
+        for (int dx = -r; dx <= r; ++dx)
+            if (dx * dx + dy * dy <= r2) f.SetPixel(cx + dx, cy + dy, ink);
+}
+
+// White body with a black outline: the basic "sticker" shape.
+void Blob(MonoFrame& f, int cx, int cy, int rx, int ry, int w) {
+    FillEllipse(f, cx, cy, rx, ry, false);
+    Ring(f, cx, cy, rx, ry, w);
+}
+
+bool Bayer(int x, int y, int level) {  // level 0 (white) .. 16 (black)
+    static const uint8_t kM[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+    return kM[y & 3][x & 3] < level;
+}
+
+// Dithered ellipse; only adds ink, white stays white under it.
+void Shade(MonoFrame& f, int cx, int cy, int rx, int ry, int level) {
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
+        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
+            if (InEllipse(x, y, cx, cy, rx, ry) && Bayer(x, y, level)) f.SetPixel(x, y, true);
+}
+
+void ShadeRect(MonoFrame& f, int x0, int y0, int w, int h, int level) {
+    for (int y = Clamp(y0, 0, kH - 1); y < Clamp(y0 + h, 0, kH); ++y)
+        for (int x = Clamp(x0, 0, kW - 1); x < Clamp(x0 + w, 0, kW); ++x)
+            if (Bayer(x, y, level)) f.SetPixel(x, y, true);
+}
+
+// Round-capped stroke: a disk stamped along a Bresenham line.
+void Stroke(MonoFrame& f, int x0, int y0, int x1, int y1, int w, bool ink = true) {
+    const int r = w / 2;
     const int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     const int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
     while (true) {
-        f.SetPixel(x0, y0, true);
+        if (r <= 0) f.SetPixel(x0, y0, ink);
+        else Disk(f, x0, y0, r, ink);
         if (x0 == x1 && y0 == y1) break;
         const int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
@@ -53,131 +119,269 @@ void Line(MonoFrame& f, int x0, int y0, int x1, int y1) {
     }
 }
 
-void Rectangle(MonoFrame& f, int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) return;
-    Line(f, x, y, x + w - 1, y);
-    Line(f, x, y, x, y + h - 1);
-    Line(f, x + w - 1, y, x + w - 1, y + h - 1);
-    Line(f, x, y + h - 1, x + w - 1, y + h - 1);
+// Elliptical arc, degrees clockwise from +x (screen y grows downwards):
+// 0..180 is the lower half, 180..360 the upper half.
+void Arc(MonoFrame& f, int cx, int cy, int rx, int ry, int a0, int a1, int w, bool ink = true) {
+    const int steps = std::max(8, (std::abs(a1 - a0) * std::max(rx, ry)) / 40);
+    int px = 0, py = 0;
+    for (int i = 0; i <= steps; ++i) {
+        const double a = (a0 + (a1 - a0) * static_cast<double>(i) / steps) * kPi / 180.0;
+        const int x = cx + static_cast<int>(std::lround(rx * std::cos(a)));
+        const int y = cy + static_cast<int>(std::lround(ry * std::sin(a)));
+        if (i > 0) Stroke(f, px, py, x, y, w, ink);
+        px = x;
+        py = y;
+    }
 }
 
-void Ellipse(MonoFrame& f, int cx, int cy, int rx, int ry, bool filled) {
-    if (rx <= 0 || ry <= 0) return;
-    const int64_t rx2 = static_cast<int64_t>(rx) * rx;
-    const int64_t ry2 = static_cast<int64_t>(ry) * ry;
-    const int64_t limit = rx2 * ry2;
-    const int64_t inner_rx2 = static_cast<int64_t>(rx - 1) * (rx - 1);
-    const int64_t inner_ry2 = static_cast<int64_t>(ry - 1) * (ry - 1);
-    const int64_t inner_limit = inner_rx2 * inner_ry2;
-
-    for (int y = std::max(0, cy - ry); y <= std::min(MonoFrame::kHeight - 1, cy + ry); ++y) {
-        for (int x = std::max(0, cx - rx); x <= std::min(MonoFrame::kWidth - 1, cx + rx); ++x) {
-            const int64_t dx = x - cx, dy = y - cy;
-            const bool in_outer = dx * dx * ry2 + dy * dy * rx2 <= limit;
-            if (!in_outer) continue;
-            const bool in_inner =
-                rx > 1 && ry > 1 &&
-                dx * dx * inner_ry2 + dy * dy * inner_rx2 <= inner_limit;
-            if (filled || !in_inner) f.SetPixel(x, y, true);
+// level < 16 dithers the fill (see Bayer) instead of painting it solid.
+void FillTriangle(MonoFrame& f, int x0, int y0, int x1, int y1, int x2, int y2, bool ink = true,
+                  int level = 16) {
+    const int minx = Clamp(std::min({x0, x1, x2}), 0, kW - 1);
+    const int maxx = Clamp(std::max({x0, x1, x2}), 0, kW - 1);
+    const int miny = Clamp(std::min({y0, y1, y2}), 0, kH - 1);
+    const int maxy = Clamp(std::max({y0, y1, y2}), 0, kH - 1);
+    auto edge = [](int ax, int ay, int bx, int by, int px, int py) {
+        return int64_t{bx - ax} * (py - ay) - int64_t{by - ay} * (px - ax);
+    };
+    for (int y = miny; y <= maxy; ++y)
+        for (int x = minx; x <= maxx; ++x) {
+            const int64_t a = edge(x0, y0, x1, y1, x, y), b = edge(x1, y1, x2, y2, x, y),
+                          c = edge(x2, y2, x0, y0, x, y);
+            if (((a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0)) &&
+                (level >= 16 || Bayer(x, y, level)))
+                f.SetPixel(x, y, ink);
         }
-    }
 }
 
-void ThickLine(MonoFrame& f, int x0, int y0, int x1, int y1, int thickness) {
-    for (int offset = -thickness / 2; offset <= thickness / 2; ++offset) {
-        Line(f, x0, y0 + offset, x1, y1 + offset);
-    }
+bool InRoundRect(int px, int py, int x, int y, int w, int h, int r) {
+    if (px < x || py < y || px >= x + w || py >= y + h) return false;
+    const int qx = Clamp(px, x + r, x + w - 1 - r), qy = Clamp(py, y + r, y + h - 1 - r);
+    return (px - qx) * (px - qx) + (py - qy) * (py - qy) <= r * r;
 }
 
-void PetFace(MonoFrame& f, int cx, int cy, int scale, Emotion emotion) {
-    // Scale in percent: 100 for home, 55 for book. Static shape only.
+void FillRoundRect(MonoFrame& f, int x, int y, int w, int h, int r, bool ink = true) {
+    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py)
+        for (int px = Clamp(x, 0, kW - 1); px < Clamp(x + w, 0, kW); ++px)
+            if (InRoundRect(px, py, x, y, w, h, r)) f.SetPixel(px, py, ink);
+}
+
+void RoundRectRing(MonoFrame& f, int x, int y, int w, int h, int r, int t, bool ink = true) {
+    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py)
+        for (int px = Clamp(x, 0, kW - 1); px < Clamp(x + w, 0, kW); ++px)
+            if (InRoundRect(px, py, x, y, w, h, r) &&
+                !InRoundRect(px, py, x + t, y + t, w - 2 * t, h - 2 * t, std::max(0, r - t)))
+                f.SetPixel(px, py, ink);
+}
+
+// Four-point twinkle star.
+void Sparkle(MonoFrame& f, int cx, int cy, int r, bool ink = true) {
+    const int k = std::max(1, r / 4);
+    FillTriangle(f, cx, cy - r, cx - k, cy, cx + k, cy, ink);
+    FillTriangle(f, cx, cy + r, cx - k, cy, cx + k, cy, ink);
+    FillTriangle(f, cx - r, cy, cx, cy - k, cx, cy + k, ink);
+    FillTriangle(f, cx + r, cy, cx, cy - k, cx, cy + k, ink);
+}
+
+// Bold "Z" for sleep bubbles.
+void LetterZ(MonoFrame& f, int x, int y, int size, int w, bool ink = true) {
+    Stroke(f, x, y, x + size, y, w, ink);
+    Stroke(f, x + size, y, x, y + size, w, ink);
+    Stroke(f, x, y + size, x + size, y + size, w, ink);
+}
+
+// Thick-stroked "?" that floats beside a curious pet.
+void QuestionMark(MonoFrame& f, int cx, int cy, int r, int w) {
+    Arc(f, cx, cy - r, r, r, 180, 400, w);
+    const int bx = cx + static_cast<int>(std::lround(r * std::cos(40 * kPi / 180)));
+    const int by = cy - r + static_cast<int>(std::lround(r * std::sin(40 * kPi / 180)));
+    Stroke(f, bx, by, cx, cy + r / 2, w);
+    Disk(f, cx, cy + r + w + 2, w / 2 + 1);
+}
+
+// ---- TuanTuan, the pet ---------------------------------------------------------
+// A round tabby kitten. (cx, cy) is the head centre, scale is percent of the
+// home size. Shapes are drawn back to front: ears, head, markings, face.
+
+// asleep: closed eyes whatever the emotion. halo: a white rim around head
+// and ears so the outline stays visible on a black background.
+void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion, bool asleep = false,
+             bool halo = false) {
     auto s = [scale](int d) { return d * scale / 100; };
-    const int rx = s(125), ry = s(108);
-    Ellipse(f, cx, cy, rx, ry, false);
-    // Ears: fixed line art intended for 1-bit ePaper, not animation.
-    Line(f, cx - s(96), cy - s(53), cx - s(105), cy - s(155));
-    Line(f, cx - s(105), cy - s(155), cx - s(27), cy - s(101));
-    Line(f, cx + s(96), cy - s(53), cx + s(105), cy - s(155));
-    Line(f, cx + s(105), cy - s(155), cx + s(27), cy - s(101));
-
-    const int ex = s(47), ey = cy - s(8);
-    if (emotion == Emotion::Happy) {
-        ThickLine(f, cx - ex - s(18), ey, cx - ex, ey - s(12), std::max(1, s(4)));
-        ThickLine(f, cx - ex, ey - s(12), cx - ex + s(18), ey, std::max(1, s(4)));
-        ThickLine(f, cx + ex - s(18), ey, cx + ex, ey - s(12), std::max(1, s(4)));
-        ThickLine(f, cx + ex, ey - s(12), cx + ex + s(18), ey, std::max(1, s(4)));
-    } else if (emotion == Emotion::Sleepy) {
-        ThickLine(f, cx - ex - s(20), ey, cx - ex + s(20), ey, std::max(1, s(4)));
-        ThickLine(f, cx + ex - s(20), ey, cx + ex + s(20), ey, std::max(1, s(4)));
-    } else {
-        Ellipse(f, cx - ex, ey, std::max(2, s(emotion == Emotion::Surprised ? 12 : 8)),
-                std::max(2, s(emotion == Emotion::Surprised ? 15 : 10)), true);
-        Ellipse(f, cx + ex, ey, std::max(2, s(emotion == Emotion::Curious ? 13 : 8)),
-                std::max(2, s(emotion == Emotion::Curious ? 14 : 10)), true);
+    const int line = std::max(2, s(7));
+    if (halo) {
+        for (int side : {-1, 1})
+            FillTriangle(f, cx + side * s(130), cy - s(4), cx + side * s(106), cy - s(154),
+                         cx + side * s(12), cy - s(88), false);
+        FillEllipse(f, cx, cy, s(124) + 8, s(100) + 8, false);
     }
 
-    // Nose and mouth: use separate discrete poses, never per-audio-frame updates.
-    Ellipse(f, cx, cy + s(30), std::max(2, s(7)), std::max(2, s(5)), true);
-    if (emotion == Emotion::Sleepy || emotion == Emotion::Surprised) {
-        Ellipse(f, cx, cy + s(57), std::max(2, s(12)), std::max(2, s(15)), false);
-    } else if (emotion == Emotion::Curious) {
-        Line(f, cx - s(12), cy + s(60), cx + s(12), cy + s(60));
-    } else {
-        Line(f, cx - s(27), cy + s(48), cx - s(12), cy + s(64));
-        Line(f, cx - s(12), cy + s(64), cx + s(12), cy + s(64));
-        Line(f, cx + s(12), cy + s(64), cx + s(27), cy + s(48));
+    // Ears: solid black triangles with a dithered inner ear.
+    for (int side : {-1, 1}) {
+        FillTriangle(f, cx + side * s(118), cy - s(10), cx + side * s(100), cy - s(138),
+                     cx + side * s(22), cy - s(84));
+        const int ix0 = cx + side * s(96), iy0 = cy - s(40), ix1 = cx + side * s(92),
+                  iy1 = cy - s(108), ix2 = cx + side * s(46), iy2 = cy - s(78);
+        FillTriangle(f, ix0, iy0, ix1, iy1, ix2, iy2, false);
+        FillTriangle(f, ix0, iy0, ix1, iy1, ix2, iy2, true, 5);
     }
-}
+    Blob(f, cx, cy, s(124), s(100), line);
 
-void Crescent(MonoFrame& f, int cx, int cy, int r, int offset) {
-    for (int y = cy - r; y <= cy + r; ++y) {
-        for (int x = cx - r; x <= cx + r; ++x) {
-            const int dx = x - cx, dy = y - cy, ox = dx - offset;
-            if (dx * dx + dy * dy <= r * r && ox * ox + dy * dy > r * r)
-                f.SetPixel(x, y, true);
-        }
+    // Tabby stripes on the forehead.
+    const int stripe = std::max(2, s(9));
+    Stroke(f, cx - s(22), cy - s(90), cx - s(16), cy - s(66), stripe);
+    Stroke(f, cx, cy - s(94), cx, cy - s(64), stripe);
+    Stroke(f, cx + s(22), cy - s(90), cx + s(16), cy - s(66), stripe);
+
+    // Blush cheeks.
+    Shade(f, cx - s(80), cy + s(36), s(22), s(13), 6);
+    Shade(f, cx + s(80), cy + s(36), s(22), s(13), 6);
+
+    // Whiskers reach past the cheeks.
+    const int whisker = std::max(1, s(4));
+    for (int side : {-1, 1}) {
+        Stroke(f, cx + side * s(100), cy + s(22), cx + side * s(150), cy + s(12), whisker);
+        Stroke(f, cx + side * s(100), cy + s(40), cx + side * s(152), cy + s(46), whisker);
     }
-}
 
-// Rail icons: bold line art centred on (cx, cy), readable without text.
-void RailIcon(MonoFrame& f, int slot, int cx, int cy) {
-    switch (slot) {
-        case 0:  // Chat: speech bubble with tail and three dots
-            Ellipse(f, cx, cy - 6, 36, 24, false);
-            Ellipse(f, cx, cy - 6, 35, 23, false);
-            ThickLine(f, cx - 18, cy + 14, cx - 28, cy + 30, 3);
-            ThickLine(f, cx - 28, cy + 30, cx - 4, cy + 17, 3);
-            for (int i = -1; i <= 1; ++i) Ellipse(f, cx + i * 14, cy - 6, 4, 4, true);
+    // Eyes.
+    const int ex = s(50), ey = cy + s(2);
+    if (asleep) {  // peaceful closed eyes
+        Arc(f, cx - ex, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
+        Arc(f, cx + ex, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
+    } else switch (emotion) {
+        case Emotion::Happy:  // ^ ^
+            Arc(f, cx - ex, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
+            Arc(f, cx + ex, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
             break;
-        case 1:  // Story: open book
-            Rectangle(f, cx - 38, cy - 24, 38, 48);
-            Rectangle(f, cx - 37, cy - 23, 36, 46);
-            Rectangle(f, cx, cy - 24, 38, 48);
-            Rectangle(f, cx + 1, cy - 23, 36, 46);
-            for (int i = 0; i < 3; ++i) {
-                Line(f, cx - 30, cy - 12 + i * 12, cx - 8, cy - 12 + i * 12);
-                Line(f, cx + 8, cy - 12 + i * 12, cx + 30, cy - 12 + i * 12);
+        case Emotion::Sleepy:  // drowsy: half-lidded lines with lashes
+            for (int side : {-1, 1}) {
+                Arc(f, cx + side * ex, ey - s(4), s(20), s(14), 15, 165, std::max(2, s(8)));
+                Stroke(f, cx + side * (ex + s(18)), ey + s(4), cx + side * (ex + s(26)), ey + s(12),
+                       std::max(1, s(4)));
             }
             break;
-        case 2:  // Game: die showing five
-            Rectangle(f, cx - 28, cy - 28, 56, 56);
-            Rectangle(f, cx - 27, cy - 27, 54, 54);
-            for (int dx : {-14, 14})
-                for (int dy : {-14, 14}) Ellipse(f, cx + dx, cy + dy, 5, 5, true);
-            Ellipse(f, cx, cy, 5, 5, true);
+        case Emotion::Surprised:  // wide rings, small pupils
+            for (int side : {-1, 1}) {
+                Ring(f, cx + side * ex, ey, s(22), s(26), std::max(2, s(6)));
+                Disk(f, cx + side * ex, ey, std::max(2, s(9)));
+            }
             break;
-        case 3:  // Feed: carrot with leaves
-            ThickLine(f, cx - 16, cy - 16, cx + 6, cy + 30, 3);
-            ThickLine(f, cx + 16, cy - 16, cx + 6, cy + 30, 3);
-            ThickLine(f, cx - 16, cy - 16, cx + 16, cy - 16, 3);
-            Line(f, cx - 6, cy - 16, cx - 14, cy - 34);
-            Line(f, cx, cy - 16, cx, cy - 36);
-            Line(f, cx + 6, cy - 16, cx + 14, cy - 34);
+        case Emotion::Curious:  // big shiny eyes glancing up
+        case Emotion::Neutral:
+        default: {
+            const bool curious = emotion == Emotion::Curious;
+            const int rx = s(curious ? 21 : 18), ry = s(curious ? 25 : 22);
+            for (int side : {-1, 1}) {
+                const int x = cx + side * ex;
+                FillEllipse(f, x, ey, rx, ry);
+                Disk(f, x + s(curious ? 6 : -5), ey - s(curious ? 10 : 8), std::max(1, s(7)), false);
+                Disk(f, x + s(curious ? -6 : 6), ey + s(8), std::max(1, s(3)), false);
+            }
+            break;
+        }
+    }
+
+    // Nose: small rounded triangle.
+    FillTriangle(f, cx - s(11), cy + s(24), cx + s(11), cy + s(24), cx, cy + s(35));
+    Disk(f, cx, cy + s(27), std::max(1, s(5)));
+
+    // Mouth.
+    const int mw = std::max(2, s(5));
+    if (emotion == Emotion::Surprised) {
+        Ring(f, cx, cy + s(58), s(12), s(15), mw);
+    } else if (emotion == Emotion::Happy) {
+        // Open laughing mouth with a dithered tongue.
+        for (int y = cy + s(40); y <= cy + s(70); ++y)
+            for (int x = cx - s(22); x <= cx + s(22); ++x)
+                if (y >= cy + s(42) && InEllipse(x, y, cx, cy + s(42), s(22), s(26)))
+                    f.SetPixel(x, y, true);
+        FillEllipse(f, cx, cy + s(60), s(12), s(7), false);
+        Shade(f, cx, cy + s(60), s(12), s(7), 6);
+        Arc(f, cx - s(11), cy + s(36), s(11), s(9), 0, 180, mw);
+        Arc(f, cx + s(11), cy + s(36), s(11), s(9), 0, 180, mw);
+    } else if (emotion == Emotion::Curious) {
+        Ring(f, cx + s(6), cy + s(54), s(8), s(8), mw);
+    } else {
+        // Classic cat "w" mouth.
+        const int r = emotion == Emotion::Sleepy ? s(8) : s(11);
+        Arc(f, cx - r, cy + s(35), r, s(9), 0, 180, mw);
+        Arc(f, cx + r, cy + s(35), r, s(9), 0, 180, mw);
+    }
+}
+
+// Sitting pose for the home screen: tail, body, paws, collar bell, head.
+void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion) {
+    // Tail curling up on the right.
+    Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 22);
+    Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 10, false);
+    Blob(f, cx, cy + 140, 104, 76, 7);
+    Shade(f, cx, cy + 156, 46, 36, 2);  // lighter belly fur
+    for (int side : {-1, 1}) {
+        const int px = cx + side * 44, py = cy + 196;
+        Blob(f, px, py, 30, 18, 6);
+        Stroke(f, px - 8, py + 4, px - 8, py + 14, 4);
+        Stroke(f, px + 8, py + 4, px + 8, py + 14, 4);
+    }
+    CatHead(f, cx, cy, 100, emotion);
+    // Bell on the collar, just under the chin.
+    Blob(f, cx, cy + 110, 14, 13, 4);
+    Shade(f, cx, cy + 110, 10, 9, 8);
+    Stroke(f, cx, cy + 112, cx, cy + 122, 3);
+    if (emotion == Emotion::Curious) QuestionMark(f, cx + 168, cy - 96, 20, 9);
+    if (emotion == Emotion::Surprised) {
+        Stroke(f, cx - 150, cy - 110, cx - 136, cy - 82, 8);
+        Stroke(f, cx - 176, cy - 82, cx - 152, cy - 66, 8);
+        Stroke(f, cx + 150, cy - 110, cx + 136, cy - 82, 8);
+        Stroke(f, cx + 176, cy - 82, cx + 152, cy - 66, 8);
+    }
+    if (emotion == Emotion::Sleepy) {
+        LetterZ(f, cx + 160, cy - 80, 22, 6);
+        LetterZ(f, cx + 196, cy - 120, 30, 7);
+    }
+}
+
+// ---- Home action rail -----------------------------------------------------------
+
+// Rail icons: bold strokes centred on (cx, cy); `ink` false draws them
+// white for the selected (black) card.
+void RailIcon(MonoFrame& f, int slot, int cx, int cy, bool ink) {
+    switch (slot) {
+        case 0:  // Chat: speech bubble with three dots
+            RoundRectRing(f, cx - 38, cy - 30, 76, 50, 18, 6, ink);
+            FillTriangle(f, cx - 22, cy + 14, cx - 4, cy + 14, cx - 28, cy + 34, ink);
+            FillTriangle(f, cx - 18, cy + 13, cx - 8, cy + 13, cx - 22, cy + 24, !ink);
+            for (int i = -1; i <= 1; ++i) Disk(f, cx + i * 17, cy - 5, 6, ink);
+            break;
+        case 1:  // Story: open book
+            for (int side : {-1, 1}) {
+                Stroke(f, cx, cy - 18, cx + side * 20, cy - 26, 6, ink);
+                Stroke(f, cx + side * 20, cy - 26, cx + side * 40, cy - 22, 6, ink);
+                Stroke(f, cx + side * 40, cy - 22, cx + side * 40, cy + 22, 6, ink);
+                Stroke(f, cx + side * 40, cy + 22, cx + side * 20, cy + 18, 6, ink);
+                Stroke(f, cx + side * 20, cy + 18, cx, cy + 26, 6, ink);
+                for (int i = 0; i < 3; ++i)
+                    Stroke(f, cx + side * 10, cy - 10 + i * 11, cx + side * 30, cy - 12 + i * 11, 3, ink);
+            }
+            Stroke(f, cx, cy - 18, cx, cy + 26, 6, ink);
+            break;
+        case 2:  // Game: die showing five
+            RoundRectRing(f, cx - 32, cy - 32, 64, 64, 14, 6, ink);
+            for (int dx : {-14, 14})
+                for (int dy : {-14, 14}) Disk(f, cx + dx, cy + dy, 6, ink);
+            Disk(f, cx, cy, 6, ink);
+            break;
+        case 3:  // Feed: a fish
+            Ring(f, cx - 8, cy, 30, 20, 6, ink);
+            FillTriangle(f, cx + 16, cy, cx + 42, cy - 20, cx + 42, cy + 20, ink);
+            Disk(f, cx - 22, cy - 4, 5, ink);
+            Arc(f, cx - 2, cy, 10, 14, -60, 60, 4, ink);
             break;
         case 4:  // Sleep: crescent moon and a star
-            Crescent(f, cx - 6, cy, 28, 14);
-            ThickLine(f, cx + 22, cy - 22, cx + 34, cy - 22, 2);
-            ThickLine(f, cx + 28, cy - 28, cx + 28, cy - 16, 2);
+            Disk(f, cx - 6, cy + 2, 30, ink);
+            Disk(f, cx + 8, cy - 8, 26, !ink);
+            Sparkle(f, cx + 26, cy - 22, 13, ink);
+            Sparkle(f, cx + 34, cy + 16, 7, ink);
             break;
         default:
             break;
@@ -186,46 +390,115 @@ void RailIcon(MonoFrame& f, int slot, int cx, int cy) {
 
 void ActionRail(MonoFrame& f, uint8_t selection) {
     const int top = SceneComposer::kRailTop, slot_w = SceneComposer::kRailSlotWidth;
-    ThickLine(f, 0, top, MonoFrame::kWidth - 1, top, 2);
     for (int slot = 0; slot < 5; ++slot) {
-        RailIcon(f, slot, slot * slot_w + slot_w / 2, top + 50);
+        const int x = slot * slot_w + 8, y = top + 6, w = slot_w - 16, h = 88;
+        const bool selected = slot == selection;
+        if (selected) {
+            // Inverted card: the one thing on screen that is mostly black.
+            FillRoundRect(f, x, y, w, h, 20);
+        } else {
+            RoundRectRing(f, x, y, w, h, 20, 3);
+        }
+        RailIcon(f, slot, x + w / 2, y + h / 2, !selected);
     }
-    if (selection >= 5) return;  // nothing highlighted
-    // Thick 4 px frame around the selected slot.
-    for (int i = 0; i < 4; ++i)
-        Rectangle(f, selection * slot_w + 6 + i, top + 6 + i, slot_w - 12 - 2 * i, 88 - 2 * i);
 }
 
-// Fixed picture kept on the unpowered ePaper: sleeping face, moon, Zzz.
-void SleepScene(MonoFrame& f) {
-    PetFace(f, 400, 260, 100, Emotion::Sleepy);
-    Crescent(f, 680, 85, 42, 20);
-    ThickLine(f, 740, 50, 756, 50, 2);
-    ThickLine(f, 748, 42, 748, 58, 2);
-    // Three growing "Z" letters rising to the right of the head.
-    for (int i = 0; i < 3; ++i) {
-        const int size = 16 + i * 10, x = 540 + i * 32, y = 232 - i * 40;
-        ThickLine(f, x, y, x + size, y, 3);
-        ThickLine(f, x + size, y, x, y + size, 3);
-        ThickLine(f, x, y + size, x + size, y + size, 3);
-    }
-}
+// ---- Scenes --------------------------------------------------------------------
 
 void HomeScene(MonoFrame& f, const SceneModel& model) {
-    PetFace(f, 400, 215, 90, model.emotion);
+    // Background twinkles and a dithered cushion under the pet.
+    Sparkle(f, 110, 90, 18);
+    Sparkle(f, 160, 150, 9);
+    Sparkle(f, 690, 80, 14);
+    Sparkle(f, 640, 220, 10);
+    Sparkle(f, 96, 280, 8);
+    Disk(f, 720, 300, 4);
+    Disk(f, 70, 190, 4);
+    Shade(f, 400, 356, 200, 20, 6);
+    Ring(f, 400, 356, 200, 20, 3);
+    SittingCat(f, 400, 158, model.emotion);
     ActionRail(f, model.home_selection);
 }
 
 void ReaderScene(MonoFrame& f, const SceneModel& model) {
-    Rectangle(f, 38, 30, 724, 414);
-    Rectangle(f, 56, 48, 688, 378);
-    Line(f, 400, 48, 400, 425);
-    PetFace(f, 220, 245, 55, model.emotion);
+    // Hardcover, two pages, shaded gutter and page edges at the bottom.
+    FillRoundRect(f, 24, 18, 752, 446, 24);
+    for (int side : {0, 1}) {
+        const int x = side ? 404 : 44;
+        FillRoundRect(f, x, 34, 352, 404, 16, false);
+        for (int i = 0; i < 3; ++i) {  // gutter shadow, darker towards the spine
+            const int gx = side ? 404 + i * 5 : 391 - i * 5;
+            ShadeRect(f, gx, 44, 5, 384, 6 - i * 2);
+        }
+        for (int i = 0; i < 2; ++i)
+            Stroke(f, x + 18, 444 + i * 6, x + 334, 444 + i * 6, 1, false);
+    }
+    CatHead(f, 220, 236, 62, model.emotion);
+    Sparkle(f, 96, 86, 12);
+    Sparkle(f, 340, 96, 8);
+    Sparkle(f, 330, 360, 10);
+    // Right page: soft text bars and a page indicator.
+    const int bars[] = {260, 230, 270, 200, 250, 150};
+    for (int i = 0; i < 6; ++i) {
+        const int y = 92 + i * 44;
+        Stroke(f, 452, y + 8, 452 + bars[i], y + 8, 8);
+    }
     const int indicators = 5;
     for (int i = 0; i < indicators; ++i) {
-        Ellipse(f, 575 + i * 28, 387, 7, 7,
-                static_cast<int>(model.book_page % indicators) == i);
+        const int x = 520 + i * 30, y = 400;
+        if (static_cast<int>(model.book_page % indicators) == i) Disk(f, x, y, 9);
+        else Ring(f, x, y, 7, 7, 3);
     }
+}
+
+// Fixed picture kept on the unpowered ePaper: night sky, moon, and TuanTuan
+// curled up asleep on a cushion.
+void SleepScene(MonoFrame& f) {
+    // Black sky above a rolling white hill with a stippled horizon.
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x) f.SetPixel(x, y, true);
+    FillEllipse(f, 400, 660, 720, 350, false);
+    for (int i = 0; i < 4; ++i)
+        for (int y = 280; y < kH; ++y)
+            for (int x = 0; x < kW; ++x)
+                if (InEllipse(x, y, 400, 660, 726 + i * 6, 356 + i * 6) &&
+                    !InEllipse(x, y, 400, 660, 720 + i * 6, 350 + i * 6) && !Bayer(x, y, 6 + i * 3))
+                    f.SetPixel(x, y, false);
+
+    // Moon with a halo ring, and stars.
+    Disk(f, 676, 88, 46, false);
+    Disk(f, 700, 70, 40, true);
+    Ring(f, 676, 88, 64, 64, 2, false);
+    const int stars[][3] = {{60, 40, 12}, {250, 70, 8}, {360, 40, 11}, {470, 110, 7},
+                            {560, 40, 9}, {430, 200, 6}, {770, 190, 8}, {30, 200, 6}};
+    for (const auto& s : stars) Sparkle(f, s[0], s[1], s[2], false);
+    const int dots[][2] = {{300, 20}, {400, 150}, {120, 230}, {600, 150}, {730, 250},
+                           {520, 230}, {500, 20}, {190, 30}};
+    for (const auto& d : dots) Disk(f, d[0], d[1], 2, false);
+
+    // Cushion.
+    FillEllipse(f, 420, 352, 240, 24, false);
+    Shade(f, 420, 352, 240, 24, 6);
+    Ring(f, 420, 352, 240, 24, 4);
+
+    // Curled-up body, tail wrapped along the front, head resting on paws.
+    const int bx = 480, by = 290;
+    FillEllipse(f, bx, by, 150, 74, false);  // white halo against the sky
+    Blob(f, bx, by, 142, 66, 7);
+    Stroke(f, bx + 10, by - 60, bx + 4, by - 38, 9);  // back stripes
+    Stroke(f, bx + 44, by - 56, bx + 36, by - 34, 9);
+    Stroke(f, bx + 78, by - 44, bx + 70, by - 24, 9);
+    Arc(f, bx - 20, by + 18, 140, 42, 0, 118, 22);
+    Arc(f, bx - 20, by + 18, 140, 42, 3, 115, 10, false);
+    const int hx = 330, hy = 280;
+    CatHead(f, hx, hy, 72, Emotion::Neutral, /*asleep=*/true, /*halo=*/true);
+    Blob(f, hx - 32, hy + 70, 26, 14, 5);
+    Blob(f, hx + 32, hy + 70, 26, 14, 5);
+
+    // Zzz rising into the sky.
+    LetterZ(f, 196, 170, 20, 6, false);
+    LetterZ(f, 146, 110, 28, 7, false);
+    LetterZ(f, 84, 42, 38, 8, false);
 }
 
 }  // namespace
