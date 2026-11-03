@@ -21,4 +21,17 @@ PetInputDecision PetInputRouter::Decide(PetMode mode, PetClick click) {
     return {};
 }
 
+PetInputDecision PetInputRouter::DecideDial(PetMode mode, InputKind kind) {
+    if (mode == PetMode::Story) {
+        if (kind == InputKind::DialDown) return {true, PetAction::NextPage};
+        if (kind == InputKind::DialLong) return {true, PetAction::StopStory};
+        return {};  // no previous-page action in the v1 PetController yet
+    }
+    if (mode == PetMode::Idle || mode == PetMode::Interact) {
+        // Home action rail (V2-03) will give DialUp/DialDown meaning.
+        if (kind == InputKind::DialPress) return {true, PetAction::Pickup};
+    }
+    return {};
+}
+
 }  // namespace kid_app

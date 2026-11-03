@@ -321,6 +321,168 @@ BOARD_WORKER = r'''
             ESP_LOGE(TAG, "PET_RUNTIME_TOGGLE_TASK_FAILED");
         }
     }
+
+    // Three-way dial (active low, pulled up). The schematic labels GPIO4
+    // Button_Up and GPIO6 Button_Down, but the 2026-11-02 V1 trial showed
+    // the direction a child pushes is the opposite: physical up = GPIO6,
+    // physical down = GPIO4. Centre press = GPIO5 (Button_Function).
+    // Button callbacks only enqueue raw edges; one task owns InputHub.
+    Button dial_up_{GPIO_NUM_6};
+    Button dial_press_{GPIO_NUM_5};
+    Button dial_down_{GPIO_NUM_4};
+    QueueHandle_t pet_input_queue_ = nullptr;
+    kid_app::InputHub input_hub_;
+
+    struct RawKeyEdge {
+        uint8_t key;
+        uint8_t down;
+        uint32_t at_ms;
+    };
+
+    static uint32_t NowMs() {
+        return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    }
+
+    // BOOT + dial press is the parent combo. Legacy iot_button BOOT
+    // handlers check this so the combo never toggles chat or Pet mode.
+    static bool DialPressHeld() { return gpio_get_level(GPIO_NUM_5) == 0; }
+
+    void PostKeyEdge(kid_app::InputKey key, bool down) {
+        if (!pet_input_queue_) return;
+        const RawKeyEdge edge{static_cast<uint8_t>(key),
+                              static_cast<uint8_t>(down ? 1 : 0), NowMs()};
+        xQueueSend(pet_input_queue_, &edge, 0);
+    }
+
+    static const char* InputKindName(kid_app::InputKind kind) {
+        switch (kind) {
+            case kid_app::InputKind::DialUp: return "DialUp";
+            case kid_app::InputKind::DialDown: return "DialDown";
+            case kid_app::InputKind::DialPress: return "DialPress";
+            case kid_app::InputKind::DialLong: return "DialLong";
+            case kid_app::InputKind::Talk: return "Talk";
+            case kid_app::InputKind::BootLong: return "BootLong";
+            case kid_app::InputKind::SleepRequest: return "SleepRequest";
+            case kid_app::InputKind::ParentCombo: return "ParentCombo";
+        }
+        return "Unknown";
+    }
+
+    void HandleInputEvent(const kid_app::InputEvent& event) {
+        ESP_LOGI(TAG, "PET_INPUT kind=%s repeat=%d pet=%d", InputKindName(event.kind),
+                 event.repeat ? 1 : 0, pet_mode_.load() ? 1 : 0);
+        // A child using the dial is activity; do not auto-power-off.
+        if (power_save_timer_) power_save_timer_->WakeUp();
+        // BOOT/PWR keep their existing board handlers; only dial semantics
+        // become durable Pet actions, and only while Pet mode is on.
+        if (!pet_mode_.load()) return;
+        const auto decision =
+            kid_app::PetInputRouter::DecideDial(pet_event_mode_.load(), event.kind);
+        if (decision.valid && !pet_service_.PostLocal(decision.action))
+            ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+    }
+
+    void InputTaskLoop() {
+        RawKeyEdge edge{};
+        for (;;) {
+            const auto state = Application::GetInstance().GetDeviceState();
+            input_hub_.SetVoiceActive(state == kDeviceStateListening ||
+                                      state == kDeviceStateSpeaking);
+            while (xQueueReceive(pet_input_queue_, &edge, pdMS_TO_TICKS(20)) == pdTRUE) {
+                const auto key = static_cast<kid_app::InputKey>(edge.key);
+                if (edge.down) input_hub_.Press(key, edge.at_ms);
+                else input_hub_.Release(key, edge.at_ms);
+            }
+            input_hub_.Tick(NowMs());
+            kid_app::InputEvent event{};
+            while (input_hub_.Next(&event)) HandleInputEvent(event);
+        }
+    }
+
+    void StartPetInput() {
+        pet_input_queue_ = xQueueCreate(16, sizeof(RawKeyEdge));
+        if (!pet_input_queue_ ||
+            xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->InputTaskLoop();
+            }, "pet_input", 4096, this, 2, nullptr) != pdPASS) {
+            ESP_LOGW(TAG, "PET_INPUT_TASK_FAILED");
+            return;
+        }
+        dial_up_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::DialUp, true); });
+        dial_up_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::DialUp, false); });
+        dial_press_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::DialPress, true); });
+        dial_press_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::DialPress, false); });
+        dial_down_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::DialDown, true); });
+        dial_down_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::DialDown, false); });
+        boot_button_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::Boot, true); });
+        boot_button_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::Boot, false); });
+        pwr_button_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::Power, true); });
+        pwr_button_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::Power, false); });
+    }
+
+    // V1 read-only hardware acceptance. Probes and reads only: never sets
+    // RTC time/alarm, never writes PMIC registers, never stores readings.
+    bool DiagI2c(uint8_t address, const uint8_t* tx, size_t tx_len,
+                 uint8_t* rx, size_t rx_len, uint32_t wait_ms = 0) {
+        i2c_device_config_t config = {};
+        config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        config.device_address = address;
+        config.scl_speed_hz = 100000;
+        i2c_master_dev_handle_t device = nullptr;
+        if (i2c_master_bus_add_device(i2c_bus_, &config, &device) != ESP_OK) return false;
+        esp_err_t err;
+        if (rx_len && !wait_ms) {
+            err = i2c_master_transmit_receive(device, tx, tx_len, rx, rx_len, 100);
+        } else {
+            err = i2c_master_transmit(device, tx, tx_len, 100);
+            if (err == ESP_OK && rx_len) {
+                vTaskDelay(pdMS_TO_TICKS(wait_ms));
+                err = i2c_master_receive(device, rx, rx_len, 100);
+            }
+        }
+        i2c_master_bus_rm_device(device);
+        return err == ESP_OK;
+    }
+
+    void RunHardwareDiag() {
+        ESP_LOGI(TAG, "PET_DIAG_DIAL idle_levels gpio4=%d gpio5=%d gpio6=%d",
+                 gpio_get_level(GPIO_NUM_4), gpio_get_level(GPIO_NUM_5),
+                 gpio_get_level(GPIO_NUM_6));
+        // ES8311, TG28/AXP2101, PCF85063, QMI8658 (SA0 low/high), SHTC3.
+        static const uint8_t kAddresses[] = {0x18, 0x34, 0x51, 0x6A, 0x6B, 0x70};
+        uint8_t imu_address = 0;
+        for (uint8_t address : kAddresses) {
+            const bool ok = i2c_master_probe(i2c_bus_, address, 50) == ESP_OK;
+            ESP_LOGI(TAG, "PET_DIAG_I2C addr=0x%02x ok=%d", address, ok ? 1 : 0);
+            if (ok && (address == 0x6A || address == 0x6B)) imu_address = address;
+        }
+        uint8_t reg = 0x00, who = 0;  // QMI8658 WHO_AM_I, expected 0x05
+        const bool imu_ok = imu_address && DiagI2c(imu_address, &reg, 1, &who, 1);
+        ESP_LOGI(TAG, "PET_DIAG_IMU addr=0x%02x ok=%d who_am_i=0x%02x",
+                 imu_address, imu_ok ? 1 : 0, who);
+        const uint8_t wake[] = {0x35, 0x17}, measure[] = {0x78, 0x66}, sleep[] = {0xB0, 0x98};
+        uint8_t env[6] = {};
+        // Waits assume a 100 Hz tick: >= 10 ms after wake (240 us needed),
+        // >= 30 ms for a normal-mode measurement (12.1 ms max).
+        bool env_ok = DiagI2c(0x70, wake, sizeof(wake), nullptr, 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        env_ok = env_ok && DiagI2c(0x70, measure, sizeof(measure), env, sizeof(env), 40);
+        DiagI2c(0x70, sleep, sizeof(sleep), nullptr, 0);
+        const int raw_t = (env[0] << 8) | env[1], raw_h = (env[3] << 8) | env[4];
+        ESP_LOGI(TAG, "PET_DIAG_ENV ok=%d temp_c10=%d hum_pct=%d", env_ok ? 1 : 0,
+                 env_ok ? -450 + (1750 * raw_t) / 65536 : 0,
+                 env_ok ? (100 * raw_h) / 65536 : 0);
+        uint8_t time_reg = 0x04, clock[7] = {};  // seconds..years, BCD
+        const bool rtc_ok = DiagI2c(0x51, &time_reg, 1, clock, sizeof(clock));
+        ESP_LOGI(TAG, "PET_DIAG_RTC ok=%d osc_stopped=%d time=20%02x-%02x-%02x %02x:%02x:%02x",
+                 rtc_ok ? 1 : 0, (clock[0] >> 7) & 1, clock[6], clock[5] & 0x1F,
+                 clock[3] & 0x3F, clock[2] & 0x3F, clock[1] & 0x7F, clock[0] & 0x7F);
+        if (pmic_) {
+            ESP_LOGI(TAG, "PET_DIAG_PMIC battery=%d charging=%d discharging=%d",
+                     pmic_->GetBatteryLevel(), pmic_->IsCharging() ? 1 : 0,
+                     pmic_->IsDischarging() ? 1 : 0);
+        }
+    }
 '''
 
 
@@ -333,6 +495,9 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_scene_presenter.h"\n'
         '#include "kid_app/pet_local_event_id.h"\n'
         '#include "kid_app/pet_input_router.h"\n'
+        '#include "kid_app/input_hub.h"\n'
+        '#include <esp_timer.h>\n'
+        '#include <freertos/queue.h>\n'
         '#include "kid_app/waveshare_story_sd.h"\n'
         '#include "kid_app/freertos_story_pcm_worker.h"',
         "board headers")
@@ -340,7 +505,8 @@ def patch_board(text: str) -> str:
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
                 "board pet worker")
     text = once(text, "            app.ToggleChatState();",
-        """            if (pet_mode_.load()) {
+        """            if (DialPressHeld()) return;  // BOOT + dial = parent combo
+            if (pet_mode_.load()) {
                 const auto decision = kid_app::PetInputRouter::Decide(
                     pet_event_mode_.load(), kid_app::PetClick::Single);
                 if (decision.valid && !pet_service_.PostLocal(decision.action))
@@ -349,27 +515,37 @@ def patch_board(text: str) -> str:
             }
             app.ToggleChatState();""", "board click hook")
     text = once(text, "        pwr_button_.OnClick([this]() {",
-        """        boot_button_.OnLongPress([this]() { RequestPetModeToggle(); });
+        """        boot_button_.OnLongPress([this]() {
+            if (!DialPressHeld()) RequestPetModeToggle();
+        });
 
         // Offline story controls: single advances a page, double starts or
         // exits the reader; triple feeds only on the Pet home screen.
         // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
-            if (!pet_mode_.load()) return;
+            if (!pet_mode_.load() || DialPressHeld()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Double);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
                 ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         });
         boot_button_.OnMultipleClick([this]() {
-            if (!pet_mode_.load()) return;
+            if (!pet_mode_.load() || DialPressHeld()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Triple);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
                 ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         }, 3);
 
-        pwr_button_.OnClick([this]() {""", "board extra click hooks")
+        StartPetInput();
+
+        pwr_button_.OnClick([this]() {
+            if (pet_mode_.load()) {
+                // ADR-009: PWR is a cancellable sleep request in Pet mode,
+                // never an immediate power-off. Sleep flow arrives in V2-09.
+                ESP_LOGI(TAG, "PET_SLEEP_REQUEST_PENDING");
+                return;
+            }""", "board extra click hooks")
     text = once(text, "    void InitializeButtons() {",
         """    void InitializeButtons() {
         // Distinct Pet app identity at board setup; the upstream official
@@ -378,14 +554,16 @@ def patch_board(text: str) -> str:
         // A single short-lived low-priority task repeats the marker after
         // serial monitoring can attach following esptool hard_reset.
         // No NVS, networking, GPIO, audio or EPD changes.
+        // No NVS, networking, audio or EPD changes; I2C reads only.
         const BaseType_t pet_diag_started = xTaskCreate(
-            [](void*) {
+            [](void* context) {
                 vTaskDelay(pdMS_TO_TICKS(5000));
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay5s");
                 vTaskDelay(pdMS_TO_TICKS(7000));
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->RunHardwareDiag();
                 vTaskDelete(nullptr);
-            }, "pet_boot_diag", 2048, nullptr, 1, nullptr);
+            }, "pet_boot_diag", 4096, this, 1, nullptr);
         if (pet_diag_started != pdPASS)
             ESP_LOGW(TAG, "PET_BOOT_DIAG_TASK_FAILED");""",
         "board Pet boot diagnostic")
