@@ -646,6 +646,12 @@ BOARD_WORKER = r'''
         PostPrompt(stop);
     }
 
+    // Same guard as story narration (StoryAudioBegin/Push).
+    bool PromptAllowed() {
+        return pet_mode_.load() && !sleep_active_.load() &&
+               Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+    }
+
     void PromptTaskLoop() {
         kid_app::PromptRequest request{};
         int16_t chunk[480];
@@ -663,14 +669,18 @@ BOARD_WORKER = r'''
             const uint64_t session = (uint64_t{0x50524F4D} << 32) | request.token;
             ESP_LOGI(TAG, "PET_PROMPT_PLAY index=%u token=%u samples=%u", request.index,
                      static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
-            bool started = false;
+            bool started = false, allowed = true;
             for (int i = 0; i < 80 && !started; ++i) {  // older audio drains first
                 if (uxQueueMessagesWaiting(prompt_queue_)) break;
+                allowed = PromptAllowed();
+                if (!allowed) break;
                 started = audio.BeginLocalStoryPcm(session);
                 if (!started) vTaskDelay(pdMS_TO_TICKS(10));
             }
             if (!started) {
-                if (uxQueueMessagesWaiting(prompt_queue_))
+                if (!allowed)
+                    ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u reason=state", request.index);
+                else if (uxQueueMessagesWaiting(prompt_queue_))
                     ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
                 else
                     ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=busy", request.index);
@@ -679,7 +689,7 @@ BOARD_WORKER = r'''
             const uint32_t started_ms = NowMs();
             size_t offset = 0;
             int stalls = 0;
-            bool interrupted = false;
+            bool interrupted = false, state_lost = false;
             while (offset < clip.samples) {
                 if (uxQueueMessagesWaiting(prompt_queue_)) {
                     interrupted = true;
@@ -691,10 +701,18 @@ BOARD_WORKER = r'''
                     stalls = 0;
                     continue;
                 }
-                if (++stalls > 300) break;  // cancelled (voice) or output stuck
+                // Refused: either the 2-frame queue is full (wait) or the
+                // session was cancelled (voice, pet mode off, sleep).
+                if (!PromptAllowed()) {
+                    state_lost = true;
+                    break;
+                }
+                if (++stalls > 50) break;  // 0.5 s: output stuck
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
-            if (interrupted)
+            if (state_lost)
+                ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u reason=state", request.index);
+            else if (interrupted)
                 ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
             else if (offset < clip.samples)
                 ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=queue", request.index);
@@ -709,7 +727,7 @@ BOARD_WORKER = r'''
         if (!prompt_queue_ ||
             xTaskCreate([](void* context) {
                 static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->PromptTaskLoop();
-            }, "pet_prompt", 4096, this, 2, nullptr) != pdPASS)
+            }, "pet_prompt", 6144, this, 2, nullptr) != pdPASS)
             ESP_LOGW(TAG, "PET_PROMPT_TASK_FAILED");
         pet_input_queue_ = xQueueCreate(16, sizeof(RawKeyEdge));
         if (!pet_input_queue_ ||

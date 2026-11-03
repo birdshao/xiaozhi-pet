@@ -240,6 +240,18 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('"pet_prompt"', patched)
         # Prompt sessions never collide with story-page tokens.
         self.assertIn('0x50524F4D', player)
+        # Same guard as story narration (pet mode, not asleep, idle) before
+        # starting and while pushing, so a voice session is never talked over.
+        allowed = patched[patched.index('bool PromptAllowed()'):]
+        allowed = allowed[:allowed.index('\n    }\n')]
+        for cond in ('pet_mode_.load()', '!sleep_active_.load()', 'kDeviceStateIdle'):
+            self.assertIn(cond, allowed)
+        self.assertLess(player.index('PromptAllowed()'), player.index('BeginLocalStoryPcm('))
+        push = player[player.index('while (offset < clip.samples)'):]
+        self.assertIn('PromptAllowed()', push)
+        self.assertIn('stalls > 50', push)
+        self.assertIn('reason=state', player)
+        self.assertIn('"pet_prompt", 6144', patched)
 
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()
