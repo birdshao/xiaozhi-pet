@@ -46,7 +46,7 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 
 | ID | 测试 | 状态 | 证据路径/观察 |
 |---|---|---|---|
-| P0-01 | 实物板批次、接口、实际是否有拨轮 | 待测 | |
+| P0-01 | 实物板批次、接口、实际是否有拨轮 | 已实测：有三向拨轮；按孩子方向上 = GPIO6、下 = GPIO4、按下 = GPIO5 | §9；[V1 记录](V1_HARDWARE_ACCEPTANCE.md) |
 | P0-03 | 自己的板子烧录、上电、串口日志 | 待测 | |
 | P0-04 | 联网、ASR、扬声器、打断、音量 | 待测 | |
 | P0-05 | 全刷、局刷、睡眠唤醒 | 待测 | |
@@ -165,3 +165,35 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 - [官方源码 app-only 构建 PR #14](https://github.com/birdshao/xiaozhi-pet/pull/14) 也已合并，作为可复现的原版源码/工具链构建记录；不要再额外安装一次。
 
 **验收范围**：已经有真机的官方 app+assets 写入、读回和启动串口确认，但儿童宠物应用并未在这一版本中启用；墨水屏显示、音频、按键、Wi-Fi、SD、IMU 等功能仍需专项真机验收。尤其不把一次启动无 Panic 当作所有功能已通过。
+
+## 9. 官方资料核对的完整硬件配置（2026-11-02）
+
+来源：[微雪手册](https://docs.waveshare.com/ESP32-S3-ePaper-3.97) 与资料页、[官方示例](https://github.com/waveshareteam/ESP32-S3-ePaper-3.97)（commit `9b12d40`，主要参考 `ESP-IDF/08_ESP32-S3_e-Paper-3.97`）、官方原理图 PDF 的网络标签、锁定的小智 v2.5.2 板卡 `config.h`。**这是资料核对，不是真机功能验收**；真机项见 [开发计划 V1](../DEVELOPMENT_PLAN.md#v1硬件能力验收)。
+
+| 模块 | 型号 / 规格 | 引脚 / 地址 | 小智 v2.5.2 是否使用 |
+|---|---|---|---|
+| 主控 | ESP32-S3-WROOM-1-N16R8（16 MB Flash，8 MB PSRAM） | — | 是（esptool 实测一致） |
+| 电子纸 | 3.97"，800×480；1-bit 48,000 B，4 灰度 96,000 B | SPI3：SCK 11、MOSI 12、CS 10、DC 9、RST 46、BUSY 3 | 是（1-bit） |
+| 音频 | ES8311 + NS4150B 功放，板载麦克风，MX1.25 喇叭座 | I²S：MCLK 13、BCLK 14、WS 47、DIN 21、DOUT 48；功放使能 39 | 是 |
+| I²C 总线 | — | SDA 41、SCL 42 | 是 |
+| 电源管理 | TG28（官方示例按 AXP2101 驱动），锂电 3.7 V MX1.25，充电 | 0x34；IRQ 38；充电状态 2 | 是（关机、省电） |
+| 音频编解码控制 | ES8311 | 0x18 | 是 |
+| 姿态 | QMI8658 六轴 | **0x6B**（实测 SA0 接高，WHO_AM_I=0x05）；INT2 40；INT1 见下 | 否 |
+| 时钟 | PCF85063，备份电池 MX1.25 | 0x51；RTC_INT_ESP→GPIO45；另有 RTC_INT 网络（推测接电源管理开机脚，待确认） | 否 |
+| 温湿度 | SHTC3 | 0x70 | 否 |
+| TF 卡 | SDMMC 4-bit，FAT32 | CLK 16、CMD 17、D0 15、D1 7、D2 8、D3 18 | 否（宠物固件 P4 已用） |
+| BOOT 键 | 低电平有效 | 0 | 是（单击切换聊天） |
+| PWR 键 | 状态经 PWR_OUT 读出，高电平有效 | 1 | 是（**单击即关机**） |
+| **三向拨轮** | 上 / 按下 / 下，独立按键，低电平有效，内部上拉 | 原理图：Up 4、Function 5、Down 6；**按孩子方向实测：上 6、按下 5、下 4** | **否** |
+| 串口 / LED | UART0 与 LED1/LED2 共用 | 43、44 | 控制台 |
+| USB | Type-C，USB-Serial/JTAG | — | 烧录与日志 |
+
+### 关键结论
+
+- **拨轮存在**（P0-01 有了答案）：三个独立按键，不是旋转编码器。官方示例用 multi_button（5 ms 扫描、3 tick 去抖、1 s 长按），上/下切换、按下进入、按下长按做全刷。GPIO4/5/6 未被小智或现有宠物代码占用。
+- **PWR 单击关机**：小智板卡 `pwr_button_.OnClick` 直接 `PowerOff()`；儿童模式需改。
+- **自动关机**：小智板卡 `PowerSaveTimer(-1, 100, 300)`，300 s 无操作关机。
+- **GPIO39 共标**：原理图上 GPIO39 同时标 `AudioCTR_PIN` 与 `AXIS_INT1`，GPIO40 同时标 `AudioCTR_PWR` 与 `AXIS_INT2`；功放使用 39，姿态中断暂按 INT2=40 设计，需真机确认。
+- **定时开机**：官方示例关机前设置 PCF85063 闹钟，开机时读 `RTC_INT` 判断是否闹钟开机，说明可以由时钟芯片经电源管理开机；需真机验证。
+- **深睡眠唤醒限制**：ESP32-S3 RTC GPIO 为 0–21；BOOT(0)、PWR(1)、拨轮(4/5/6) 可唤醒深睡眠，姿态 INT2(40)、RTC INT(45)、PMIC IRQ(38) 不能，只能在浅睡眠下唤醒。
+- **电子纸驱动能力**：官方驱动提供 `EPD_Init_Fast / EPD_Init_Partial / EPD_Init_4GRAY / EPD_Display_Partial(x0,y0,x1,y1) / EPD_Display_4Gray / EPD_Sleep`；小智 `CustomEpdDisplay` 只用了 1-bit 路径。
