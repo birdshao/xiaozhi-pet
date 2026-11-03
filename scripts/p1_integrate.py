@@ -341,6 +341,10 @@ BOARD_WORKER = r'''
         return static_cast<uint32_t>(esp_timer_get_time() / 1000);
     }
 
+    // BOOT + dial press is the parent combo. Legacy iot_button BOOT
+    // handlers check this so the combo never toggles chat or Pet mode.
+    static bool DialPressHeld() { return gpio_get_level(GPIO_NUM_5) == 0; }
+
     void PostKeyEdge(kid_app::InputKey key, bool down) {
         if (!pet_input_queue_) return;
         const RawKeyEdge edge{static_cast<uint8_t>(key),
@@ -365,6 +369,8 @@ BOARD_WORKER = r'''
     void HandleInputEvent(const kid_app::InputEvent& event) {
         ESP_LOGI(TAG, "PET_INPUT kind=%s repeat=%d pet=%d", InputKindName(event.kind),
                  event.repeat ? 1 : 0, pet_mode_.load() ? 1 : 0);
+        // A child using the dial is activity; do not auto-power-off.
+        if (power_save_timer_) power_save_timer_->WakeUp();
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
@@ -377,6 +383,9 @@ BOARD_WORKER = r'''
     void InputTaskLoop() {
         RawKeyEdge edge{};
         for (;;) {
+            const auto state = Application::GetInstance().GetDeviceState();
+            input_hub_.SetVoiceActive(state == kDeviceStateListening ||
+                                      state == kDeviceStateSpeaking);
             while (xQueueReceive(pet_input_queue_, &edge, pdMS_TO_TICKS(20)) == pdTRUE) {
                 const auto key = static_cast<kid_app::InputKey>(edge.key);
                 if (edge.down) input_hub_.Press(key, edge.at_ms);
@@ -451,9 +460,11 @@ BOARD_WORKER = r'''
                  imu_address, imu_ok ? 1 : 0, who);
         const uint8_t wake[] = {0x35, 0x17}, measure[] = {0x78, 0x66}, sleep[] = {0xB0, 0x98};
         uint8_t env[6] = {};
+        // Waits assume a 100 Hz tick: >= 10 ms after wake (240 us needed),
+        // >= 30 ms for a normal-mode measurement (12.1 ms max).
         bool env_ok = DiagI2c(0x70, wake, sizeof(wake), nullptr, 0);
-        vTaskDelay(pdMS_TO_TICKS(1));
-        env_ok = env_ok && DiagI2c(0x70, measure, sizeof(measure), env, sizeof(env), 20);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        env_ok = env_ok && DiagI2c(0x70, measure, sizeof(measure), env, sizeof(env), 40);
         DiagI2c(0x70, sleep, sizeof(sleep), nullptr, 0);
         const int raw_t = (env[0] << 8) | env[1], raw_h = (env[3] << 8) | env[4];
         ESP_LOGI(TAG, "PET_DIAG_ENV ok=%d temp_c10=%d hum_pct=%d", env_ok ? 1 : 0,
@@ -492,7 +503,8 @@ def patch_board(text: str) -> str:
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
                 "board pet worker")
     text = once(text, "            app.ToggleChatState();",
-        """            if (pet_mode_.load()) {
+        """            if (DialPressHeld()) return;  // BOOT + dial = parent combo
+            if (pet_mode_.load()) {
                 const auto decision = kid_app::PetInputRouter::Decide(
                     pet_event_mode_.load(), kid_app::PetClick::Single);
                 if (decision.valid && !pet_service_.PostLocal(decision.action))
@@ -501,20 +513,22 @@ def patch_board(text: str) -> str:
             }
             app.ToggleChatState();""", "board click hook")
     text = once(text, "        pwr_button_.OnClick([this]() {",
-        """        boot_button_.OnLongPress([this]() { RequestPetModeToggle(); });
+        """        boot_button_.OnLongPress([this]() {
+            if (!DialPressHeld()) RequestPetModeToggle();
+        });
 
         // Offline story controls: single advances a page, double starts or
         // exits the reader; triple feeds only on the Pet home screen.
         // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
-            if (!pet_mode_.load()) return;
+            if (!pet_mode_.load() || DialPressHeld()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Double);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
                 ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         });
         boot_button_.OnMultipleClick([this]() {
-            if (!pet_mode_.load()) return;
+            if (!pet_mode_.load() || DialPressHeld()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Triple);
             if (decision.valid && !pet_service_.PostLocal(decision.action))

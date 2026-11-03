@@ -3,6 +3,8 @@
 namespace kid_app {
 
 namespace {
+constexpr std::array<InputKey, 2> kRepeatKeys = {InputKey::DialUp, InputKey::DialDown};
+
 // Unsigned subtraction keeps durations correct across uint32 wrap-around.
 uint32_t Elapsed(uint32_t now_ms, uint32_t since_ms) { return now_ms - since_ms; }
 bool Reached(uint32_t now_ms, uint32_t deadline_ms) {
@@ -21,11 +23,17 @@ void InputHub::Press(InputKey key, uint32_t now_ms) {
     state = {true, false, now_ms, now_ms + config_.repeat_delay_ms};
 
     if (ComboHeld()) {
-        // Both combo keys held: neither may produce its own action later.
-        State(InputKey::Boot).consumed = true;
-        State(InputKey::DialPress).consumed = true;
-        combo_armed_ = true;
-        combo_since_ms_ = now_ms;
+        if (key == InputKey::Boot || key == InputKey::DialPress) {
+            // Both combo keys held: neither may produce its own action later.
+            State(InputKey::Boot).consumed = true;
+            State(InputKey::DialPress).consumed = true;
+            combo_armed_ = true;
+            combo_since_ms_ = now_ms;
+        } else {
+            // Other keys during a combo are swallowed; the timer keeps
+            // running and a fired combo is not re-armed.
+            state.consumed = true;
+        }
         return;
     }
     if (key == InputKey::DialUp) Emit(InputKind::DialUp, now_ms);
@@ -40,9 +48,16 @@ void InputHub::Release(InputKey key, uint32_t now_ms) {
     if (key == InputKey::Boot || key == InputKey::DialPress) combo_armed_ = false;
     if (consumed) return;
 
+    // A starved owner task may see press and release before any Tick;
+    // the real hold duration still decides short versus long.
+    const bool held_long = Elapsed(now_ms, state.since_ms) >= config_.long_ms;
     switch (key) {
-        case InputKey::DialPress: Emit(InputKind::DialPress, now_ms); break;
-        case InputKey::Boot: Emit(InputKind::Talk, now_ms); break;
+        case InputKey::DialPress:
+            Emit(held_long ? InputKind::DialLong : InputKind::DialPress, now_ms);
+            break;
+        case InputKey::Boot:
+            Emit(held_long ? InputKind::BootLong : InputKind::Talk, now_ms);
+            break;
         case InputKey::Power: Emit(InputKind::SleepRequest, now_ms); break;
         case InputKey::DialUp:
         case InputKey::DialDown: break;  // already emitted on press-down
@@ -72,9 +87,10 @@ void InputHub::Tick(uint32_t now_ms) {
     }
 
     if (!auto_repeat_) return;
-    for (InputKey key : {InputKey::DialUp, InputKey::DialDown}) {
+    for (InputKey key : kRepeatKeys) {
         KeyState& state = State(key);
-        if (!state.down || !Reached(now_ms, state.next_repeat_ms)) continue;
+        if (!state.down || state.consumed || !Reached(now_ms, state.next_repeat_ms))
+            continue;
         // Schedule from "now" so a late tick never bursts several repeats.
         state.next_repeat_ms = now_ms + config_.repeat_interval_ms;
         Emit(key == InputKey::DialUp ? InputKind::DialUp : InputKind::DialDown,

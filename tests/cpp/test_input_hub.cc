@@ -119,6 +119,38 @@ int main() {
         ExpectNone(hub);  // no stray Talk / DialPress afterwards
     }
 
+    // Other keys during a held combo are swallowed and neither restart the
+    // 5 s timer nor re-arm it after ParentCombo fired.
+    {
+        InputHub hub;
+        hub.Press(InputKey::Boot, 0);
+        hub.Press(InputKey::DialPress, 100);
+        hub.Press(InputKey::DialDown, 3000);
+        hub.Release(InputKey::DialDown, 3100);
+        ExpectNone(hub);
+        hub.Tick(5100);
+        ExpectOnly(hub, InputKind::ParentCombo);
+        hub.Press(InputKey::DialUp, 6000);
+        hub.Release(InputKey::DialUp, 6100);
+        hub.Tick(12000);
+        ExpectNone(hub);
+        hub.Release(InputKey::Boot, 12100);
+        hub.Release(InputKey::DialPress, 12200);
+        ExpectNone(hub);
+    }
+
+    // A starved task that sees press+release before any Tick still honours
+    // the real hold duration.
+    {
+        InputHub hub;
+        hub.Press(InputKey::DialPress, 0);
+        hub.Release(InputKey::DialPress, 1500);
+        ExpectOnly(hub, InputKind::DialLong);
+        hub.Press(InputKey::Boot, 2000);
+        hub.Release(InputKey::Boot, 3200);
+        ExpectOnly(hub, InputKind::BootLong);
+    }
+
     // An aborted combo produces nothing (no accidental talk or confirm).
     {
         InputHub hub;

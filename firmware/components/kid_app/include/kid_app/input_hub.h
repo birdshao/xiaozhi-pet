@@ -20,7 +20,8 @@ enum class InputKind : uint8_t {
     Talk,          // BOOT short press: start/stop voice
     BootLong,      // BOOT held >= long_ms (board-level mode toggle)
     SleepRequest,  // PWR short press: cancellable sleep flow, never direct off
-    ParentCombo,   // BOOT + dial press held >= parent_combo_ms
+    ParentCombo,   // BOOT + dial press held >= parent_combo_ms; press the
+                   // second key within long_ms or the first one's long fires
 };
 
 struct InputEvent {

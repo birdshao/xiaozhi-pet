@@ -96,6 +96,16 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('PetInputRouter::DecideDial(', patched)
         self.assertIn('PET_INPUT kind=%s', patched)
         self.assertIn('PET_INPUT_TASK_FAILED', patched)
+        # BOOT + dial press is the parent combo: legacy iot_button BOOT
+        # handlers must not toggle chat/Pet mode while the dial is held.
+        self.assertIn('static bool DialPressHeld()', patched)
+        self.assertIn('if (DialPressHeld()) return;', patched)
+        self.assertIn('if (!DialPressHeld()) RequestPetModeToggle();', patched)
+        self.assertEqual(patched.count('!pet_mode_.load() || DialPressHeld()'), 2)
+        # Voice sessions gate dial actions; dial use keeps the device awake.
+        self.assertIn('input_hub_.SetVoiceActive(', patched)
+        self.assertIn('kDeviceStateListening', patched)
+        self.assertIn('power_save_timer_->WakeUp()', patched)
         # No new click-count gestures for children.
         self.assertEqual(patched.count('OnLongPress'), 1)
         self.assertEqual(patched.count('OnDoubleClick'), 1)
@@ -124,6 +134,9 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertNotIn('WriteReg', diag)
         self.assertNotIn('PowerOff', diag)
         self.assertIn('i2c_master_bus_rm_device', patched)
+        # 100 Hz FreeRTOS tick: waits must stay >= SHTC3 wake/measure times.
+        self.assertNotIn('pdMS_TO_TICKS(1)', diag)
+        self.assertIn('measure, sizeof(measure), env, sizeof(env), 40)', diag)
 
 if __name__ == "__main__":
     unittest.main()
