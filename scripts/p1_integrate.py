@@ -516,9 +516,12 @@ BOARD_WORKER = r'''
             last_pet_scene_.store(PackPetScene(scene));
             pet_mailbox_.Publish(scene);
             ESP_LOGI(TAG, "PET_HOME_SELECT index=%u", index);
+            prompt_scheduler_.OnSelect(index, NowMs());
             return {};
         }
         if (event.kind != kid_app::InputKind::DialPress) return {};
+        prompt_scheduler_.Cancel();
+        StopPrompt();
         if (home_menu_.Selected() == kid_app::HomeItem::Sleep) {
             *begin_sleep = true;  // started after the lock is released
             return {};
@@ -541,6 +544,8 @@ BOARD_WORKER = r'''
                 return;
             case kid_app::SleepAction::ShowSleepScene: {
                 sleep_active_.store(true);
+                prompt_scheduler_.Cancel();
+                StopPrompt();
                 sleep_shown_ms_.store(0);
                 if (story_pcm_.Ready()) story_pcm_.Stop();
                 Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
@@ -615,10 +620,97 @@ BOARD_WORKER = r'''
                 }
                 HandleSleepAction(sleep_flow_.Tick(NowMs()));
             }
+            // Name prompts only on the idle home rail (not in quiet, voice,
+            // reader or while going to sleep).
+            prompt_scheduler_.SetEnabled(
+                pet_mode_.load() && !sleep_flow_.Active() && state == kDeviceStateIdle &&
+                kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()));
+            kid_app::PromptRequest prompt{};
+            if (prompt_scheduler_.Tick(NowMs(), &prompt)) PostPrompt(prompt);
+        }
+    }
+
+    // ---- V2-07 option name prompts ----
+    // pet_input owns the scheduler; one pet_prompt task streams the embedded
+    // clip through the existing XiaoZhi AudioService (single I2S owner).
+    kid_app::PromptScheduler prompt_scheduler_;
+    QueueHandle_t prompt_queue_ = nullptr;
+    static constexpr uint8_t kPromptStop = 0xFF;
+
+    void PostPrompt(const kid_app::PromptRequest& request) {
+        if (prompt_queue_) xQueueOverwrite(prompt_queue_, &request);
+    }
+    void StopPrompt() {
+        kid_app::PromptRequest stop{};
+        stop.index = kPromptStop;
+        PostPrompt(stop);
+    }
+
+    void PromptTaskLoop() {
+        kid_app::PromptRequest request{};
+        int16_t chunk[480];
+        for (;;) {
+            if (xQueueReceive(prompt_queue_, &request, portMAX_DELAY) != pdTRUE) continue;
+            auto& audio = Application::GetInstance().GetAudioService();
+            // Newest request wins: invalidate audio queued for an older prompt.
+            audio.CancelLocalStoryPcm();
+            if (request.index == kPromptStop) continue;
+            kid_app::WavClip clip;
+            if (!kid_app::LoadPromptClip(request.index, &clip)) {
+                ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=clip", request.index);
+                continue;
+            }
+            const uint64_t session = (uint64_t{0x50524F4D} << 32) | request.token;
+            ESP_LOGI(TAG, "PET_PROMPT_PLAY index=%u token=%u samples=%u", request.index,
+                     static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
+            bool started = false;
+            for (int i = 0; i < 80 && !started; ++i) {  // older audio drains first
+                if (uxQueueMessagesWaiting(prompt_queue_)) break;
+                started = audio.BeginLocalStoryPcm(session);
+                if (!started) vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (!started) {
+                if (uxQueueMessagesWaiting(prompt_queue_))
+                    ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
+                else
+                    ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=busy", request.index);
+                continue;
+            }
+            const uint32_t started_ms = NowMs();
+            size_t offset = 0;
+            int stalls = 0;
+            bool interrupted = false;
+            while (offset < clip.samples) {
+                if (uxQueueMessagesWaiting(prompt_queue_)) {
+                    interrupted = true;
+                    break;
+                }
+                const size_t n = clip.Copy(offset, chunk, 480);
+                if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
+                    offset += n;
+                    stalls = 0;
+                    continue;
+                }
+                if (++stalls > 300) break;  // cancelled (voice) or output stuck
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (interrupted)
+                ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
+            else if (offset < clip.samples)
+                ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=queue", request.index);
+            else
+                ESP_LOGI(TAG, "PET_PROMPT_QUEUED index=%u ms=%u", request.index,
+                         static_cast<unsigned>(NowMs() - started_ms));
         }
     }
 
     void StartPetInput() {
+        prompt_queue_ = xQueueCreate(1, sizeof(kid_app::PromptRequest));
+        if (!prompt_queue_ ||
+            xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->PromptTaskLoop();
+            }, "pet_prompt", 4096, this, 2, nullptr) != pdPASS)
+            ESP_LOGW(TAG, "PET_PROMPT_TASK_FAILED");
         pet_input_queue_ = xQueueCreate(16, sizeof(RawKeyEdge));
         if (!pet_input_queue_ ||
             xTaskCreate([](void* context) {
@@ -992,6 +1084,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/refresh_planner.h"\n'
         '#include "kid_app/selftest_script.h"\n'
         '#include "kid_app/sleep_flow.h"\n'
+        '#include "kid_app/prompt_scheduler.h"\n'
+        '#include "kid_app/prompt_clips.h"\n'
         '#include "esp_attr.h"\n'
         '#include "esp_system.h"\n'
         '// Alarm-wake note: kept across chip resets (e.g. the USB-JTAG reset\n'

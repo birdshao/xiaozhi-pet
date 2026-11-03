@@ -17,6 +17,8 @@ on:
       - 'tests/test_p1_app_only_artifact.py'
       - 'tests/test_p1_integration_contract.py'
       - 'tests/test_selftest_report.py'
+      - 'tests/test_prompt_audio.py'
+      - 'tools/make_prompt_audio.py'
       - 'tools/selftest_report.py'
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
@@ -49,6 +51,9 @@ jobs:
       - name: Check host self-test scenario tooling (no hardware)
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_selftest_report.py' -v
+      - name: Check embedded option prompt clips (format, rail order)
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_prompt_audio.py' -v
       - name: Check SD GPIOs and EPD story fallback before board build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v

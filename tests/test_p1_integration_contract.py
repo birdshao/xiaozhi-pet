@@ -201,6 +201,46 @@ class DisplayOverlayTest(unittest.TestCase):
         clear = clear[:clear.index('\n    }\n')]
         self.assertIn('NoteAlarmWake(alarm_flag', clear)
 
+    def test_v2_option_prompts_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/prompt_scheduler.h"', patched)
+        self.assertIn('#include "kid_app/prompt_clips.h"', patched)
+        self.assertIn('kid_app::PromptScheduler prompt_scheduler_', patched)
+        rail = patched[patched.index('PetInputDecision HandleHomeRailLocked('):]
+        rail = rail[:rail.index('\n    }\n')]
+        self.assertIn('prompt_scheduler_.OnSelect(index, NowMs())', rail)
+        # A press acts at once: the pending/ongoing name prompt stops.
+        press = rail[rail.index('InputKind::DialPress) return {};'):]
+        self.assertLess(press.index('StopPrompt()'), press.index('DecideHome('))
+        loop = patched[patched.index('void InputTaskLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertIn('prompt_scheduler_.SetEnabled(', loop)
+        self.assertIn('kid_app::PetInputRouter::IsHomeRail(', loop)
+        self.assertIn('prompt_scheduler_.Tick(NowMs(), &prompt)', loop)
+        # Going to sleep silences prompts too.
+        sleep = patched[patched.index('case kid_app::SleepAction::ShowSleepScene:'):]
+        self.assertIn('StopPrompt()', sleep[:600])
+
+    def test_v2_prompt_player_uses_the_single_audio_path(self):
+        patched = self._board()
+        player = patched[patched.index('void PromptTaskLoop()'):]
+        player = player[:player.index('\n    }\n')]
+        self.assertIn('LoadPromptClip(', player)
+        self.assertIn('BeginLocalStoryPcm(session)', player)
+        self.assertIn('TryQueueLocalStoryPcm(session, chunk, n)', player)
+        self.assertIn('clip.Copy(offset, chunk, 480)', player)
+        # Newest request wins: older prompt audio is invalidated first and
+        # a waiting request interrupts the current one.
+        self.assertLess(player.index('CancelLocalStoryPcm()'), player.index('BeginLocalStoryPcm('))
+        self.assertIn('uxQueueMessagesWaiting(prompt_queue_)', player)
+        for marker in ('PET_PROMPT_PLAY', 'PET_PROMPT_QUEUED', 'PET_PROMPT_INTERRUPTED',
+                       'PET_PROMPT_FAILED'):
+            self.assertIn(marker, player)
+        self.assertIn('xQueueOverwrite(prompt_queue_', patched)
+        self.assertIn('"pet_prompt"', patched)
+        # Prompt sessions never collide with story-page tokens.
+        self.assertIn('0x50524F4D', player)
+
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()
         run = patched[patched.index('void MaybeRunSelfTest()'):]

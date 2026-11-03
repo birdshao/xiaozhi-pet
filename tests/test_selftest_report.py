@@ -105,6 +105,17 @@ class SelfTestReportTests(unittest.TestCase):
         early = "I: PET_SLEEP_SHOWN\nI: PET_SLEEP_SHOWN\n" + log.replace("I: PET_SLEEP_SHOWN\n", "")
         self.assertIn("min:PET_SLEEP_SHOWN", evaluate(scenario, early)["failed"])
 
+    def test_prompt_sequence(self):
+        scenario = "PETSELFTEST1\n# expect prompt_seq 2,4\nend\n"
+        log = ("I: PET_SELFTEST_MARK name=begin\n"
+               "I: PET_PROMPT_PLAY index=2 token=1 samples=7000\n"
+               "I: PET_PROMPT_PLAY index=4 token=2 samples=9000\n"
+               "SUMMARY lines=3 panic=0 wdt=0\n")
+        report = evaluate(scenario, log)
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["observed"]["prompt_seq"], "2,4")
+        self.assertIn("prompt_seq", evaluate(scenario, log.replace("index=4", "index=3"))["failed"])
+
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)
         self.assertEqual(len(data), 4096)
