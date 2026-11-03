@@ -551,9 +551,12 @@ BOARD_WORKER = r'''
         uint8_t write[8] = {kid_app::Pcf85063::kTimeRegister};
         kid_app::Pcf85063::EncodeTime(system, write + 1);
         rtc_synced_ = DiagI2c(0x51, write, sizeof(write), nullptr, 0);
-        ESP_LOGI(TAG, "PET_DIAG_RTC_SYNC ok=%d was_stopped=%d drift_s=%lld "
+        const int drift_s = drift > 2000000000 ? 2000000000
+                          : drift < -2000000000 ? -2000000000
+                                                : static_cast<int>(drift);
+        ESP_LOGI(TAG, "PET_DIAG_RTC_SYNC ok=%d was_stopped=%d drift_s=%d "
                  "now=%04u-%02u-%02u %02u:%02u:%02u", rtc_synced_ ? 1 : 0,
-                 stopped ? 1 : 0, static_cast<long long>(drift), system.year,
+                 stopped ? 1 : 0, drift_s, system.year,
                  system.month, system.day, system.hour, system.minute, system.second);
     }
 
@@ -605,6 +608,7 @@ BOARD_WORKER = r'''
     void RunDiagLoop() {
         const bool imu_ok = ConfigureImu();
         ESP_LOGI(TAG, "PET_DIAG_ACC configured=%d", imu_ok ? 1 : 0);
+        vTaskDelay(pdMS_TO_TICKS(50));  // first accel sample
         kid_app::MotionStats motion;
         uint32_t last_summary_ms = NowMs(), last_heartbeat_ms = 0;
         for (;;) {
@@ -704,6 +708,10 @@ def patch_board(text: str) -> str:
         // Distinct Pet app identity at board setup; the upstream official
         // OTA0 firmware never emits this marker. Logging does not enable Pet.
         ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=board_init");
+        // If the timed power-on test woke us, the PCF85063 keeps INT low
+        // until AF/AIE are cleared; on the PMIC power-on pin that would read
+        // as a long PWR press, so clear it before anything else.
+        ClearRtcAlarm();
         // A single short-lived low-priority task repeats the marker after
         // serial monitoring can attach following esptool hard_reset.
         // No NVS, networking, GPIO, audio or EPD changes.
@@ -716,7 +724,6 @@ def patch_board(text: str) -> str:
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
                 auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
                 self->RunHardwareDiag();
-                self->ClearRtcAlarm();
                 self->RunDiagLoop();  // never returns
                 vTaskDelete(nullptr);
             }, "pet_boot_diag", 4096, this, 1, nullptr);

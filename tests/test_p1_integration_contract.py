@@ -158,8 +158,16 @@ class DisplayOverlayTest(unittest.TestCase):
         arm = arm[:arm.index('\n    }\n')]
         self.assertIn('refused=rtc_not_set', arm)
         self.assertIn('pmic_->PowerOff()', arm)
-        # A boot after the test clears and disables the alarm again.
-        self.assertIn('ClearRtcAlarm()', patched)
+        # A boot after the test clears and disables the alarm again, and
+        # does so at board init: a held RTC INT on the PMIC power-on pin
+        # would otherwise read as a long PWR press and cut power.
+        board_init = patched.index('PET_FIRMWARE_BOOT_MARKER phase=board_init')
+        self.assertIn('ClearRtcAlarm();', patched[board_init:board_init + 400])
+        self.assertNotIn('self->ClearRtcAlarm()', patched)
+        # Newlib-nano printf has no 64-bit integers.
+        self.assertNotIn('%lld', patched)
+        # Let the accelerometer produce a first sample before reading.
+        self.assertIn('vTaskDelay(pdMS_TO_TICKS(50));  // first accel sample', patched)
         # PWR edges are counted even if no InputHub event follows.
         self.assertIn('pwr_edges_', patched)
         self.assertIn('sleep_requests_', patched)
