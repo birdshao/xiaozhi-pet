@@ -224,6 +224,29 @@ class DisplayOverlayTest(unittest.TestCase):
                            handle.index('SceneStateLock lock(scene_state_mutex_)'))
         self.assertNotIn('compare_exchange', patched)
 
+    def test_selftest_script_runner(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/selftest_script.h"', patched)
+        self.assertIn('#include "esp_ota_ops.h"', patched)
+        run = patched[patched.index('void MaybeRunSelfTest()'):]
+        run = run[:run.index('\n    }\n')]
+        # Only ever from the running ota_1 slot's last 4 KiB sector.
+        self.assertIn('esp_ota_get_running_partition()', run)
+        self.assertIn('ESP_PARTITION_SUBTYPE_APP_OTA_1', run)
+        self.assertIn('running->size - kSelfTestSectorBytes', run)
+        self.assertIn('ParseSector(', run)
+        # Injected presses go through the same raw-edge queue as real keys.
+        self.assertIn('PostKeyEdge(step.key, true)', run)
+        self.assertIn('PostKeyEdge(step.key, false)', run)
+        self.assertIn('RequestPetModeToggle()', run)
+        for marker in ('PET_SELFTEST_NONE', 'PET_SELFTEST_START', 'PET_SELFTEST_STEP',
+                       'PET_SELFTEST_DONE'):
+            self.assertIn(marker, run)
+        # Never writes flash itself.
+        self.assertNotIn('esp_partition_write', patched)
+        self.assertNotIn('esp_partition_erase', patched)
+        self.assertIn('"pet_selftest"', patched)
+
     def test_v2_border_waveform_per_refresh_mode(self):
         impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
         fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]

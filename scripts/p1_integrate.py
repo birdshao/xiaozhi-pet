@@ -715,6 +715,68 @@ BOARD_WORKER = r'''
         return true;
     }
 
+    // ---- Host-scripted self-test (unattended hardware trials) ----
+    // The host writes a PETSELFTEST1 script into the last 4 KiB of ota_1
+    // (beyond the app image) before a trial and erases it afterwards. The
+    // firmware only reads it; without a valid script nothing happens.
+    static constexpr size_t kSelfTestSectorBytes = 4096;
+
+    void MaybeRunSelfTest() {
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        if (!running || running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1 ||
+            running->size < 2 * kSelfTestSectorBytes) {
+            ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=not_ota1");
+            return;
+        }
+        auto* sector = static_cast<uint8_t*>(heap_caps_malloc(kSelfTestSectorBytes,
+                                                              MALLOC_CAP_8BIT));
+        auto* script = new (std::nothrow) kid_app::SelfTestScript();
+        const bool ok = sector && script &&
+            esp_partition_read(running, running->size - kSelfTestSectorBytes, sector,
+                               kSelfTestSectorBytes) == ESP_OK &&
+            script->ParseSector(sector, kSelfTestSectorBytes);
+        heap_caps_free(sector);
+        if (!ok) {
+            ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=no_script");
+            delete script;
+            return;
+        }
+        ESP_LOGI(TAG, "PET_SELFTEST_START steps=%u total_ms=%u",
+                 static_cast<unsigned>(script->Count()),
+                 static_cast<unsigned>(script->TotalMs()));
+        for (size_t i = 0; i < script->Count(); ++i) {
+            const auto& step = script->Steps()[i];
+            ESP_LOGI(TAG, "PET_SELFTEST_STEP i=%u op=%u key=%u ms=%u", static_cast<unsigned>(i),
+                     static_cast<unsigned>(step.op), static_cast<unsigned>(step.key),
+                     static_cast<unsigned>(step.ms));
+            switch (step.op) {
+                case kid_app::SelfTestOp::Wait:
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    break;
+                case kid_app::SelfTestOp::TogglePet:
+                    RequestPetModeToggle();
+                    break;
+                case kid_app::SelfTestOp::Hold:
+                    // Same raw-edge queue as the physical buttons.
+                    PostKeyEdge(step.key, true);
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    PostKeyEdge(step.key, false);
+                    vTaskDelay(pdMS_TO_TICKS(step.gap_ms));
+                    break;
+            }
+        }
+        ESP_LOGI(TAG, "PET_SELFTEST_DONE steps=%u", static_cast<unsigned>(script->Count()));
+        delete script;
+    }
+
+    void StartSelfTestTask() {
+        if (xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->MaybeRunSelfTest();
+                vTaskDelete(nullptr);
+            }, "pet_selftest", 8192, this, 1, nullptr) != pdPASS)
+            ESP_LOGW(TAG, "PET_SELFTEST_TASK_FAILED");
+    }
+
     void RunDiagLoop() {
         const bool imu_ok = ConfigureImu();
         ESP_LOGI(TAG, "PET_DIAG_ACC configured=%d", imu_ok ? 1 : 0);
@@ -762,6 +824,11 @@ def patch_board(text: str) -> str:
         '#include "kid_app/input_hub.h"\n'
         '#include "kid_app/home_menu.h"\n'
         '#include "kid_app/refresh_planner.h"\n'
+        '#include "kid_app/selftest_script.h"\n'
+        '#include "esp_ota_ops.h"\n'
+        '#include "esp_partition.h"\n'
+        '#include <esp_heap_caps.h>\n'
+        '#include <new>\n'
         '#include "kid_app/rtc_clock.h"\n'
         '#include "kid_app/motion_stats.h"\n'
         '#include <ctime>\n'
@@ -836,6 +903,7 @@ def patch_board(text: str) -> str:
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
                 auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
                 self->RunHardwareDiag();
+                self->StartSelfTestTask();
                 self->RunDiagLoop();  // never returns
                 vTaskDelete(nullptr);
             }, "pet_boot_diag", 4096, this, 1, nullptr);

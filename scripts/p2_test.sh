@@ -133,3 +133,10 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_v1_diag_codecs.cc" \
   -o "$BUILD/test_v1_diag_codecs"
 "$BUILD/test_v1_diag_codecs"
+
+# Host-scripted hardware self-test: PETSELFTEST1 parser and rejection rules.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/selftest_script.cc" \
+  "$ROOT/tests/cpp/test_selftest_script.cc" \
+  -o "$BUILD/test_selftest_script"
+"$BUILD/test_selftest_script"
