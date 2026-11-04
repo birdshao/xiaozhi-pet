@@ -6,8 +6,8 @@
 2. ``report`` checks a sanitized serial log against the scenario's
    ``# expect <name> <value>`` comments and prints PASS/FAIL per item.
 
-Supported expectations: home_select (comma list of PET_HOME_SELECT
-indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
+Supported expectations: home_select / prompt_seq (comma lists of
+PET_HOME_SELECT / PET_PROMPT_PLAY indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
 PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts),
 min:<TEXT> N (TEXT appears at least N times), none:<TEXT> 0 (never appears).
@@ -71,6 +71,7 @@ def _observe(log: str) -> dict:
     panic += len(CRASH_TEXT.findall(log))
     return {
         "home_select": ",".join(re.findall(r"PET_HOME_SELECT index=(\d+)", body)),
+        "prompt_seq": ",".join(re.findall(r"PET_PROMPT_PLAY index=(\d+)", body)),
         "commits": len(re.findall(r"PET_EVENT_COMMITTED", body)),
         "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
                                "PET_SELFTEST_ABORT" not in log) else 0,
@@ -89,8 +90,8 @@ def evaluate(scenario: str, log: str) -> dict:
     obs = _observe(log)
     checks: dict[str, bool] = {}
     for name, want in exp.items():
-        if name == "home_select":
-            checks[name] = obs["home_select"] == want
+        if name in ("home_select", "prompt_seq"):
+            checks[name] = obs[name] == want
         elif name in ("commits", "selftest_done"):
             checks[name] = obs[name] == int(want)
         elif name == "max_partial_ms":
@@ -139,7 +140,7 @@ def main() -> int:
         want = report["expected"].get(name, "")
         print(f"{'PASS' if ok else 'FAIL'}  {name:18s} expected={want}")
     obs = report["observed"]
-    print("observed:", json.dumps({k: obs[k] for k in ("home_select", "commits",
+    print("observed:", json.dumps({k: obs[k] for k in ("home_select", "prompt_seq", "commits",
                                                         "partial_ms", "full_ms")}))
     print("RESULT:", "PASS" if report["passed"] else "FAIL")
     return 0 if report["passed"] else 1

@@ -147,3 +147,12 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_sleep_flow.cc" \
   -o "$BUILD/test_sleep_flow"
 "$BUILD/test_sleep_flow"
+
+# V2-07 option prompts: strict 24 kHz mono PCM16 WAV clips and
+# "speak the item the child stops on" scheduling.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/firmware/components/kid_app/src/prompt_scheduler.cc" \
+  "$ROOT/tests/cpp/test_option_prompts.cc" \
+  -o "$BUILD/test_option_prompts"
+"$BUILD/test_option_prompts"
