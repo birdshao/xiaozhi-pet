@@ -87,6 +87,47 @@ int main() {
             assert(!story.IsBlack(x, SceneComposer::kRailTop - 2));
     }
 
+    // Expression and animation poses only touch the pet area: the action
+    // rail band is identical (RefreshPlanner keeps separate budgets).
+    {
+        MonoFrame still;
+        SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2}, still);
+        for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
+                                Emotion::Sleepy, Emotion::Surprised}) {
+            for (kid_app::ScenePose pose : {kid_app::ScenePose::Still, kid_app::ScenePose::Blink,
+                                            kid_app::ScenePose::Wave, kid_app::ScenePose::Hearts1,
+                                            kid_app::ScenePose::Hearts2}) {
+                MonoFrame other;
+                SceneComposer::Render(SceneModel{SceneKind::Home, emotion, 1, 2, pose}, other);
+                for (int y = SceneComposer::kRailTop - 2; y < MonoFrame::kHeight; ++y)
+                    for (int x = 0; x < MonoFrame::kWidth; ++x)
+                        assert(other.IsBlack(x, y) == still.IsBlack(x, y));
+            }
+        }
+        // Each pose is visibly different from the resting picture.
+        for (kid_app::ScenePose pose : {kid_app::ScenePose::Blink, kid_app::ScenePose::Wave,
+                                        kid_app::ScenePose::Hearts1, kid_app::ScenePose::Hearts2}) {
+            MonoFrame other;
+            SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, pose}, other);
+            assert(other.Data() != still.Data());
+        }
+        // Falling asleep: Zzz1 < Zzz2 < Still (all three letters).
+        MonoFrame z1, z2, z3;
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1,
+                                         kid_app::ScenePose::Zzz1}, z1);
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1,
+                                         kid_app::ScenePose::Zzz2}, z2);
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1}, z3);
+        assert(z1.Data() != z2.Data() && z2.Data() != z3.Data());
+        auto white = [](const MonoFrame& f) {
+            int n = 0;
+            for (int y = 0; y < 300; ++y)
+                for (int x = 0; x < 300; ++x) n += f.IsBlack(x, y) ? 0 : 1;
+            return n;
+        };
+        assert(white(z1) < white(z2) && white(z2) < white(z3));  // white letters on the sky
+    }
+
     // Sleep scene: what the ePaper keeps after power-off. No action rail
     // (nothing to press while asleep), sleeping eyes, a moon and "Zzz".
     {
@@ -113,10 +154,15 @@ int main() {
                                     Emotion::Sleepy, Emotion::Surprised}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
-                        const SceneModel in{kind, emotion, page, sel};
-                        const SceneModel out = kid_app::UnpackScene(kid_app::PackScene(in));
-                        assert(out.kind == kind && out.emotion == emotion &&
-                               out.book_page == page && out.home_selection == sel);
+                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Zzz2);
+                             ++pose) {
+                            const SceneModel in{kind, emotion, page, sel,
+                                                static_cast<kid_app::ScenePose>(pose)};
+                            const SceneModel out = kid_app::UnpackScene(kid_app::PackScene(in));
+                            assert(out.kind == kind && out.emotion == emotion &&
+                                   out.book_page == page && out.home_selection == sel &&
+                                   out.pose == in.pose);
+                        }
                     }
                 }
             }
@@ -126,6 +172,7 @@ int main() {
         const SceneModel masked = kid_app::UnpackScene(kid_app::PackScene(wide));
         assert(masked.kind == SceneKind::Reader && masked.home_selection == 0x0F);
         assert(masked.emotion == Emotion::Happy && masked.book_page == 7);
+        assert(masked.pose == kid_app::ScenePose::Still);
     }
 
     std::cout << "PASS: 1-bit frame size, clipping, deterministic scene changes, home rail\n";

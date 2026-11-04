@@ -1,0 +1,81 @@
+PETSELFTEST1
+# Animations and the relaxed refresh policy, no person needed.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:name=greet 1
+# expect min:name=feed 1
+# expect min:PET_EPD_CLEANUP 1
+# expect min:name=blink 1
+# expect min:name=sleep_in 1
+# expect min:PET_SLEEP_SHOWN 1
+# expect min:PET_SLEEP_CANCELLED 1
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# Chat (0): the pet says hi and waves.
+tap up 2500
+tap press 6000
+# Feed (3): happy face, then hearts.
+tap down 2500
+tap down 2500
+tap down 2500
+tap press 7000
+# 40 highlight moves Feed <-> Sleep pass the rail's soft budget without
+# a full refresh; 25 s of quiet then runs one cleanup full refresh.
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+wait 25000
+# Quiet home screen: an idle blink within 45..90 s.
+wait 95000
+# Sleep (4): Zzz one by one; cancel inside the 3 s window.
+tap down 2500
+tap press 8000
+tap up 6000
+pet
+wait 5000
+end
