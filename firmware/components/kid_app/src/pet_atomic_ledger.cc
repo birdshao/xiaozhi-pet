@@ -15,8 +15,11 @@ constexpr size_t kEntryBytes = 24;
 constexpr size_t kMemoryOffset = kQueueOffset +
                                  kEntryBytes * PetDeviceBridge::kCapacity;
 static_assert(kMemoryOffset + 4 == Ledger::kV1Bytes, "v1 layout is frozen");
-static_assert(kMemoryOffset + MemoryStore::kBytes + 4 == Ledger::kBytes,
+static_assert(kMemoryOffset + MemoryStore::kBytes + 4 == Ledger::kV2Bytes,
               "v2 appends memory before the CRC");
+constexpr size_t kParentOffset = kMemoryOffset + MemoryStore::kBytes;
+static_assert(kParentOffset + ParentSettingsCodec::kBytes + 4 == Ledger::kBytes,
+              "v3 appends the parent settings before the CRC");
 constexpr uint64_t kMaxSeq = static_cast<uint64_t>(INT64_MAX);
 
 void Put16(Blob& b, size_t p, uint16_t n) {
@@ -42,7 +45,7 @@ uint64_t Get64(const Blob& b, size_t p) {
     for (size_t i=0;i<8;++i) n |= uint64_t(b[p+i]) << (8*i);
     return n;
 }
-// CRC over bytes [0, length-4) of a v1 (prefix) or v2 blob.
+// CRC over bytes [0, length-4) of a v1/v2 (prefix) or v3 blob.
 uint32_t Crc32(const Blob& b, size_t length) {
     uint32_t crc=0xFFFFFFFFu;
     for (size_t i=0;i<length-4;++i) {
@@ -53,7 +56,8 @@ uint32_t Crc32(const Blob& b, size_t length) {
     return ~crc;
 }
 size_t LengthOf(uint16_t version) {
-    return version==2 ? Ledger::kBytes : version==1 ? Ledger::kV1Bytes : 0;
+    return version==3 ? Ledger::kBytes : version==2 ? Ledger::kV2Bytes :
+           version==1 ? Ledger::kV1Bytes : 0;
 }
 // Same replay window bookkeeping as PetController::Remember.
 bool WasSeen(const PetCheckpoint& c, uint64_t id) {
@@ -98,7 +102,8 @@ bool PetAtomicLedger::ValidId(const char* id) {
 
 bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
                              const PetDeviceBridge::State& q,
-                             const MemoryStore& memory, uint16_t version,
+                             const MemoryStore& memory,
+                             const ParentSettings& parent, uint16_t version,
                              uint64_t generation, Blob* output) {
     const size_t length=LengthOf(version);
     if (!output || !length || generation==0 || q.count>PetDeviceBridge::kCapacity ||
@@ -106,6 +111,8 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
         q.next_sequence<=q.count) return false;
     // v1 has no memory section; only an empty memory can round-trip it.
     if (version==1 && !(memory==MemoryStore{})) return false;
+    // v1/v2 have no parent section; only the defaults can round-trip them.
+    if (version<3 && parent!=ParentSettings{}) return false;
 
     PetCheckpointCodec::Blob pet_blob{};
     if (!PetCheckpointCodec::Encode(pet,generation,&pet_blob)) return false;
@@ -130,8 +137,11 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
         Put64(b,p+8,r.sequence);
         b[p+16]=static_cast<uint8_t>(r.action);
     }
-    if (version==2 &&
+    if (version>=2 &&
         !memory.Encode(b.data()+kMemoryOffset,MemoryStore::kBytes)) return false;
+    if (version==3 &&
+        !ParentSettingsCodec::Encode(parent,b.data()+kParentOffset,
+                                     ParentSettingsCodec::kBytes)) return false;
     Put32(b,length-4,Crc32(b,length));
     *output=b;
     return true;
@@ -139,9 +149,10 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
 
 bool PetAtomicLedger::Decode(const Blob& b, size_t length, PetCheckpoint* pet,
                              PetDeviceBridge::State* queue, MemoryStore* memory,
-                             uint64_t* generation) {
-    const uint16_t version=length==kBytes ? 2 : length==kV1Bytes ? 1 : 0;
-    if (!pet || !queue || !memory || !generation || !version ||
+                             ParentSettings* parent, uint64_t* generation) {
+    const uint16_t version=length==kBytes ? 3 : length==kV2Bytes ? 2 :
+                           length==kV1Bytes ? 1 : 0;
+    if (!pet || !queue || !memory || !parent || !generation || !version ||
         b[0]!='K'||b[1]!='P'||b[2]!='A'||b[3]!='J' ||
         Get16(b,4)!=version || Get16(b,6)!=length ||
         b[26] || b[27] ||
@@ -172,15 +183,22 @@ bool PetAtomicLedger::Decode(const Blob& b, size_t length, PetCheckpoint* pet,
     }
     // v1 -> v2 migration: a v1 blob carries no memory, so it starts empty.
     MemoryStore mem{};
-    if (version==2 &&
+    if (version>=2 &&
         !MemoryStore::Decode(b.data()+kMemoryOffset,MemoryStore::kBytes,&mem))
         return false;
+    // v2 -> v3 migration: the parent menu has not run yet, so defaults.
+    ParentSettings settings{};
+    if (version==3 &&
+        !ParentSettingsCodec::Decode(b.data()+kParentOffset,
+                                     ParentSettingsCodec::kBytes,&settings))
+        return false;
     Blob check{};
-    if (!Encode(candidate,q,mem,version,gen,&check)) return false;
+    if (!Encode(candidate,q,mem,settings,version,gen,&check)) return false;
     for (size_t i=0;i<length;++i) if (check[i]!=b[i]) return false;
     *pet=candidate;
     *queue=q;
     *memory=mem;
+    *parent=settings;
     *generation=gen;
     return true;
 }
@@ -193,6 +211,7 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     PetCheckpoint best_pet{};
     PetDeviceBridge::State best_queue{};
     MemoryStore best_memory{};
+    ParentSettings best_parent{};
 
     for (unsigned slot=0;slot<2;++slot) {
         Blob b{};
@@ -203,13 +222,15 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
         PetCheckpoint p{};
         PetDeviceBridge::State q{};
         MemoryStore m{};
+        ParentSettings s{};
         uint64_t gen=0;
-        if (!Decode(b,length,&p,&q,&m,&gen)) {corrupt=true;continue;}
+        if (!Decode(b,length,&p,&q,&m,&s,&gen)) {corrupt=true;continue;}
         if (gen>best_gen) {
             best_gen=gen;
             best_pet=p;
             best_queue=q;
             best_memory=m;
+            best_parent=s;
             best_slot=static_cast<int>(slot);
         }
     }
@@ -229,6 +250,7 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     if (!controller_.RestoreCheckpoint(best_pet)) return LoadResult::Corrupt;
     queue_=best_queue;
     memory_=best_memory;
+    parent_=best_parent;
     generation_=best_gen;
     active_slot_=best_slot;
     initialized_=true;
@@ -237,16 +259,19 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
 
 bool PetAtomicLedger::Commit(const PetCheckpoint& pet,
                              const PetDeviceBridge::State& queue,
-                             const MemoryStore& memory) {
+                             const MemoryStore& memory,
+                             const ParentSettings* next_parent) {
     if (generation_==std::numeric_limits<uint64_t>::max()) return false;
+    const ParentSettings& parent=next_parent ? *next_parent : parent_;
     Blob next{};
-    if (!Encode(pet,queue,memory,2,generation_+1,&next)) return false;
+    if (!Encode(pet,queue,memory,parent,3,generation_+1,&next)) return false;
     const unsigned slot=active_slot_==0 ? 1u : 0u;
     if (!store_.Write(slot,next)) return false;
     // Save order: commit single storage blob before acknowledging in memory.
     if (!controller_.RestoreCheckpoint(pet)) return false;  // verified by Encode
     queue_=queue;
     memory_=memory;
+    parent_=parent;
     ++generation_;
     active_slot_=static_cast<int>(slot);
     initialized_=true;
@@ -325,6 +350,20 @@ CommitResult PetAtomicLedger::RecordMemory(const MemoryEvent& event) {
     Remember(&pet,event.id);
     // Memory events are not projected to the outbox yet (server sync is V5-05).
     if (!Commit(pet,queue_,memory)) return CommitResult::StorageError;
+    return CommitResult::Committed;
+}
+
+CommitResult PetAtomicLedger::SetParentSettings(uint64_t id,
+                                                const ParentSettings& settings) {
+    if (!initialized_) return CommitResult::StorageError;
+    if (!id) return CommitResult::Rejected;
+    PetCheckpoint pet=controller_.ExportCheckpoint();
+    if (WasSeen(pet,id)) return CommitResult::Duplicate;
+    if (!ValidParentSettings(settings)) return CommitResult::Rejected;
+    Remember(&pet,id);
+    // Only the replay window changes in the pet checkpoint: no interaction,
+    // mood or outbox record (not projected to the server yet).
+    if (!Commit(pet,queue_,memory_,&settings)) return CommitResult::StorageError;
     return CommitResult::Committed;
 }
 

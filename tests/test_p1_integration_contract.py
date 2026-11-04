@@ -46,7 +46,8 @@ class DisplayOverlayTest(unittest.TestCase):
                     '    }\n'
                     '};\n')
         patched = patch_board(original)
-        self.assertIn('FreertosPetSceneMailbox pet_mailbox_', patched)
+        self.assertIn('struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox', patched)
+        self.assertIn('GatedSceneMailbox pet_mailbox_', patched)
         self.assertIn('FreertosPetService pet_service_', patched)
         self.assertIn('FreertosPetDisplayWorker pet_display_worker_', patched)
         self.assertIn('ShowPetScene(scene)', patched)
@@ -135,7 +136,7 @@ class DisplayOverlayTest(unittest.TestCase):
         handle = handle[:handle.index('\n    }\n')]
         # While going to sleep, inputs only cancel (checked before anything
         # else, including the parent combo), and PWR starts the flow.
-        self.assertLess(handle.index('sleep_flow_.OnInput('), handle.index('ArmRtcWakeTest()'))
+        self.assertLess(handle.index('sleep_flow_.OnInput('), handle.index('OpenParentMenu()'))
         self.assertIn('sleep_flow_.Request(NowMs())', handle)
         # Home rail "Sleep" item also starts it.
         rail = patched[patched.index('PetInputDecision HandleHomeRailLocked('):]
@@ -186,8 +187,10 @@ class DisplayOverlayTest(unittest.TestCase):
         off = off[:off.index('\n    }\n')]
         self.assertLess(off.index('sleep_alarm_s_.exchange(0)'), off.index('SecondsUntilWake()'))
         self.assertIn('ArmRtcAlarmIn(wake_s)', off)
-        # Quiet hours lower the prompts.
-        self.assertIn('quiet_hours_.load() ?', patched)
+        # Quiet hours lower the prompts (ceiling from the parent settings).
+        self.assertIn('kid_app::LimitVolumePct(ParentSettingsNow(), prompt_volume_pct_.load(),',
+                      patched)
+        self.assertNotIn('rhythm_.', patched)
 
     def test_animations_and_deferred_cleanup(self):
         patched = self._board()
@@ -426,20 +429,19 @@ class DisplayOverlayTest(unittest.TestCase):
         for cfg in ('{0x02, 0x40}', '{0x03, 0x17}', '{0x08, 0x01}'):
             self.assertIn(cfg, patched)
         for marker in ('PET_DIAG_ACC', 'PET_DIAG_HEARTBEAT', 'PET_DIAG_RTC_SYNC',
-                       'PET_DIAG_WAKE', 'PET_DIAG_ALARM_TEST', 'PET_DIAG_EPD'):
+                       'PET_DIAG_WAKE', 'PET_DIAG_EPD'):
             self.assertIn(marker, patched)
         # RTC is only written from a plausible system clock (server time).
         sync = patched[patched.index('void SyncRtcFromSystemTime()'):]
         sync = sync[:sync.index('\n    }\n')]
         self.assertIn('PlausibleWallClock', sync)
-        # Timed power-on test: Pet mode + parent combo only, RTC must be set.
+        # V3-06: the parent combo opens the parent menu; the V1-05 timed
+        # power-on test is gone (self-test "alarm" steps cover the RTC wake).
         self.assertIn('event.kind == kid_app::InputKind::ParentCombo && pet_mode_.load()',
                       patched)
-        arm = patched[patched.index('void ArmRtcWakeTest()'):]
-        arm = arm[:arm.index('\n    }\n')]
+        self.assertNotIn('ArmRtcWakeTest', patched)
+        self.assertNotIn('PET_DIAG_ALARM_TEST', patched)
         # V2-09: the RTC-not-set refusal lives in the shared alarm helper.
-        self.assertIn('if (!ArmRtcAlarmIn(90))', arm)
-        self.assertIn('pmic_->PowerOff()', arm)
         helper = patched[patched.index('bool ArmRtcAlarmIn('):]
         helper = helper[:helper.index('\n    }\n')]
         self.assertIn('refused=rtc_not_set', helper)
@@ -920,6 +922,127 @@ class DisplayOverlayTest(unittest.TestCase):
         for expect in ('min:event=plugged', 'min:anim=yawn', 'min:event=critical',
                        'min:wake=selftest', 'min:battery=1', 'none:PET_SLEEP_POWEROFF_RETURNED'):
             self.assertIn('# expect ' + expect, scenario)
+
+    def test_v3_parent_menu_wiring(self):
+        patched = self._board()
+        for header in ('parent_menu.h', 'nvs_parent_settings_store.h'):
+            self.assertIn(f'#include "kid_app/{header}"', patched)
+        # The combo (after the sleep-flow guard) opens the menu; while it is
+        # open it takes every input before power, sleep and pet handling.
+        handle = self._body(patched, 'void HandleInputEvent(')
+        self.assertIn('OpenParentMenu();', handle)
+        menu_at = handle.index('if (parent_menu_.IsOpen())')
+        self.assertLess(menu_at, handle.index('power_.OnActivity(NowMs())'))
+        self.assertLess(menu_at, handle.index('PetInputRouter::'))
+        # Entering, moving and leaving are never pet interactions.
+        for fn in ('void OpenParentMenu()', 'void CloseParentMenu(', 'void HandleParentAction(',
+                   'void UpdateParentMenu()', 'void ApplyParentSettings(',
+                   'void LoadParentSettings()'):
+            body = self._body(patched, fn)
+            self.assertNotIn('PostLocal', body, fn)
+            self.assertNotIn('pet_service_', body, fn)
+        opened = self._body(patched, 'void OpenParentMenu()')
+        self.assertIn('state != kDeviceStateIdle', opened)
+        self.assertIn('parent_ready_.load()', opened)
+        self.assertLess(opened.index('pet_mailbox_.parent_only.store(true)'),
+                        opened.index('PublishParentSceneLocked()'))
+        self.assertIn('SceneStateLock lock(scene_state_mutex_)', opened)
+        self.assertIn('PET_PARENT_OPEN', opened)
+        closed = self._body(patched, 'void CloseParentMenu(')
+        self.assertLess(closed.index('pet_mailbox_.parent_only.store(false)'),
+                        closed.index('UnpackPetScene(last_pet_scene_.load())'))
+        self.assertIn('input_hub_.SetAutoRepeat(false)', closed)
+        self.assertIn('PET_PARENT_EXIT parent_exit=%s', closed)
+        # Only parent frames reach the panel while it is open.
+        gate = patched[patched.index('struct GatedSceneMailbox'):]
+        gate = gate[:gate.index('GatedSceneMailbox pet_mailbox_')]
+        self.assertIn('scene.kind != kid_app::SceneKind::Parent) return false;', gate)
+        self.assertIn('if (ParentMenuOpen()) return;', self._body(patched, 'void RequestAnimation('))
+        # Saved settings go to NVS first, then apply; a failed write reverts.
+        action = self._body(patched, 'void HandleParentAction(')
+        self.assertLess(action.index('parent_store_.Save(next)'),
+                        action.index('ApplyParentSettings(next, "menu")'))
+        self.assertIn('parent_menu_.Revert(ParentSettingsNow())', action)
+        for marker in ('PET_PARENT_SAVED item=%s', 'PET_PARENT_SAVE_FAILED item=%s',
+                       'PET_PARENT_ITEM item=%s'):
+            self.assertIn(marker, action)
+        update = self._body(patched, 'void UpdateParentMenu()')
+        self.assertIn('parent_menu_.Tick(NowMs()), "idle"', update)
+        self.assertIn('CloseParentMenu("pet_off")', update)
+        self.assertIn('input_hub_.SetAutoRepeat(parent_menu_.Editing())', update)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('HandleInputEvent(event)'), loop.index('UpdateParentMenu()'))
+        self.assertLess(loop.index('UpdateParentMenu()'), loop.index('UpdatePower(state)'))
+        self.assertIn('!ParentMenuOpen() && kid_app::PetInputRouter::IsHomeRail(', loop)
+        self.assertIn('|| ParentMenuOpen();', self._body(patched, 'void UpdatePower('))
+        # BOOT does nothing while the menu is open.
+        click = patched[patched.index('boot_button_.OnClick'):]
+        self.assertLess(click.index('if (ParentMenuOpen()) return;'), click.index('ToggleChatState'))
+        self.assertEqual(patched.count('DialPressHeld() || ParentMenuOpen()) return;'), 2)
+
+    def test_v3_parent_settings_drive_the_board(self):
+        patched = self._board()
+        # Loaded once before the self-test task (morning flow) starts.
+        boot = patched[patched.index('self->RunHardwareDiag();'):]
+        self.assertLess(boot.index('self->LoadParentSettings();'),
+                        boot.index('self->StartSelfTestTask();'))
+        load = self._body(patched, 'void LoadParentSettings()')
+        self.assertIn('parent_store_.Load(&loaded)', load)
+        self.assertIn('kid_app::ParentSettings{}', load)
+        self.assertIn('parent_ready_.store(true)', load)
+        # Day plan: every rhythm use goes through the parent settings.
+        self.assertIn('kid_app::RhythmScheduler(ParentSettingsNow().schedule)', patched)
+        self.assertIn('const auto rhythm = Rhythm();', self._body(patched, 'void UpdateRhythm()'))
+        self.assertIn('const auto rhythm = Rhythm();',
+                      self._body(patched, 'uint32_t SecondsUntilWake()'))
+        apply = self._body(patched, 'void ApplyParentSettings(')
+        self.assertIn('std::lock_guard<std::mutex> lock(parent_mutex_)', apply)
+        self.assertIn('motion_enabled_.store(settings.motion_enabled)', apply)
+        self.assertIn('rhythm_refresh_.store(true)', apply)
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertIn('if (rhythm_refresh_.exchange(false)) UpdateRhythm();', diag)
+        # Motion off: the detector is off and injected gestures do nothing.
+        self.assertIn('motion_enabled_.load();  // V3-06 parent switch', diag)
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertIn('!motion_off && !ParentMenuOpen()', gesture)
+        self.assertIn('motion_off ? " motion_off=1" : ""', gesture)
+        # Volume cap in software only: prompts and story narration.
+        self.assertIn('ScalePcm(chunk, n, PromptVolumePct())', patched)
+        push = self._body(patched, 'static bool StoryAudioPush(')
+        self.assertIn('kid_app::ScalePcm(self->story_scaled_.data(), count, pct)', push)
+        self.assertIn('if (count > self->story_scaled_.size()) return false;', push)
+        self.assertNotIn('SetOutputVolume', patched)
+        self.assertNotIn('nvs_set', patched)
+        # Pet lines (V5-04) share that one scaled path, quiet hours included.
+        self.assertEqual(patched.count('kid_app::ScalePcm(chunk, n, PromptVolumePct())'), 1)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertIn('sound_bank_.LoadPhrase(phrase_id, &clip)', player)
+        self.assertIn('kid_app::ScalePcm(chunk, n, PromptVolumePct())', player)
+        self.assertIn('ParentMenuOpen()', self._body(patched, 'void PostPhrase('))
+        # Battery reactions wait; any sleep (a flat battery included) closes
+        # the menu first, so a critical shutdown always wins.
+        battery = self._body(patched, 'void UpdateBattery(')
+        allowed = battery[battery.index('const bool allowed'):battery.index('battery_.Reaction(')]
+        self.assertIn('!ParentMenuOpen()', allowed)
+        show = patched[patched.index('case kid_app::SleepAction::ShowSleepScene: {'):]
+        self.assertLess(show.index('if (parent_menu_.IsOpen()) CloseParentMenu("sleep");'),
+                        show.index('sleep_active_.store(true);'))
+        # Self-test "combo" step: BOOT + dial press on the raw-edge queue.
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        combo = run[run.index('case kid_app::SelfTestOp::Combo:'):]
+        combo = combo[:combo.index('break;')]
+        self.assertLess(combo.index('PostKeyEdge(kid_app::InputKey::Boot, true)'),
+                        combo.index('vTaskDelay(pdMS_TO_TICKS(step.ms))'))
+        self.assertIn('PostKeyEdge(kid_app::InputKey::DialPress, true)', combo)
+        self.assertIn('PostKeyEdge(kid_app::InputKey::DialPress, false)', combo)
+        self.assertIn('PostKeyEdge(kid_app::InputKey::Boot, false)', combo)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v3_parent_menu.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('combo 5500', scenario)
+        self.assertIn('# expect commits 0', scenario)
+        self.assertIn('# expect min:parent_exit=idle 1', scenario)
+        self.assertIn('# expect min:motion_off=1 1', scenario)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kid_app/memory_store.h"
+#include "kid_app/parent_settings.h"
 #include "kid_app/pet_controller.h"
 #include "kid_app/pet_device_bridge.h"
 #include "kid_app/pet_event_executor.h"
@@ -20,19 +21,23 @@ namespace kid_app {
 // to the same blob, so memory commits in the same transaction as the Pet
 // checkpoint and outbox. v1 blobs (no memory) still load and migrate to an
 // empty memory; the next commit writes v2 to the other slot and leaves the v1
-// slot intact. Not the legacy kid_pet or kid_bridge NVS format.
+// slot intact. Schema v3 appends the V3-06 parent settings (day plan,
+// volume cap, motion switch) the same way: v1/v2 blobs load with the default
+// settings and the next commit writes v3. Not the legacy kid_pet or
+// kid_bridge NVS format.
 // One task must own this object (do not call from HTTP/ISR callbacks).
 class PetAtomicLedger {
 public:
     static constexpr size_t kV1Bytes = 28 + PetCheckpointCodec::kBytes +
                                        PetDeviceBridge::kCapacity * 24 + 4;
-    static constexpr size_t kBytes = kV1Bytes + MemoryStore::kBytes;
+    static constexpr size_t kV2Bytes = kV1Bytes + MemoryStore::kBytes;
+    static constexpr size_t kBytes = kV2Bytes + ParentSettingsCodec::kBytes;
     class Store {
     public:
         using Blob = std::array<uint8_t, kBytes>;
         virtual ~Store() = default;
-        // On Ok, *length is the stored size: kBytes (v2) or kV1Bytes (v1, in
-        // the prefix of *out). Any other size fails decode as corrupt.
+        // On Ok, *length is the stored size: kBytes (v3), kV2Bytes or kV1Bytes
+        // (older, in the prefix of *out). Any other size fails decode as corrupt.
         virtual BlobReadStatus Read(unsigned slot, Blob* out, size_t* length) = 0;
         virtual bool Write(unsigned slot, const Blob& value) = 0;
     };
@@ -61,6 +66,11 @@ public:
     // id is Duplicate and never double-counts. Guard rules: MemoryStore::Apply.
     CommitResult RecordMemory(const MemoryEvent& event);
     const MemoryStore& Memory() const { return memory_; }
+    // V3-06 parent menu: replaces the parent settings in one commit. Shares
+    // the Pet replay-id window like RecordMemory (a replayed id is
+    // Duplicate); invalid settings are Rejected. Never a pet interaction.
+    CommitResult SetParentSettings(uint64_t id, const ParentSettings& settings);
+    const ParentSettings& Parent() const { return parent_; }
     bool Peek(PetDeviceBridge::Record* out) const;
     AckResult Acknowledge(const PetDeviceBridge::ServerAck& ack,
                           const char* device_id);
@@ -70,18 +80,20 @@ public:
     size_t PendingCount() const { return queue_.count; }
 
 private:
+    // next_parent null keeps the current parent settings.
     bool Commit(const PetCheckpoint& next_pet,
                 const PetDeviceBridge::State& next_queue,
-                const MemoryStore& next_memory);
-    // version 2 is written; version 1 is only produced for the canonical
-    // check of a v1 blob being migrated.
+                const MemoryStore& next_memory,
+                const ParentSettings* next_parent = nullptr);
+    // version 3 is written; versions 1 and 2 are only produced for the
+    // canonical check of an older blob being migrated.
     static bool Encode(const PetCheckpoint& pet,
                        const PetDeviceBridge::State& queue,
-                       const MemoryStore& memory, uint16_t version,
-                       uint64_t generation, Store::Blob* blob);
+                       const MemoryStore& memory, const ParentSettings& parent,
+                       uint16_t version, uint64_t generation, Store::Blob* blob);
     static bool Decode(const Store::Blob& blob, size_t length, PetCheckpoint* pet,
                        PetDeviceBridge::State* queue, MemoryStore* memory,
-                       uint64_t* generation);
+                       ParentSettings* parent, uint64_t* generation);
     static bool IsProjectable(PetAction action);
     static bool ValidId(const char* device_id);
 
@@ -89,6 +101,7 @@ private:
     PetController controller_{};
     PetDeviceBridge::State queue_{};
     MemoryStore memory_{};
+    ParentSettings parent_{};
     uint64_t generation_ = 0;
     int active_slot_ = -1;
     bool initialized_ = false;

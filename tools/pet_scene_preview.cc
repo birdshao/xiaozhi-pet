@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|parent|parent_edit> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -37,6 +37,14 @@ int main(int argc, char** argv) {
         model.status.charging = true;
         model.status.quiet = true;
         model.status.network = kid_app::NetworkState::Online;
+    }
+    else if (mode == "parent" || mode == "parent_edit") {  // V3-06 parent menu
+        model.kind = kid_app::SceneKind::Parent;
+        model.parent.settings.schedule.nap_enabled = true;
+        model.parent.settings.volume_cap_pct = 70;
+        model.parent.settings.motion_enabled = false;
+        model.parent.cursor = mode == "parent" ? 1 : 0;
+        model.parent.editing = mode == "parent_edit";
     }
     else if (mode == "reader") {
         model.kind = kid_app::SceneKind::Reader;

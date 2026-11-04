@@ -18,6 +18,8 @@ namespace kid_app {
 //   pet                     toggle Pet mode (as a BOOT long press would)
 //   tap <key> [gap_ms]      press 80 ms, release, then gap (default 1000)
 //   hold <key> <ms> [gap]   press <ms>, release, then gap (default 1000)
+//   combo <ms> [gap]        BOOT and dial press together for <ms> (the V3-06
+//                           parent entry needs 5000), release both, then gap
 //   mark <name>             log marker ([a-z0-9_], <= 15 chars)
 //   alarm <seconds>         RTC wake-up 10..600 s after the next sleep power-off
 //   volume <percent>        prompt volume 0..100 for the rest of this boot (RAM only)
@@ -39,13 +41,14 @@ namespace kid_app {
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
-    Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery
+    Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
+    Combo
 };
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;
     InputKey key = InputKey::DialPress;
-    uint32_t ms = 0;      // wait/hold ms; seconds for Alarm; percent for Volume;
+    uint32_t ms = 0;      // wait/hold/combo ms; seconds for Alarm; percent for Volume;
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff

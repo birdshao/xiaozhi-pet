@@ -26,8 +26,9 @@ BlobReadStatus NvsAtomicPetStore::Read(unsigned slot, Blob* out,
         nvs_close(nvs);
         return BlobReadStatus::Error;
     }
-    // v2 or a v1 blob awaiting migration (read into the prefix).
-    if (len!=out->size() && len!=PetAtomicLedger::kV1Bytes) {
+    // v3, or a v2/v1 blob awaiting migration (read into the prefix).
+    if (len!=out->size() && len!=PetAtomicLedger::kV2Bytes &&
+        len!=PetAtomicLedger::kV1Bytes) {
         out->fill(0);  // wrong size -> corrupt; do not erase NVS.
         *length=out->size();
         nvs_close(nvs);

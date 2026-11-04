@@ -421,6 +421,98 @@ int main() {
         assert(masked.pose == kid_app::ScenePose::Still);
     }
 
+    // V3-06 parent menu: one row per setting; a value, the highlight or the
+    // edit state changes only the rows involved (small partial refreshes).
+    {
+        using kid_app::ParentItem;
+        using kid_app::ParentView;
+        const int top = 72, row_h = 50;
+        auto render = [](const ParentView& view, MonoFrame& out) {
+            SceneModel model{SceneKind::Parent};
+            model.parent = view;
+            SceneComposer::Render(model, out);
+        };
+        // Differs from `a` somewhere, and only on rows y0..y1-1.
+        auto only_rows = [](const MonoFrame& a, const MonoFrame& b, int y0, int y1) {
+            bool any = false;
+            for (int y = 0; y < MonoFrame::kHeight; ++y)
+                for (int x = 0; x < MonoFrame::kWidth; x += 8) {
+                    const size_t i = static_cast<size_t>(y * MonoFrame::kStride + x / 8);
+                    if (a.Data()[i] == b.Data()[i]) continue;
+                    if (y < y0 || y >= y1) return false;
+                    any = true;
+                }
+            return any;
+        };
+        const ParentView view;
+        MonoFrame base, f;
+        render(view, base);
+        MonoFrame home;
+        SceneComposer::Render(SceneModel{}, home);
+        assert(base.Data() != home.Data());
+        // Home-only pieces never show: the status band stays off.
+        SceneModel with_status{SceneKind::Parent};
+        with_status.status.hour = 7;
+        with_status.status.minute = 42;
+        with_status.status.battery_bars = 2;
+        SceneComposer::Render(with_status, f);
+        assert(f.Data() == base.Data());
+
+        // Every value lives in its own row.
+        for (uint8_t row = 0; row < kid_app::kParentItemCount; ++row) {
+            ParentView changed = view;
+            auto& s = changed.settings;
+            switch (static_cast<ParentItem>(row)) {
+                case ParentItem::Wake: s.schedule.wake_min = 6 * 60 + 45; break;
+                case ParentItem::Evening: s.schedule.evening_min = 19 * 60; break;
+                case ParentItem::QuietStart: s.schedule.quiet_start_min = 21 * 60; break;
+                case ParentItem::QuietEnd: s.schedule.quiet_end_min = 6 * 60; break;
+                case ParentItem::Nap: s.schedule.nap_enabled = true; break;
+                case ParentItem::Volume: s.volume_cap_pct = 50; break;
+                case ParentItem::QuietVolume: s.quiet_volume_pct = 0; break;
+                case ParentItem::Motion: s.motion_enabled = false; break;
+            }
+            render(changed, f);
+            assert(only_rows(base, f, top + row * row_h, top + (row + 1) * row_h));
+        }
+        // Moving the highlight redraws the two rows involved.
+        ParentView moved = view;
+        moved.cursor = 1;
+        render(moved, f);
+        assert(only_rows(base, f, top, top + 2 * row_h));
+        // Editing turns the row black (white digits and arrows on it).
+        ParentView editing = view;
+        editing.editing = true;
+        render(editing, f);
+        assert(only_rows(base, f, top, top + row_h));
+        int black = 0;
+        for (int y = top + 4; y < top + row_h - 4; ++y)
+            for (int x = 20; x < 780; ++x) black += f.IsBlack(x, y) ? 1 : 0;
+        assert(black > (row_h - 8) * 760 * 6 / 10);
+        // Every wake-up minute looks different (seven-segment HH:MM).
+        std::vector<MonoFrame> clocks(4);  // heap: 48 KB each
+        const uint16_t times[] = {7 * 60, 7 * 60 + 15, 8 * 60, 17 * 60 + 15};
+        for (size_t i = 0; i < 4; ++i) {
+            ParentView t = view;
+            t.settings.schedule.wake_min = times[i];
+            render(t, clocks[i]);
+            for (size_t j = 0; j < i; ++j) assert(clocks[i].Data() != clocks[j].Data());
+        }
+        // Volume bars: each step of 10 % looks different.
+        std::vector<MonoFrame> bars(10);
+        for (int i = 0; i < 10; ++i) {
+            ParentView v = view;
+            v.settings.volume_cap_pct = static_cast<uint8_t>(10 + i * 10);
+            render(v, bars[i]);
+            for (int j = 0; j < i; ++j) assert(bars[i].Data() != bars[j].Data());
+        }
+        // The packed scene word never carries the menu (the board keeps it apart).
+        SceneModel packed{SceneKind::Parent};
+        packed.parent.cursor = 5;
+        const SceneModel back = kid_app::UnpackScene(kid_app::PackScene(packed));
+        assert(back.kind == SceneKind::Parent && back.parent == ParentView{});
+    }
+
     std::cout << "PASS: 1-bit frame size, clipping, deterministic scene changes, home rail\n";
     return 0;
 }

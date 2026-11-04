@@ -90,5 +90,19 @@ int main() {
     assert(gate.Complete(true, 41100));
     assert(!gate.Request(clock));
     assert(gate.Request(sleepy_feed));
+    // V3-06: two parent menu frames that differ only in the menu are
+    // different scenes (the packed word does not carry the menu).
+    {
+        kid_app::PetRefreshGate menu_gate(0);
+        kid_app::SceneModel a{kid_app::SceneKind::Parent};
+        kid_app::SceneModel b = a;
+        b.parent.settings.motion_enabled = false;
+        assert(menu_gate.Request(a));
+        kid_app::SceneModel got{};
+        assert(menu_gate.Acquire(0, &got) && menu_gate.Complete(true, 1));
+        assert(!menu_gate.Request(a));
+        assert(menu_gate.Request(b));
+    }
+
     std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }

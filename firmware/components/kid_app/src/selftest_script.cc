@@ -188,6 +188,11 @@ bool SelfTestScript::Parse(const char* text) {
             step.ms = kTapMs;
             step.gap_ms = kDefaultGapMs;
             if (n == 3 && !Number(words[2], &step.gap_ms)) return false;
+        } else if (std::strcmp(words[0], "combo") == 0) {
+            if (n < 2 || n > 3 || !Number(words[1], &step.ms) || step.ms == 0) return false;
+            step.op = SelfTestOp::Combo;
+            step.gap_ms = kDefaultGapMs;
+            if (n == 3 && !Number(words[2], &step.gap_ms)) return false;
         } else if (std::strcmp(words[0], "hold") == 0) {
             if (n < 3 || !Key(words[1], &step.key) || !Number(words[2], &step.ms) ||
                 step.ms == 0)

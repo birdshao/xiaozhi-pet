@@ -8,6 +8,7 @@ The new PetAtomicLedger, its codec, and NvsAtomicPetStore persist *both* in one 
 
 - Namespace kid_pet_sync, keys joint_a / joint_b; neither old kid_pet nor kid_bridge is overwritten.
 - Schema v2 (V5) appends a 288-byte MemoryStore before the CRC (1,768 bytes). v1 1,480-byte blobs still load with empty memory; the next commit writes v2 to the other slot. See V5_PERSONALITY_MEMORY.md.
+- Schema v3 (V3-06) appends the 28-byte parent settings block (ParentSettingsCodec: day plan, volume cap, quiet-hours ceiling, motion switch; own tag, version and CRC) before the CRC (1,796 bytes). v1/v2 blobs load with the default settings and the next commit writes v3 to the other slot. `SetParentSettings(id, settings)` shares the Pet replay window, rejects invalid settings and is not a pet interaction. The board still runs the legacy FreertosPetService, so until it switches to FreertosAtomicPetService it keeps the same codec bytes in its own NVS key `kid_parent/settings`.
 - Composite blob embeds the byte-exact verified PetCheckpointCodec, a 16-event FIFO, next server sequence, generation, CRC32 and schema magic. CRC detects corruption, not malicious alteration. Newest valid A/B slot is selected.
 - Refuses unknown/corrupt-only NVS and failures reading either slot; never auto-erases.
 - Applies feed/pickup/voice-start/voice-end/quiet-start/quiet-end in a single persistent blob. Story events remain local until book_id and approved-page context can be carried in the device event schema.

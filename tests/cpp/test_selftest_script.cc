@@ -129,6 +129,22 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nvoice listen now\nend\n"));
     }
 
+    // combo <ms> [gap]: BOOT + dial press together (V3-06 parent entry).
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\ncombo 5500\ncombo 6000 7000\nend\n"));
+        assert(script.Count() == 2);
+        assert(script.Steps()[0].op == SelfTestOp::Combo && script.Steps()[0].ms == 5500 &&
+               script.Steps()[0].gap_ms == SelfTestScript::kDefaultGapMs);
+        assert(script.Steps()[1].ms == 6000 && script.Steps()[1].gap_ms == 7000);
+        assert(script.TotalMs() == 5500 + 1000 + 6000 + 7000);
+        assert(!script.Parse("PETSELFTEST1\ncombo\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ncombo 0\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ncombo boot 5000\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ncombo 5000 10 20\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ncombo 600001\nend\n"));
+    }
+
     // Raw flash sector: text followed by erased 0xFF bytes.
     {
         char sector[4096];

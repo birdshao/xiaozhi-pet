@@ -488,7 +488,7 @@ void TestLedgerRejectsCorruptMemoryBlock() {
     assert(l.RecordMemory(Book(3, 4)) == CommitResult::Committed);
     // Newest slot: valid CRC but a non-canonical memory block (reserved byte).
     const unsigned newest = static_cast<unsigned>(ActiveSlot(disk));
-    disk.slots[newest][Ledger::kBytes - 5] = 1;
+    disk.slots[newest][Ledger::kV2Bytes - 5] = 1;  // last memory byte
     PutCrc(disk.slots[newest].data(), Ledger::kBytes);
     Ledger fallback(disk);
     assert(fallback.Load() == Ledger::LoadResult::Ready);

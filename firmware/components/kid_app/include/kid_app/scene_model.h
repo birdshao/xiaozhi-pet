@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "kid_app/parent_menu.h"
 #include "kid_app/status_bar.h"
 
 namespace kid_app {
@@ -11,7 +12,8 @@ namespace kid_app {
 // Hardware-agnostic scene state. No Xiaozhi, LVGL, or ESP-IDF headers here.
 class StoryPackReader;
 // Sleep: shown before PMIC power-off and kept by the ePaper while off.
-enum class SceneKind : uint8_t { Home, Reader, Sleep };
+// Parent: the V3-06 on-device parent menu (draws SceneModel::parent).
+enum class SceneKind : uint8_t { Home, Reader, Sleep, Parent };
 // Listening / Thinking / Speaking: voice-session faces (V6-01, see
 // voice_face.h); like every expression they stay above the action rail.
 // Packed in 4 bits (PackScene): at most 16 emotions.
@@ -47,6 +49,9 @@ struct SceneModel {
     // keeps the readings in their own word (PackStatus) and the ePaper task
     // fills this in when it draws (see RefreshPlanner's status region).
     StatusBar status{};
+    // Parent menu rows (SceneKind::Parent only). Not packed either: the
+    // board never keeps a parent scene in its packed pet scene word.
+    ParentView parent{};
 };
 
 // One-word scene snapshot shared between board tasks (atomic<uint32_t>):
