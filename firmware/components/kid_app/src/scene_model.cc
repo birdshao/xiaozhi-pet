@@ -264,8 +264,24 @@ void QuestionMark(MonoFrame& f, int cx, int cy, int r, int w) {
 // home size. Shapes are drawn back to front: ears, head, markings, face.
 
 // Eye override for animation poses: Closed whatever the emotion (blink,
-// asleep), WinkLeft closes only the viewer's left eye.
-enum class Eyes : uint8_t { ByEmotion, Closed, WinkLeft };
+// asleep), WinkLeft closes only the viewer's left eye, Laugh is ^ ^ and
+// Spiral is dizzy swirls.
+enum class Eyes : uint8_t { ByEmotion, Closed, WinkLeft, Laugh, Spiral };
+
+// Archimedean swirl from the centre out, about two turns.
+void Spiral(MonoFrame& f, int cx, int cy, int r, int w) {
+    int px = cx, py = cy;
+    const int steps = 48;
+    for (int i = 1; i <= steps; ++i) {
+        const double a = i * 4.0 * kPi / steps;
+        const double rr = r * static_cast<double>(i) / steps;
+        const int x = cx + static_cast<int>(std::lround(rr * std::cos(a)));
+        const int y = cy + static_cast<int>(std::lround(rr * std::sin(a)));
+        Stroke(f, px, py, x, y, w);
+        px = x;
+        py = y;
+    }
+}
 
 // halo: a white rim around head and ears so the outline stays visible on a
 // black background.
@@ -316,8 +332,12 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion,
             Arc(f, x, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
             continue;
         }
-        if (eyes == Eyes::WinkLeft && side < 0) {  // ^
+        if (eyes == Eyes::Laugh || (eyes == Eyes::WinkLeft && side < 0)) {  // ^
             Arc(f, x, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
+            continue;
+        }
+        if (eyes == Eyes::Spiral) {
+            Spiral(f, x, ey, s(22), std::max(2, s(5)));
             continue;
         }
         switch (emotion) {
@@ -399,8 +419,30 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 34);
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 20, false);
     }
-    CatHead(f, cx, cy, 100, emotion,
-            pose == ScenePose::Blink ? Eyes::Closed : wave ? Eyes::WinkLeft : Eyes::ByEmotion);
+    const bool dizzy = pose == ScenePose::Dizzy1 || pose == ScenePose::Dizzy2;
+    Eyes eyes = Eyes::ByEmotion;
+    if (pose == ScenePose::Blink) eyes = Eyes::Closed;
+    if (wave) eyes = Eyes::WinkLeft;
+    if (pose == ScenePose::Giggle) eyes = Eyes::Laugh;
+    if (dizzy) eyes = Eyes::Spiral;
+    CatHead(f, cx, cy, 100, emotion, eyes);
+    if (pose == ScenePose::Giggle) {  // wobble lines on both sides of the head
+        for (int side : {-1, 1})
+            for (int i = 0; i < 2; ++i)
+                Arc(f, cx + side * (142 + i * 16), cy - 10, 26, 44, side < 0 ? 150 : -30,
+                    side < 0 ? 210 : 30, 5);
+    }
+    if (dizzy) {  // stars on a dashed orbit over the head; frames alternate
+        const int ox = cx, oy = cy - 112, rx = 132, ry = 26;
+        for (int deg = 0; deg < 360; deg += 30) Arc(f, ox, oy, rx, ry, deg, deg + 16, 3);
+        const int turn = pose == ScenePose::Dizzy1 ? 20 : 80;
+        for (int i = 0; i < 3; ++i) {
+            const double a = (turn + i * 120) * kPi / 180.0;
+            const int sx = ox + static_cast<int>(std::lround(rx * std::cos(a)));
+            const int sy = oy + static_cast<int>(std::lround(ry * std::sin(a)));
+            Sparkle(f, sx, sy, 20);
+        }
+    }
     if (wave) {  // paw pads up, with motion lines
         const int px = cx + 142, py = cy + 48;
         Blob(f, px, py, 28, 30, 6);

@@ -1,6 +1,7 @@
 #include "kid_app/pet_animation.h"
 
 #include <cassert>
+#include <string>
 #include <iostream>
 
 using namespace kid_app;
@@ -32,7 +33,8 @@ int main() {
     const SceneModel neutral{SceneKind::Home, Emotion::Neutral, 1, 1};
 
     // Every animation ends on the resting picture of its scene.
-    for (Animation a : {Animation::Blink, Animation::Greet, Animation::Feed, Animation::SleepIn}) {
+    for (Animation a : {Animation::Blink, Animation::Greet, Animation::Feed, Animation::SleepIn,
+                        Animation::Giggle, Animation::Dizzy}) {
         const AnimationFrame* frames = nullptr;
         const uint8_t n = AnimationFrames(a, &frames);
         assert(n >= 2 && n <= 3 && frames[n - 1].pose == ScenePose::Still);
@@ -63,6 +65,26 @@ int main() {
         const DirectorStep step = d.Idle(moved, now += 100, true, false);
         assert(step.kind == Kind::Frame && step.scene.home_selection == 4 &&
                step.scene.pose == ScenePose::Hearts1 && step.animation == Animation::Feed);
+    }
+
+    // Shake reactions play on the home screen: giggle, then dizzy.
+    {
+        PetAnimationDirector d;
+        uint32_t now = 50;
+        d.SceneShown(neutral, now);
+        d.Request(Animation::Giggle, neutral, now);
+        ScenePose poses[4] = {};
+        assert(Play(d, neutral, &now, poses, 4) == 2);
+        assert(poses[0] == ScenePose::Giggle && poses[1] == ScenePose::Still);
+        d.Request(Animation::Dizzy, neutral, now);
+        assert(Play(d, neutral, &now, poses, 4) == 3);
+        assert(poses[0] == ScenePose::Dizzy1 && poses[1] == ScenePose::Dizzy2 &&
+               poses[2] == ScenePose::Still);
+        assert(std::string(AnimationName(Animation::Dizzy)) == "dizzy");
+        const SceneModel reader{SceneKind::Reader, Emotion::Happy, 2, 1};
+        d.Request(Animation::Dizzy, reader, now);  // ignored off the home screen
+        d.SceneShown(reader, now += 100);
+        assert(d.Idle(reader, now += 100, true, false).kind == Kind::None);
     }
 
     // Home animations never play on the reader or the sleep scene.

@@ -1,0 +1,39 @@
+PETSELFTEST1
+# V4-02 motion reactions and V3 rhythm wiring. Gestures are injected with
+# "gesture" steps: this checks the board path, the IMU thresholds are
+# host-tested with the V1 round 3 recordings (test_gesture_detector).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect commits 1
+# expect min:kind=pickup 1
+# expect min:name=greet 2
+# expect min:name=giggle 1
+# expect min:name=dizzy 1
+# expect min:acted=1 4
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# Pickup: the durable "says hi" action, then a wave.
+gesture pickup
+wait 7000
+# Gentle shake: giggle. Hard shake: dizzy, no reward.
+gesture gentle
+wait 5000
+gesture hard
+wait 6000
+# Peekaboo: face down, then up again -> "found you" wave.
+gesture facedown
+wait 1500
+gesture faceup
+wait 6000
+pet
+wait 4000
+end

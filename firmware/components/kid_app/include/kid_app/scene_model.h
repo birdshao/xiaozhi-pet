@@ -13,10 +13,15 @@ enum class SceneKind : uint8_t { Home, Reader, Sleep };
 enum class Emotion : uint8_t { Neutral, Happy, Curious, Sleepy, Surprised };
 // Short animation frames drawn on top of a scene (PetAnimationDirector).
 // Still is the resting picture. Home: Blink (eyes closed), Wave (paw up,
-// wink), Hearts1/Hearts2 (after feeding). Sleep: Zzz1/Zzz2 show one/two of
-// the three Z letters; Still shows all three (the picture kept while off).
-// Poses only ever change pixels above the home action rail.
-enum class ScenePose : uint8_t { Still, Blink, Wave, Hearts1, Hearts2, Zzz1, Zzz2 };
+// wink), Hearts1/Hearts2 (after feeding), Giggle (gentle shake: laughing
+// eyes, wobble lines), Dizzy1/Dizzy2 (hard shake: spiral eyes, circling
+// stars; a gentle reminder, never a reward). Sleep: Zzz1/Zzz2 show one/two
+// of the three Z letters; Still shows all three (the picture kept while
+// off). Poses only ever change pixels above the home action rail.
+// Packed in 4 bits (PackScene): at most 16 poses.
+enum class ScenePose : uint8_t {
+    Still, Blink, Wave, Hearts1, Hearts2, Zzz1, Zzz2, Giggle, Dizzy1, Dizzy2
+};
 
 struct SceneModel {
     SceneKind kind = SceneKind::Home;

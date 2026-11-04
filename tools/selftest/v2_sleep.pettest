@@ -10,6 +10,8 @@ PETSELFTEST1
 # expect min:woke_by_alarm=1 1
 # expect min:reason=alarm_wake 1
 # expect none:PET_SLEEP_POWEROFF_RETURNED 0
+# expect min:PET_RHYTHM_NEXT_WAKE 2
+# expect min:wake=selftest 1
 # expect none:PET_SELFTEST_ABORT 0
 # Quiet prompts while testing (RAM only, this boot).
 volume 15

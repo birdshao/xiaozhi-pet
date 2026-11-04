@@ -21,15 +21,18 @@ namespace kid_app {
 //   mark <name>             log marker ([a-z0-9_], <= 15 chars)
 //   alarm <seconds>         RTC wake-up 10..600 s after the next sleep power-off
 //   volume <percent>        prompt volume 0..100 for the rest of this boot (RAM only)
+//   gesture <name>          as if the IMU detected it: pickup, gentle, hard,
+//                           facedown, faceup (tests the wiring, not the thresholds)
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
-enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm, Volume };
+enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture };
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;
     InputKey key = InputKey::DialPress;
-    uint32_t ms = 0;      // wait/hold ms; seconds for Alarm; percent for Volume
+    uint32_t ms = 0;      // wait/hold ms; seconds for Alarm; percent for Volume;
+                          // kid_app::Gesture value for Gesture
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark only
 };

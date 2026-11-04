@@ -1,5 +1,7 @@
 #include "kid_app/selftest_script.h"
 
+#include "kid_app/gesture_detector.h"
+
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -75,6 +77,24 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nvolume 101\nend\n"));
         assert(!script.Parse("PETSELFTEST1\nvolume\nend\n"));
         assert(!script.Parse("PETSELFTEST1\nvolume -5\nend\n"));
+    }
+
+    // gesture <name>: inject an IMU gesture to test the board wiring.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\ngesture pickup\ngesture gentle\ngesture hard\n"
+                            "gesture facedown\ngesture faceup\nwait 10\nend\n"));
+        assert(script.Count() == 6 && script.TotalMs() == 10);
+        const kid_app::Gesture want[] = {kid_app::Gesture::Pickup, kid_app::Gesture::GentleShake,
+                                         kid_app::Gesture::HardShake, kid_app::Gesture::FaceDown,
+                                         kid_app::Gesture::FaceUp};
+        for (int i = 0; i < 5; ++i) {
+            assert(script.Steps()[i].op == SelfTestOp::Gesture);
+            assert(script.Steps()[i].ms == static_cast<uint32_t>(want[i]));
+        }
+        assert(!script.Parse("PETSELFTEST1\ngesture\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ngesture spin\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ngesture pickup now\nend\n"));
     }
 
     // Raw flash sector: text followed by erased 0xFF bytes.

@@ -644,6 +644,7 @@ BOARD_WORKER = r'''
                 pet_mailbox_.Publish(scene);
                 RequestAnimation(kid_app::Animation::SleepIn, scene);
                 ESP_LOGI(TAG, "PET_SLEEP_REQUESTED");
+                SecondsUntilWake();  // logs PET_RHYTHM_NEXT_WAKE
                 return;
             }
             case kid_app::SleepAction::RestoreScene: {
@@ -664,10 +665,16 @@ BOARD_WORKER = r'''
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
         // Let any queued Pet event commit to NVS first (bounded wait).
         for (int i = 0; i < 20 && !pet_service_.Settled(); ++i) vTaskDelay(pdMS_TO_TICKS(100));
-        const uint16_t wake_s = sleep_alarm_s_.exchange(0);
+        // ADR-010: the RTC alarm powers TuanTuan on at the plan's wake time;
+        // a self-test "alarm" step wins so unattended trials come back soon.
+        uint32_t wake_s = sleep_alarm_s_.exchange(0);
+        const char* wake_by = wake_s ? "selftest" : "rhythm";
+        if (!wake_s) wake_s = SecondsUntilWake();
+        if (!wake_s) wake_by = "none";  // RTC not set: PWR wakes the pet
         const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
-        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d",
-                 pet_service_.Settled() ? 1 : 0, static_cast<unsigned>(wake_s), alarm ? 1 : 0);
+        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s",
+                 pet_service_.Settled() ? 1 : 0, static_cast<unsigned>(wake_s), alarm ? 1 : 0,
+                 wake_by);
         vTaskDelay(pdMS_TO_TICKS(300));
         if (pmic_) pmic_->PowerOff();
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -785,7 +792,7 @@ BOARD_WORKER = r'''
                     break;
                 }
                 const size_t n = clip.Copy(offset, chunk, 480);
-                kid_app::ScalePcm(chunk, n, prompt_volume_pct_.load());
+                kid_app::ScalePcm(chunk, n, PromptVolumePct());
                 if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
                     offset += n;
                     stalls = 0;
@@ -909,6 +916,113 @@ BOARD_WORKER = r'''
     // PCF85063 time from a plausible server clock, and the alarm used by the
     // explicit parent-combo power-on test. Nothing is stored or uploaded.
     uint8_t imu_address_ = 0;
+
+    // ---- V4-02 gestures and V3 rhythm ----
+    // The IMU windows are judged on pet_boot_diag; the self-test "gesture"
+    // step injects into the same HandleGesture() path.
+    kid_app::GestureDetector gesture_detector_;  // pet_boot_diag task only
+    std::atomic<bool> face_down_{false};
+    // Default day plan until the parent menu (V3-06) can change it.
+    kid_app::RhythmScheduler rhythm_;
+    std::atomic<int> day_phase_{-1};  // kid_app::DayPhase, -1 = RTC not set
+    std::atomic<bool> quiet_hours_{false};
+    static constexpr uint8_t kQuietPromptPct = 30;
+
+    static const char* GestureName(kid_app::Gesture gesture) {
+        switch (gesture) {
+            case kid_app::Gesture::Pickup: return "pickup";
+            case kid_app::Gesture::GentleShake: return "gentle";
+            case kid_app::Gesture::HardShake: return "hard";
+            case kid_app::Gesture::FaceDown: return "facedown";
+            case kid_app::Gesture::FaceUp: return "faceup";
+            case kid_app::Gesture::None: break;
+        }
+        return "none";
+    }
+
+    static const char* PhaseName(int phase) {
+        switch (phase) {
+            case static_cast<int>(kid_app::DayPhase::Night): return "night";
+            case static_cast<int>(kid_app::DayPhase::Morning): return "morning";
+            case static_cast<int>(kid_app::DayPhase::Day): return "day";
+            case static_cast<int>(kid_app::DayPhase::Nap): return "nap";
+            case static_cast<int>(kid_app::DayPhase::Evening): return "evening";
+        }
+        return "unset";
+    }
+
+    // Plays `animation` on the current home scene; false off the home rail.
+    bool RequestHomeAnimation(kid_app::Animation animation) {
+        SceneStateLock lock(scene_state_mutex_);
+        if (!kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load())) return false;
+        RequestAnimation(animation, UnpackPetScene(last_pet_scene_.load()));
+        return true;
+    }
+
+    // ADR-011: only light motion is rewarded. Pickup is the same durable
+    // "the pet says hi" action as the Chat/Game rail items (a wave follows
+    // from PetCommitted); shakes and peekaboo are reactions only.
+    void HandleGesture(kid_app::Gesture gesture, const char* source) {
+        if (gesture == kid_app::Gesture::None) return;
+        if (gesture == kid_app::Gesture::FaceDown) face_down_.store(true);
+        bool acted = false;
+        if (pet_mode_.load() && !sleep_active_.load() &&
+            Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+            if (power_save_timer_) power_save_timer_->WakeUp();
+            switch (gesture) {
+                case kid_app::Gesture::Pickup:
+                    acted = kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
+                            pet_service_.PostLocal(kid_app::PetAction::Pickup);
+                    break;
+                case kid_app::Gesture::GentleShake:
+                    acted = RequestHomeAnimation(kid_app::Animation::Giggle);
+                    break;
+                case kid_app::Gesture::HardShake:  // a gentle reminder, never a reward
+                    acted = RequestHomeAnimation(kid_app::Animation::Dizzy);
+                    break;
+                case kid_app::Gesture::FaceUp:  // peekaboo: "found you"
+                    acted = face_down_.exchange(false) &&
+                            RequestHomeAnimation(kid_app::Animation::Greet);
+                    break;
+                case kid_app::Gesture::FaceDown:
+                case kid_app::Gesture::None:
+                    break;
+            }
+        }
+        ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=%d", GestureName(gesture), source,
+                 acted ? 1 : 0);
+    }
+
+    // Day phase and quiet hours from the PCF85063 wall clock (offline).
+    void UpdateRhythm() {
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        const bool ok = RtcRead(&rtc, &stopped) && !stopped && kid_app::PlausibleWallClock(rtc);
+        const int phase = ok ? static_cast<int>(rhythm_.PhaseAt(rtc)) : -1;
+        const bool quiet = ok && rhythm_.QuietAt(rtc);
+        const bool phase_changed = day_phase_.exchange(phase) != phase;
+        const bool quiet_changed = quiet_hours_.exchange(quiet) != quiet;
+        if (phase_changed || quiet_changed)
+            ESP_LOGI(TAG, "PET_RHYTHM phase=%s quiet=%d time=%02u:%02u", PhaseName(phase),
+                     quiet ? 1 : 0, ok ? rtc.hour : 0, ok ? rtc.minute : 0);
+    }
+
+    // Seconds until the plan's next wake-up, 0 when the RTC is not set.
+    uint32_t SecondsUntilWake() {
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        if (!RtcRead(&rtc, &stopped) || stopped || !kid_app::PlausibleWallClock(rtc)) return 0;
+        const uint32_t seconds = rhythm_.SecondsUntilWake(rtc);
+        const auto at = rhythm_.NextWake(rtc);
+        ESP_LOGI(TAG, "PET_RHYTHM_NEXT_WAKE in_s=%u at=%02u:%02u", static_cast<unsigned>(seconds),
+                 at.hour, at.minute);
+        return seconds;
+    }
+
+    uint8_t PromptVolumePct() const {
+        const uint8_t pct = prompt_volume_pct_.load();
+        return quiet_hours_.load() ? static_cast<uint8_t>(pct * kQuietPromptPct / 100) : pct;
+    }
     std::atomic<uint32_t> pwr_edges_{0};
     std::atomic<uint32_t> sleep_requests_{0};
     std::atomic<uint32_t> epd_refreshes_{0};
@@ -1119,6 +1233,9 @@ BOARD_WORKER = r'''
                     sleep_alarm_s_.store(static_cast<uint16_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_ALARM s=%u", static_cast<unsigned>(step.ms));
                     break;
+                case kid_app::SelfTestOp::Gesture:
+                    HandleGesture(static_cast<kid_app::Gesture>(step.ms), "selftest");
+                    break;
                 case kid_app::SelfTestOp::Volume:
                     prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_VOLUME pct=%u", static_cast<unsigned>(step.ms));
@@ -1153,6 +1270,8 @@ BOARD_WORKER = r'''
         vTaskDelay(pdMS_TO_TICKS(50));  // first accel sample
         kid_app::MotionStats motion;
         uint32_t last_summary_ms = NowMs(), last_heartbeat_ms = 0;
+        bool gestures_on = false;
+        gesture_detector_.SetEnabled(false);
         for (;;) {
             int16_t x = 0, y = 0, z = 0;
             if (imu_ok && ReadAccel(&x, &y, &z)) motion.Add(x, y, z);
@@ -1163,10 +1282,17 @@ BOARD_WORKER = r'''
                 ESP_LOGI(TAG, "PET_DIAG_ACC n=%u mean_mg=%d,%d,%d mag_mg=%u..%u dev_mg=%u",
                          s.samples, s.mean_x_mg, s.mean_y_mg, s.mean_z_mg, s.min_mag_mg,
                          s.max_mag_mg, s.max_dev_mg);
+                const bool want = pet_mode_.load() && !sleep_active_.load();
+                if (want != gestures_on) {
+                    gesture_detector_.SetEnabled(want);  // re-enable starts fresh
+                    gestures_on = want;
+                }
+                HandleGesture(gesture_detector_.OnWindow(s, now), "imu");
             }
             if (now - last_heartbeat_ms >= 10000) {
                 last_heartbeat_ms = now;
                 SyncRtcFromSystemTime();
+                UpdateRhythm();
                 ESP_LOGI(TAG, "PET_DIAG_HEARTBEAT up_s=%u pet=%d pwr_edges=%u sleep_req=%u "
                          "batt=%d chg=%d woke_by_alarm=%d rtc_synced=%d epd_n=%u",
                          static_cast<unsigned>(now / 1000), pet_mode_.load() ? 1 : 0,
@@ -1212,6 +1338,8 @@ def patch_board(text: str) -> str:
         '#include <new>\n'
         '#include "kid_app/rtc_clock.h"\n'
         '#include "kid_app/motion_stats.h"\n'
+        '#include "kid_app/gesture_detector.h"\n'
+        '#include "kid_app/rhythm_scheduler.h"\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
