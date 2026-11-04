@@ -42,6 +42,32 @@ int main() {
     {
         const AnimationFrame* frames = nullptr;
         assert(AnimationFrames(Animation::None, &frames) == 0 && frames == nullptr);
+        // Good morning ends on the morning picture, not the plain home.
+        assert(AnimationFrames(Animation::Morning, &frames) == 2);
+        assert(frames[0].pose == ScenePose::Sunrise && frames[0].hold_ms >= 1000 &&
+               frames[1].pose == ScenePose::Morning);
+        assert(std::string(AnimationName(Animation::Morning)) == "morning");
+    }
+
+    // Morning (V3-04): plays once the Sunrise home scene is on the panel,
+    // keeps the highlight, then no idle blink on the morning picture.
+    {
+        PetAnimationDirector d;
+        uint32_t now = 0;
+        const SceneModel sunrise{SceneKind::Home, Emotion::Happy, 1, 1, ScenePose::Sunrise};
+        d.Request(Animation::Morning, sunrise, now);
+        assert(d.Idle(neutral, now += 100, true, false).kind == Kind::None);
+        d.SceneShown(sunrise, now += 4300);
+        ScenePose poses[4] = {};
+        assert(Play(d, sunrise, &now, poses, 4) == 2);
+        assert(poses[0] == ScenePose::Sunrise && poses[1] == ScenePose::Morning);
+        assert(!d.Active());
+        assert(d.Idle(sunrise, now += 200000, true, false).kind == Kind::None);
+        // Not on the sleep scene.
+        const SceneModel sleep{SceneKind::Sleep, Emotion::Sleepy, 1, 1, ScenePose::Sunrise};
+        d.Request(Animation::Morning, sleep, now);
+        d.SceneShown(sleep, now += 100);
+        assert(d.Idle(sleep, now += 100, true, false).kind == Kind::None);
     }
 
     // Feed: waits until the happy scene is on the panel, then hearts.
@@ -65,6 +91,19 @@ int main() {
         const DirectorStep step = d.Idle(moved, now += 100, true, false);
         assert(step.kind == Kind::Frame && step.scene.home_selection == 4 &&
                step.scene.pose == ScenePose::Hearts1 && step.animation == Animation::Feed);
+        // ... and the status band: a new clock value is not a new base, so
+        // it neither cancels the animation nor blocks a pending request.
+        d.FrameShown(now += 620);
+        SceneModel ticked = moved;
+        ticked.status.hour = 7;
+        ticked.status.minute = 43;
+        const DirectorStep next = d.Idle(ticked, now += 300, true, false);
+        assert(next.kind == Kind::Frame && next.scene.pose == ScenePose::Hearts2 &&
+               next.scene.status == ticked.status && d.Active());
+        PetAnimationDirector fresh;
+        fresh.SceneShown(happy, now);
+        fresh.Request(Animation::Greet, happy, now);
+        assert(fresh.Idle(ticked, now += 100, true, false).scene.pose == ScenePose::Wave);
     }
 
     // Shake reactions play on the home screen: giggle, then dizzy.

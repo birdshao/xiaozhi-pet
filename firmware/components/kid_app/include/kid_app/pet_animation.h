@@ -9,15 +9,19 @@ namespace kid_app {
 // Short ePaper animations: every frame is one partial refresh (~0.62 s on
 // V1 hardware), so each runs 2-3 frames and ends on the resting picture.
 // Giggle: gentle shake. Dizzy: hard shake (a reaction, never a reward).
-enum class Animation : uint8_t { None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy };
+// Morning (V3-04): from a Sunrise home scene, hold the stretch, then the
+// sun is up and TuanTuan waves; it ends on ScenePose::Morning, the picture
+// kept until the child touches the dial or the pet goes back to sleep.
+enum class Animation : uint8_t { None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy, Morning };
 
 struct AnimationFrame {
     ScenePose pose;
     uint16_t hold_ms;  // wait after this frame is on the panel
 };
 
-// Frames shown after the base scene; the last one is always the resting
-// pose. SleepIn starts from a Sleep scene shown with ScenePose::Zzz1.
+// Frames shown after the base scene; the last one is the resting pose
+// (Still, except Morning). SleepIn starts from a Sleep scene shown with
+// ScenePose::Zzz1.
 // Returns the frame count (0 for None).
 uint8_t AnimationFrames(Animation animation, const AnimationFrame** frames);
 const char* AnimationName(Animation animation);

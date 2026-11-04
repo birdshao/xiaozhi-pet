@@ -107,7 +107,7 @@ bool SelfTestScript::Parse(const char* text) {
     if (!text) return false;
     std::array<SelfTestStep, kMaxSteps> steps{};
     size_t count = 0;
-    bool header = false, ended = false;
+    bool header = false, ended = false, alarm = false;
     const char* p = text;
     size_t consumed = 0;
 
@@ -146,6 +146,11 @@ bool SelfTestScript::Parse(const char* text) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms < 10 || step.ms > 600)
                 return false;
             step.op = SelfTestOp::Alarm;
+            alarm = true;
+        } else if (std::strcmp(words[0], "morning") == 0) {
+            // Ends in a power-off: without an alarm nothing wakes the board.
+            if (n != 1 || !alarm) return false;
+            step.op = SelfTestOp::Morning;
         } else if (std::strcmp(words[0], "volume") == 0) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms > 100) return false;
             step.op = SelfTestOp::Volume;

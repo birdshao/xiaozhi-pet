@@ -421,6 +421,57 @@ void Heart(MonoFrame& f, int cx, int cy, int r) {
     FillTriangle(f, cx - r - 1, cy + 2, cx + r + 1, cy + 2, cx, cy + r * 4 / 3);
 }
 
+// Good-morning stretch (ScenePose::Sunrise): both arms up beside the head.
+// Arms go behind the head, the paws are drawn on top of it.
+void StretchArms(MonoFrame& f, int cx, int cy) {
+    for (int side : {-1, 1}) {
+        Stroke(f, cx + side * 64, cy + 118, cx + side * 150, cy - 26, 34);
+        Stroke(f, cx + side * 64, cy + 118, cx + side * 150, cy - 26, 20, false);
+    }
+}
+
+void StretchPaws(MonoFrame& f, int cx, int cy) {
+    for (int side : {-1, 1}) {
+        const int px = cx + side * 156, py = cy - 42;
+        Blob(f, px, py, 28, 30, 6);
+        for (int dx : {-10, 0, 10}) Stroke(f, px + dx, py - 22, px + dx, py - 12, 4);
+        // Little "stretch" lines above the paws.
+        Arc(f, px, py, 50, 50, side < 0 ? 215 : 285, side < 0 ? 255 : 325, 5);
+    }
+}
+
+// Good-morning sky (V3-04), top-left corner: a sun whose white halo clears
+// the night twinkles. Rising: a cloud hides its lower half, short rays and
+// sleepy eyes. Risen: rays all around and a smile.
+void MorningSun(MonoFrame& f, bool risen) {
+    const int cx = 132, cy = 140, r = 40;
+    FillEllipse(f, cx, cy, 92, 88, false);
+    const int rays = 12;
+    for (int i = 0; i < rays; ++i) {
+        const double a = (i * 360.0 / rays + 15) * kPi / 180.0;
+        if (!risen && std::sin(a) > -0.2) continue;  // behind the cloud
+        const int r0 = r + 12, r1 = r + (risen ? 40 : 26);
+        Stroke(f, cx + static_cast<int>(std::lround(r0 * std::cos(a))),
+               cy + static_cast<int>(std::lround(r0 * std::sin(a))),
+               cx + static_cast<int>(std::lround(r1 * std::cos(a))),
+               cy + static_cast<int>(std::lround(r1 * std::sin(a))), 7);
+    }
+    Blob(f, cx, cy, r, r, 6);
+    Shade(f, cx, cy, r - 8, r - 8, 3);
+    if (risen) {
+        for (int side : {-1, 1}) Disk(f, cx + side * 14, cy - 6, 5);
+        Arc(f, cx, cy + 4, 16, 12, 20, 160, 5);
+    } else {
+        for (int side : {-1, 1}) Arc(f, cx + side * 14, cy - 10, 9, 6, 15, 165, 4);
+    }
+    if (risen) return;
+    // Cloud: dark bumps first, then the white inside, so only the outer
+    // outline remains.
+    const int bumps[][4] = {{-34, 26, 36, 24}, {14, 18, 40, 30}, {52, 34, 30, 20}, {-4, 42, 70, 20}};
+    for (const auto& b : bumps) FillEllipse(f, cx + b[0], cy + b[1], b[2] + 6, b[3] + 6);
+    for (const auto& b : bumps) FillEllipse(f, cx + b[0], cy + b[1], b[2], b[3], false);
+}
+
 // Thought cloud: overlapping lobes with one shared outline, three dots inside.
 void ThoughtCloud(MonoFrame& f, int cx, int cy) {
     static const int kLobes[][3] = {{-34, 6, 19}, {-13, -8, 22}, {13, -10, 21}, {34, 5, 18},
@@ -444,23 +495,27 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         Stroke(f, px - 8, py + 4, px - 8, py + 14, 4);
         Stroke(f, px + 8, py + 4, px + 8, py + 14, 4);
     }
-    const bool wave = pose == ScenePose::Wave;
+    const bool wave = pose == ScenePose::Wave || pose == ScenePose::Morning;
     if (wave) {  // arm raised from the body, behind the head
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 34);
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 20, false);
     }
-    const bool listening = emotion == Emotion::Listening && !wave;
+    const bool stretch = pose == ScenePose::Sunrise;
+    if (stretch) StretchArms(f, cx, cy);
+    const bool listening = emotion == Emotion::Listening && !wave && !stretch;
     if (listening) {  // arm up to the perked ear, behind the head
         Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 44);
         Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 30, false);
     }
     const bool dizzy = pose == ScenePose::Dizzy1 || pose == ScenePose::Dizzy2;
     Eyes eyes = Eyes::ByEmotion;
-    if (pose == ScenePose::Blink) eyes = Eyes::Closed;
-    if (wave) eyes = Eyes::WinkLeft;
+    if (pose == ScenePose::Blink || stretch) eyes = Eyes::Closed;
+    if (pose == ScenePose::Wave) eyes = Eyes::WinkLeft;
     if (pose == ScenePose::Giggle) eyes = Eyes::Laugh;
     if (dizzy) eyes = Eyes::Spiral;
-    CatHead(f, cx, cy, 100, emotion, eyes);
+    // Stretching TuanTuan yawns: the round "O" mouth.
+    CatHead(f, cx, cy, 100, stretch ? Emotion::Surprised : emotion, eyes);
+    if (stretch) StretchPaws(f, cx, cy);
     if (pose == ScenePose::Giggle) {  // wobble lines on both sides of the head
         for (int side : {-1, 1})
             for (int i = 0; i < 2; ++i)
@@ -492,9 +547,10 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         for (int i = 0; i < 3; ++i) Arc(f, px, py, 58 + i * 20, 62 + i * 20, -40, 40, 6);
     }
     if (emotion == Emotion::Thinking) {  // bubbles rising to a thought cloud
-        Ring(f, cx + 132, cy - 58, 7, 7, 4);
-        Ring(f, cx + 156, cy - 84, 10, 10, 4);
-        ThoughtCloud(f, cx + 230, cy - 108);
+        // The cloud stays below the status band's right box (y >= 40).
+        Ring(f, cx + 128, cy - 50, 7, 7, 4);
+        Ring(f, cx + 148, cy - 72, 10, 10, 4);
+        ThoughtCloud(f, cx + 226, cy - 76);
     }
     if (emotion == Emotion::Speaking) {  // sound arcs spreading from the mouth
         for (int r : {166, 190}) {
@@ -587,6 +643,87 @@ void ActionRail(MonoFrame& f, uint8_t selection) {
     }
 }
 
+// ---- Status band (V2-05) ---------------------------------------------------------
+// No fonts on the device: numbers are chunky seven-segment digits built from
+// solid rectangles; icons are strokes, disks and rings. Everything stays in
+// the two SceneComposer status boxes, so a status change is a small partial
+// refresh that never touches the pet or the rail.
+
+void FillRect(MonoFrame& f, int x, int y, int w, int h, bool ink = true) {
+    for (int py = std::max(y, 0); py < std::min(y + h, kH); ++py) Span(f, x, x + w - 1, py, ink);
+}
+
+constexpr uint8_t kSegA = 0x40, kSegB = 0x20, kSegC = 0x10, kSegD = 0x08, kSegE = 0x04,
+                  kSegF = 0x02, kSegG = 0x01;  // a top, clockwise, g middle
+constexpr uint8_t kDigitSegments[10] = {0x7E, 0x30, 0x6D, 0x79, 0x33,
+                                        0x5B, 0x5F, 0x70, 0x7F, 0x7B};
+constexpr int kDigitW = 18, kDigitH = 30, kSegT = 5, kStatusY = 5;
+
+void SevenSegment(MonoFrame& f, int x, int y, uint8_t segments, int w = kDigitW) {
+    const int h = kDigitH, t = kSegT, half = h / 2;
+    if (segments & kSegA) FillRect(f, x, y, w, t);
+    if (segments & kSegB) FillRect(f, x + w - t, y, t, half + 1);
+    if (segments & kSegC) FillRect(f, x + w - t, y + half, t, h - half);
+    if (segments & kSegD) FillRect(f, x, y + h - t, w, t);
+    if (segments & kSegE) FillRect(f, x, y + half, t, h - half);
+    if (segments & kSegF) FillRect(f, x, y, t, half + 1);
+    if (segments & kSegG) FillRect(f, x, y + half - t / 2, w, t);
+}
+
+void Digit(MonoFrame& f, int x, int y, int value) {
+    SevenSegment(f, x, y, kDigitSegments[Clamp(value, 0, 9)]);
+}
+
+// Left box: HH:MM, quiet-hours moon, Wi-Fi.
+void StatusLeft(MonoFrame& f, const StatusBar& s) {
+    if (s.hour < 24 && s.minute < 60) {
+        Digit(f, 14, kStatusY, s.hour / 10);
+        Digit(f, 37, kStatusY, s.hour % 10);
+        FillRect(f, 60, kStatusY + 7, kSegT, kSegT);
+        FillRect(f, 60, kStatusY + 18, kSegT, kSegT);
+        Digit(f, 71, kStatusY, s.minute / 10);
+        Digit(f, 94, kStatusY, s.minute % 10);
+    }
+    if (s.quiet) {  // crescent moon
+        Disk(f, 136, 20, 13);
+        Disk(f, 143, 14, 11, false);
+    }
+    if (s.network != NetworkState::Unknown) {
+        const int cx = 190, cy = 32;
+        Disk(f, cx, cy - 2, 3);
+        for (int r : {9, 16, 23}) Arc(f, cx, cy, r, r, 225, 315, 4);
+        if (s.network == NetworkState::Offline) {  // struck through
+            Stroke(f, 172, 8, 208, 34, 9, false);
+            Stroke(f, 172, 8, 208, 34, 4);
+        }
+    }
+}
+
+// Right box: temperature in degC, charging bolt, battery with four bars.
+void StatusRight(MonoFrame& f, const StatusBar& s) {
+    const int temp = s.temp_c;
+    if (s.temp_c != StatusBar::kNoTemp && temp >= -9 && temp <= 99) {
+        if (temp < 0) SevenSegment(f, 638, kStatusY, kSegG);
+        else if (temp >= 10) Digit(f, 638, kStatusY, temp / 10);
+        Digit(f, 661, kStatusY, std::abs(temp) % 10);
+        Ring(f, 690, kStatusY + 5, 5, 5, 2);                               // degree
+        SevenSegment(f, 699, kStatusY, kSegA | kSegD | kSegE | kSegF, 14);  // C
+    }
+    if (s.battery_bars > StatusBar::kBatteryBars) return;
+    RoundRectRing(f, 744, 7, 42, 26, 4, 3);
+    FillRect(f, 786, 14, 4, 12);  // terminal nub
+    for (int i = 0; i < s.battery_bars; ++i) FillRect(f, 749 + i * 9, 12, 7, 16);
+    if (s.charging) {
+        FillTriangle(f, 734, 4, 720, 22, 731, 22);
+        FillTriangle(f, 723, 17, 736, 17, 722, 36);
+    }
+}
+
+void StatusBand(MonoFrame& f, const StatusBar& status) {
+    StatusLeft(f, status);
+    StatusRight(f, status);
+}
+
 // ---- Scenes --------------------------------------------------------------------
 
 void HomeScene(MonoFrame& f, const SceneModel& model) {
@@ -600,8 +737,11 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     Disk(f, 70, 190, 4);
     Shade(f, 400, 356, 200, 20, 6);
     Ring(f, 400, 356, 200, 20, 3);
+    if (model.pose == ScenePose::Sunrise || model.pose == ScenePose::Morning)
+        MorningSun(f, model.pose == ScenePose::Morning);
     SittingCat(f, 400, 158, model.emotion, model.pose);
     ActionRail(f, model.home_selection);
+    StatusBand(f, model.status);
 }
 
 void ReaderScene(MonoFrame& f, const SceneModel& model) {

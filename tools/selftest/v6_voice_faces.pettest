@@ -8,9 +8,9 @@ PETSELFTEST1
 # expect min:face=thinking 1
 # expect min:face=speaking 1
 # expect min:face=none 1
-# Four face changes = four partials; the fast flips in between never
-# reach the panel.
-# expect partial_refreshes 4
+# Four face changes = four partials; the fast flips in between never reach
+# the panel (count PET_VOICE_FACE lines: exactly 4). No exact partial count:
+# the once-a-minute status band refresh may add one while no face is shown.
 # expect none:PET_SELFTEST_ABORT 0
 # expect selftest_done 1
 # expect max_partial_ms 2500

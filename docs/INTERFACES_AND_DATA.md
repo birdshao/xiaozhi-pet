@@ -130,6 +130,7 @@
 }
 ```
 
+- 设备端实现（V5-01..03）：`MemoryStore` 编码在 `PetAtomicLedger` schema v2 里，与宠物状态和外发队列同一次提交；v1 存档可读并迁移。字段、上限、写入守卫和最小摘要格式见 [V5_PERSONALITY_MEMORY.md](V5_PERSONALITY_MEMORY.md)。设备端用数字 id 表示 slot/option/书目，`today.date` 为本地日序号。
 - `preferences` 最多 16 条，`slot` 与 `option_id` 都来自内容包白名单；只能由 `PREFERENCE_CHOSEN` 写入，必须带来源事件。
 - `today` 每日归档为计数摘要后上报，设备端只保留当天。
 - 给语音服务的摘要只含 `name`、`personality.trait`、`preferences` 的选项名、`today` 计数；不含家长备注。

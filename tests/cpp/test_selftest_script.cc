@@ -67,6 +67,19 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nalarm\nend\n"));
     }
 
+    // morning: the RTC-alarm wake path without a power cycle. It ends in a
+    // power-off, so it is only accepted after an alarm step.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nalarm 60\nmorning\nwait 90000\nend\n"));
+        assert(script.Count() == 3 && script.Steps()[1].op == SelfTestOp::Morning);
+        assert(script.TotalMs() == 90000);  // not a delay itself
+        assert(!script.Parse("PETSELFTEST1\nmorning\nend\n"));               // no alarm
+        assert(!script.Parse("PETSELFTEST1\nmorning\nalarm 60\nend\n"));     // alarm too late
+        assert(!script.Parse("PETSELFTEST1\nalarm 60\nmorning now\nend\n")); // extra field
+        assert(script.Count() == 0);
+    }
+
     // volume <percent>: quiet prompts during unattended trials (RAM only).
     {
         SelfTestScript script;
