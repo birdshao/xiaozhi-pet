@@ -1,5 +1,7 @@
 # P4 离线绘本包 KPB1：审核、生成、SD 按页读取
 
+> V4-04 起新增 KPB2（灰度页 + 页内选择题 + 包类型），见 [V4_KPB2_CONTENT_FORMAT.md](V4_KPB2_CONTENT_FORMAT.md)。本文的 KPB1 格式不变，设备继续可读；`book.json` 仍用 `schema_version: 1` 即编译 KPB1。
+
 本功能把家长审核的 800×480 黑白书页 PNG + 24 kHz 单声道 WAV 音频编译成一个可复制到 SD 卡的 KPB1 文件。运行时不要求连接 Python API 或云服务。该格式与现有 ESP32-S3 的 1-bit 画面约定一致（bit=1 白色）。
 
 ## 交付代码

@@ -225,3 +225,15 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_voice_face.cc" \
   -o "$BUILD/test_voice_face"
 "$BUILD/test_voice_face"
+
+# V4-04 KPB2 content packs: grey pages, dial choice questions, like -> memory
+# mapping and KPB1 compatibility, read from the golden packs the tool made.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_content_pack_reader.cc" \
+  -o "$BUILD/test_content_pack_reader"
+"$BUILD/test_content_pack_reader" "$ROOT/tests/fixtures/kpb2"
