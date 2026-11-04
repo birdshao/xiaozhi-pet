@@ -11,6 +11,12 @@ class StoryPackReader;
 // Sleep: shown before PMIC power-off and kept by the ePaper while off.
 enum class SceneKind : uint8_t { Home, Reader, Sleep };
 enum class Emotion : uint8_t { Neutral, Happy, Curious, Sleepy, Surprised };
+// Short animation frames drawn on top of a scene (PetAnimationDirector).
+// Still is the resting picture. Home: Blink (eyes closed), Wave (paw up,
+// wink), Hearts1/Hearts2 (after feeding). Sleep: Zzz1/Zzz2 show one/two of
+// the three Z letters; Still shows all three (the picture kept while off).
+// Poses only ever change pixels above the home action rail.
+enum class ScenePose : uint8_t { Still, Blink, Wave, Hearts1, Hearts2, Zzz1, Zzz2 };
 
 struct SceneModel {
     SceneKind kind = SceneKind::Home;
@@ -18,10 +24,12 @@ struct SceneModel {
     uint16_t book_page = 1;
     // Highlighted HomeItem index on the home action rail (UI-only state).
     uint8_t home_selection = 1;
+    ScenePose pose = ScenePose::Still;
 };
 
 // One-word scene snapshot shared between board tasks (atomic<uint32_t>):
-// bits 0-3 kind, 4-7 home selection, 8-15 emotion, 16-31 book page.
+// bits 0-3 kind, 4-7 home selection, 8-11 emotion, 12-15 pose,
+// 16-31 book page.
 uint32_t PackScene(const SceneModel& scene);
 SceneModel UnpackScene(uint32_t bits);
 
@@ -36,6 +44,10 @@ public:
     MonoFrame() { Clear(); }
     void Clear();
     void SetPixel(int x, int y, bool black);
+    // Row y, x0..x1 inclusive (clipped): paint the pixels whose bit is set
+    // in the repeating 8-pixel mask (0x80 = x % 8 == 0). Byte-wise, so a
+    // scene costs a few ms on the ESP32-S3 instead of per-pixel PSRAM writes.
+    void PaintSpan(int x0, int x1, int y, uint8_t mask, bool black);
     bool IsBlack(int x, int y) const;
     const std::array<uint8_t, kSize>& Data() const { return pixels_; }
 

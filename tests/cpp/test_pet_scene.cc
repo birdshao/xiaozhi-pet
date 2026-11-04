@@ -26,6 +26,22 @@ int main() {
     assert(frame.IsBlack(799, 479));
     assert(!frame.IsBlack(-1, 0));
 
+    // Byte-wise spans: exact inclusive ends inside and across bytes, clipping,
+    // repeating masks, and painting white back.
+    {
+        MonoFrame span;
+        span.PaintSpan(3, 20, 5, 0xFF, true);
+        for (int x = 0; x < 30; ++x) assert(span.IsBlack(x, 5) == (x >= 3 && x <= 20));
+        assert(!span.IsBlack(10, 4) && !span.IsBlack(10, 6));
+        span.PaintSpan(-50, 2000, 7, 0xAA, true);  // every other pixel, clipped
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(span.IsBlack(x, 7) == (x % 2 == 0));
+        span.PaintSpan(5, 5, 5, 0xFF, false);
+        assert(!span.IsBlack(5, 5) && span.IsBlack(4, 5) && span.IsBlack(6, 5));
+        span.PaintSpan(9, 2, 9, 0xFF, true);  // empty
+        span.PaintSpan(0, 799, 480, 0xFF, true);  // off-frame row
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(!span.IsBlack(x, 9));
+    }
+
     MonoFrame happy, sleepy, book;
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1}, happy);
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Sleepy, 1}, sleepy);
@@ -38,8 +54,8 @@ int main() {
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1}, book);
     assert(book.Data() == happy.Data());  // Rendering is deterministic.
 
-    // Home action rail: five 160 px slots on y 380..479; the selected slot
-    // gets a thick frame. Selection changes only touch the rail band.
+    // Home action rail: five 160 px card slots on y 380..479; the selected
+    // card is inverted (solid black). Selection changes only touch the rail.
     {
         static_assert(SceneComposer::kRailTop == 380, "rail band");
         static_assert(SceneComposer::kRailSlotWidth * 5 == MonoFrame::kWidth, "slots");
@@ -51,9 +67,9 @@ int main() {
             for (int x = 0; x < MonoFrame::kWidth; ++x)
                 assert(story.IsBlack(x, y) == feed.IsBlack(x, y));
         }
-        // Selected slot 1 (story): frame edges at x 160+6, y 386.
-        assert(story.IsBlack(166, 430) && !feed.IsBlack(166, 430));
-        assert(feed.IsBlack(486, 430) && !story.IsBlack(486, 430));
+        // Card interiors near the top-left corner: black only when selected.
+        assert(story.IsBlack(180, 400) && !feed.IsBlack(180, 400));
+        assert(feed.IsBlack(500, 400) && !story.IsBlack(500, 400));
         // Every slot shows an icon (some ink near its centre band).
         for (int slot = 0; slot < 5; ++slot) {
             bool ink = false;
@@ -65,10 +81,51 @@ int main() {
         // Out-of-range selection draws no highlight instead of crashing.
         MonoFrame none;
         SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 9}, none);
-        assert(!none.IsBlack(166, 430) && !none.IsBlack(486, 430));
+        assert(!none.IsBlack(180, 400) && !none.IsBlack(500, 400));
         // The pet face stays fully above the rail.
         for (int x = 0; x < MonoFrame::kWidth; ++x)
             assert(!story.IsBlack(x, SceneComposer::kRailTop - 2));
+    }
+
+    // Expression and animation poses only touch the pet area: the action
+    // rail band is identical (RefreshPlanner keeps separate budgets).
+    {
+        MonoFrame still;
+        SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2}, still);
+        for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
+                                Emotion::Sleepy, Emotion::Surprised}) {
+            for (kid_app::ScenePose pose : {kid_app::ScenePose::Still, kid_app::ScenePose::Blink,
+                                            kid_app::ScenePose::Wave, kid_app::ScenePose::Hearts1,
+                                            kid_app::ScenePose::Hearts2}) {
+                MonoFrame other;
+                SceneComposer::Render(SceneModel{SceneKind::Home, emotion, 1, 2, pose}, other);
+                for (int y = SceneComposer::kRailTop - 2; y < MonoFrame::kHeight; ++y)
+                    for (int x = 0; x < MonoFrame::kWidth; ++x)
+                        assert(other.IsBlack(x, y) == still.IsBlack(x, y));
+            }
+        }
+        // Each pose is visibly different from the resting picture.
+        for (kid_app::ScenePose pose : {kid_app::ScenePose::Blink, kid_app::ScenePose::Wave,
+                                        kid_app::ScenePose::Hearts1, kid_app::ScenePose::Hearts2}) {
+            MonoFrame other;
+            SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, pose}, other);
+            assert(other.Data() != still.Data());
+        }
+        // Falling asleep: Zzz1 < Zzz2 < Still (all three letters).
+        MonoFrame z1, z2, z3;
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1,
+                                         kid_app::ScenePose::Zzz1}, z1);
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1,
+                                         kid_app::ScenePose::Zzz2}, z2);
+        SceneComposer::Render(SceneModel{SceneKind::Sleep, Emotion::Sleepy, 1, 1}, z3);
+        assert(z1.Data() != z2.Data() && z2.Data() != z3.Data());
+        auto white = [](const MonoFrame& f) {
+            int n = 0;
+            for (int y = 0; y < 300; ++y)
+                for (int x = 0; x < 300; ++x) n += f.IsBlack(x, y) ? 0 : 1;
+            return n;
+        };
+        assert(white(z1) < white(z2) && white(z2) < white(z3));  // white letters on the sky
     }
 
     // Sleep scene: what the ePaper keeps after power-off. No action rail
@@ -97,10 +154,15 @@ int main() {
                                     Emotion::Sleepy, Emotion::Surprised}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
-                        const SceneModel in{kind, emotion, page, sel};
-                        const SceneModel out = kid_app::UnpackScene(kid_app::PackScene(in));
-                        assert(out.kind == kind && out.emotion == emotion &&
-                               out.book_page == page && out.home_selection == sel);
+                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Zzz2);
+                             ++pose) {
+                            const SceneModel in{kind, emotion, page, sel,
+                                                static_cast<kid_app::ScenePose>(pose)};
+                            const SceneModel out = kid_app::UnpackScene(kid_app::PackScene(in));
+                            assert(out.kind == kind && out.emotion == emotion &&
+                                   out.book_page == page && out.home_selection == sel &&
+                                   out.pose == in.pose);
+                        }
                     }
                 }
             }
@@ -110,6 +172,7 @@ int main() {
         const SceneModel masked = kid_app::UnpackScene(kid_app::PackScene(wide));
         assert(masked.kind == SceneKind::Reader && masked.home_selection == 0x0F);
         assert(masked.emotion == Emotion::Happy && masked.book_page == 7);
+        assert(masked.pose == kid_app::ScenePose::Still);
     }
 
     std::cout << "PASS: 1-bit frame size, clipping, deterministic scene changes, home rail\n";
