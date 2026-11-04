@@ -58,7 +58,7 @@ pet_input 任务                       kid_epd 任务
 
 - 只有 **出题中按下拨轮** 才会产生喜好请求，且只针对包里标了 like 的选项（“都喜欢”这类不算）；知识题、移动高亮、长按、语音都不会。
 - 请求只经 `BookMemoryEvent` → `ChoiceMemoryEvent`（来源 `DialChoice`）变成 `PREFERENCE_CHOSEN`；读完 KPB2 书（每次打开一次）生成 `BookFinished{content_id}`。板端代码里没有自己拼喜好事件的地方（契约测试检查）。
-- **现状**：板子还在用旧的 `FreertosPetService`（没有 MemoryStore），所以板端 `RecordBookMemory` 只打日志 `PET_BOOK_MEMORY kind=like like=<slot>:<option> sink=none` 后丢弃。板端切换到 `FreertosAtomicPetService`（并行会话）后，在这里调用它的记忆入口（Pet 任务上 `PetAtomicLedger::RecordMemory`，事件 id 由账本分配）即可，读者状态机和守卫不用改。
+- 板端 `RecordBookMemory` 把事件 id 和日期置 0 后交给 `RecordMemory`（PR #64 的原子账本入口，Pet 任务上分配本地 id、取 RTC 日期，与宠物状态同一事务落盘），日志 `PET_BOOK_MEMORY kind=like like=<slot>:<option> posted=1`，账本提交结果见 `PET_MEMORY_COMMIT`。
 
 ## 5. 测试
 

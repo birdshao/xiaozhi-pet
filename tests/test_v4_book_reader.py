@@ -132,6 +132,8 @@ class BoardContractTests(unittest.TestCase):
         self.assertNotIn("MemorySource::DialChoice", BOARD_WORKER)
         record = _body(BOARD_WORKER, "void RecordBookMemory(")
         self.assertIn("kid_app::BookMemoryEvent(book_outline_, request,", record)
+        # Then the ledger path of the board (PR #64), with the worker's id/day.
+        self.assertIn("event.id = 0;\n        const bool posted = RecordMemory(event);", record)
         self.assertEqual(BOARD_WORKER.count("RecordBookMemory("), 2)  # definition + one call
         self.assertIn("if (step.memory.kind != kid_app::BookMemoryKind::None) "
                       "RecordBookMemory(step.memory);", BOARD_WORKER)

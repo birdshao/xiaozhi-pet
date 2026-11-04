@@ -1158,11 +1158,9 @@ BOARD_WORKER = r'''
 
     // ADR-012: a book like (dial press on a like option of a like question)
     // or "book finished" becomes a MemoryEvent only through BookMemoryEvent
-    // (the kid_app choice guard). The ledger owns event ids (shared replay
-    // window) and the day: both go back to 0, and the atomic Pet worker
-    // fills them in. The legacy FreertosPetService keeps no MemoryStore:
-    // until the board runs FreertosAtomicPetService (PR #64) this is logged
-    // (sink=none) and dropped; then it is `RecordMemory(event)` here.
+    // (the kid_app choice guard), then goes to the ledger like every other
+    // memory (RecordMemory). Id and day go back to 0: the atomic Pet worker
+    // assigns the next local id (shared replay window) and the RTC day.
     void RecordBookMemory(const kid_app::BookMemoryRequest& request) {
         kid_app::MemoryEvent event{};
         if (!kid_app::BookMemoryEvent(book_outline_, request, kid_app::kLocalEventBit, 0,
@@ -1170,13 +1168,15 @@ BOARD_WORKER = r'''
             ESP_LOGW(TAG, "PET_BOOK_MEMORY_REJECTED kind=%u", static_cast<unsigned>(request.kind));
             return;
         }
-        event.id = 0;  // the Pet worker assigns the next local id
+        event.id = 0;
+        const bool posted = RecordMemory(event);
         if (event.kind == kid_app::MemoryEventKind::PreferenceChosen)
-            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=like like=%u:%u sink=none",
-                     static_cast<unsigned>(event.slot), static_cast<unsigned>(event.option));
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=like like=%u:%u posted=%d",
+                     static_cast<unsigned>(event.slot), static_cast<unsigned>(event.option),
+                     posted ? 1 : 0);
         else
-            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=finished book=%u sink=none",
-                     static_cast<unsigned>(event.option));
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=finished book=%u posted=%d",
+                     static_cast<unsigned>(event.option), posted ? 1 : 0);
     }
 
     bool AllocBookFrames() {
