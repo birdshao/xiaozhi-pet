@@ -430,6 +430,66 @@ class DisplayOverlayTest(unittest.TestCase):
                            handle.index('SceneStateLock lock(scene_state_mutex_)'))
         self.assertNotIn('compare_exchange', patched)
 
+    def test_v2_status_bar_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/status_bar.h"', patched)
+        self.assertIn('#include <wifi_manager.h>', patched)
+        # Readings: heartbeat on pet_boot_diag, SHTC3 with CRC, PMIC, Wi-Fi,
+        # quiet hours; published as one packed word.
+        loop = patched[patched.index('void RunDiagLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertLess(loop.index('UpdateRhythm();'), loop.index('UpdateStatusBar();'))
+        update = patched[patched.index('void UpdateStatusBar()'):]
+        update = update[:update.index('\n    }\n')]
+        for needle in ('RtcRead(&rtc, &stopped)', 'PlausibleWallClock(rtc)',
+                       'ReadShtc3TempC10(&env_temp_c10_)', 'pmic_->GetBatteryLevel()',
+                       'pmic_->IsCharging()', 'quiet_hours_.load()',
+                       'WifiManager::GetInstance().IsConnected()',
+                       'kid_app::MakeStatusBar(in, status_latest_)',
+                       'status_bits_.store(kid_app::PackStatus(bar))', 'PET_STATUS '):
+            self.assertIn(needle, update)
+        self.assertIn('if (pmic_) {', update)  # board without PMIC
+        self.assertIn('now - env_read_ms_ >= kEnvReadMs', update)  # SHTC3 once a minute
+        shtc3 = patched[patched.index('bool ReadShtc3TempC10('):]
+        shtc3 = shtc3[:shtc3.index('\n    }\n')]
+        self.assertIn('kid_app::Shtc3TempC10(env, temp_c10)', shtc3)
+        self.assertIn('measure, sizeof(measure), env, sizeof(env), 40)', shtc3)
+        self.assertNotIn('pdMS_TO_TICKS(1)', shtc3)
+        # Drawing: only from PetIdle when the director has nothing to draw
+        # on a quiet, awake home screen (ambient), never between two frames
+        # and never while going to sleep.
+        idle = patched[patched.index('static void PetIdle('):]
+        idle = idle[:idle.index('\n    }\n')]
+        none = idle.index('if (step.kind == kid_app::DirectorStep::Kind::None) {')
+        self.assertIn('if (ambient) self->MaybeRefreshStatus(displayed);', idle[none:none + 140])
+        status = patched[patched.index('void MaybeRefreshStatus('):]
+        status = status[:status.index('\n    }\n')]
+        self.assertIn('displayed.kind != kid_app::SceneKind::Home', status)
+        self.assertIn('status_schedule_.Due(status_shown_, latest, NowMs())', status)
+        self.assertIn('anim_director_.Active()', status)
+        self.assertLess(status.index('xSemaphoreTake(pet_screen_mutex_'),
+                        status.index('DrawPetFrameLocked(displayed, "status", &latest)'))
+        self.assertIn('pet_mode_.load() && !sleep_active_.load()', status)
+        # Only status refreshes (also failed ones) start the one-minute wait.
+        self.assertLess(status.index('xSemaphoreGive(pet_screen_mutex_)'),
+                        status.index('status_schedule_.Drawn(NowMs());'))
+        self.assertEqual(patched.count('status_schedule_.Drawn('), 1)
+        # One drawing path: home frames carry the shown status, a status
+        # refresh the new one, a full refresh the newest; counted per region.
+        draw = patched[patched.index('bool DrawPetFrameLocked('):]
+        draw = draw[:draw.index('\n    }\n')]
+        self.assertIn('kid_app::StatusBar* status = nullptr', draw)
+        self.assertIn(': status_shown_;', draw)
+        full = draw.index('if (mode == kid_app::RefreshMode::Full) scene.status = NewestStatus(')
+        self.assertLess(draw.index('refresh_planner_.Plan(scene)'), full)
+        self.assertLess(full, draw.index('display_->ShowPetScene(scene)'))
+        self.assertLess(draw.index('refresh_planner_.Completed(scene, mode, okay)'),
+                        draw.index('status_shown_ = scene.status'))
+        self.assertIn('refresh_planner_.StatusPartials()', draw)
+        # The packed scene word stays as it was; status travels separately.
+        self.assertIn('kid_app::PackScene(scene)', patched)
+        self.assertIn('std::atomic<uint32_t> status_bits_', patched)
+
     def test_selftest_script_runner(self):
         patched = self._board()
         self.assertIn('#include "kid_app/selftest_script.h"', patched)

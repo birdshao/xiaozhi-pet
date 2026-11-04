@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "kid_app/status_bar.h"
+
 namespace kid_app {
 
 // Hardware-agnostic scene state. No Xiaozhi, LVGL, or ESP-IDF headers here.
@@ -33,11 +35,16 @@ struct SceneModel {
     // Highlighted HomeItem index on the home action rail (UI-only state).
     uint8_t home_selection = 1;
     ScenePose pose = ScenePose::Still;
+    // Top status band, drawn on Home only. Not part of PackScene: the board
+    // keeps the readings in their own word (PackStatus) and the ePaper task
+    // fills this in when it draws (see RefreshPlanner's status region).
+    StatusBar status{};
 };
 
 // One-word scene snapshot shared between board tasks (atomic<uint32_t>):
 // bits 0-3 kind, 4-7 home selection, 8-11 emotion, 12-15 pose,
-// 16-31 book page.
+// 16-31 book page. The status band is not packed (UnpackScene leaves it
+// unknown).
 uint32_t PackScene(const SceneModel& scene);
 SceneModel UnpackScene(uint32_t bits);
 
@@ -71,6 +78,17 @@ public:
     // Home layout: pet portrait above, five-slot action rail below.
     static constexpr int kRailTop = 380;
     static constexpr int kRailSlotWidth = 160;
+    // Status band (V2-05): two corner boxes on rows 0..kStatusBottom-1,
+    // left x < kStatusLeftEnd (clock, quiet moon, Wi-Fi) and right
+    // x >= kStatusRightStart (temperature, charging bolt, battery). The
+    // pet's ears and pose ornaments use the gap between them; no other
+    // home picture ever draws inside the boxes.
+    static constexpr int kStatusBottom = 40;
+    static constexpr int kStatusLeftEnd = 248;
+    static constexpr int kStatusRightStart = 632;
+    static bool InStatusBox(int x, int y) {
+        return y >= 0 && y < kStatusBottom && (x < kStatusLeftEnd || x >= kStatusRightStart);
+    }
 
     static void Render(const SceneModel& model, MonoFrame& output);
 };

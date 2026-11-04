@@ -54,7 +54,8 @@ const char* AnimationName(Animation animation) {
 }
 
 bool PetAnimationDirector::SameBase(const SceneModel& a, const SceneModel& b) {
-    // The highlight may move during an animation; frames follow it.
+    // The highlight and the status band may change during an animation;
+    // frames follow them.
     return a.kind == b.kind && a.emotion == b.emotion && a.book_page == b.book_page &&
            a.pose == b.pose;
 }

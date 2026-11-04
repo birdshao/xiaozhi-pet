@@ -174,6 +174,14 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_gesture_detector"
 "$BUILD/test_gesture_detector"
 
+# V2-05 status bar: packed status word, readings -> shown values with
+# hysteresis, SHTC3 CRC and the once-a-minute status refresh schedule.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/status_bar.cc" \
+  "$ROOT/tests/cpp/test_status_bar.cc" \
+  -o "$BUILD/test_status_bar"
+"$BUILD/test_status_bar"
+
 # V3-03 PowerManager (Active/Idle/Nap/Off, night and battery rules) and the
 # V3-04 morning window: back to sleep 60 s after an alarm wake.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

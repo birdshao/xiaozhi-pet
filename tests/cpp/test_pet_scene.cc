@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <vector>
 
 using kid_app::Emotion;
 using kid_app::MonoFrame;
@@ -181,6 +182,151 @@ int main() {
         for (int y = 30; y < 140 && !moon; ++y)
             for (int x = 600; x < 760 && !moon; ++x) moon = sleep.IsBlack(x, y);
         assert(moon);
+    }
+
+    // Status band (V2-05): two top corner boxes. Status changes only touch
+    // pixels inside them (never the pet or the rail), nothing else on the
+    // home screen ever draws there, and reader/sleep ignore the status.
+    {
+        using kid_app::NetworkState;
+        using kid_app::ScenePose;
+        using kid_app::StatusBar;
+        static_assert(SceneComposer::kStatusBottom <= 40, "thin band");
+        static_assert(SceneComposer::kStatusLeftEnd < SceneComposer::kStatusRightStart, "boxes");
+        assert(SceneComposer::InStatusBox(0, 0) && SceneComposer::InStatusBox(799, 39));
+        assert(!SceneComposer::InStatusBox(400, 10) && !SceneComposer::InStatusBox(10, 40));
+        auto home = [](const StatusBar& status, Emotion emotion = Emotion::Neutral,
+                       ScenePose pose = ScenePose::Still) {
+            SceneModel model{SceneKind::Home, emotion, 1, 1, pose};
+            model.status = status;
+            return model;
+        };
+        auto ink_in = [](const MonoFrame& f, int x0, int x1, int y0, int y1) {
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x)
+                    if (f.IsBlack(x, y)) return true;
+            return false;
+        };
+        StatusBar full;
+        full.hour = 21;
+        full.minute = 58;
+        full.temp_c = -8;
+        full.battery_bars = 4;
+        full.charging = true;
+        full.quiet = true;
+        full.network = NetworkState::Offline;
+        StatusBar other;
+        other.hour = 10;
+        other.minute = 36;
+        other.temp_c = 47;
+        other.battery_bars = 2;
+        other.network = NetworkState::Online;
+        MonoFrame none, a, b;
+        SceneComposer::Render(home(StatusBar{}), none);
+        SceneComposer::Render(home(full), a);
+        SceneComposer::Render(home(other), b);
+        assert(a.Data() != none.Data() && b.Data() != none.Data() && a.Data() != b.Data());
+        for (int y = 0; y < MonoFrame::kHeight; ++y)
+            for (int x = 0; x < MonoFrame::kWidth; ++x)
+                if (!SceneComposer::InStatusBox(x, y))
+                    assert(a.IsBlack(x, y) == none.IsBlack(x, y) &&
+                           b.IsBlack(x, y) == none.IsBlack(x, y));
+
+        // The boxes are reserved: blank for every expression and pose while
+        // the status is unknown (so the planner's regions never overlap).
+        for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
+                                Emotion::Sleepy, Emotion::Surprised}) {
+            for (ScenePose pose : {ScenePose::Still, ScenePose::Blink, ScenePose::Wave,
+                                   ScenePose::Hearts1, ScenePose::Hearts2, ScenePose::Giggle,
+                                   ScenePose::Dizzy1, ScenePose::Dizzy2, ScenePose::Sunrise,
+                                   ScenePose::Morning}) {
+                MonoFrame f;
+                SceneComposer::Render(home(StatusBar{}, emotion, pose), f);
+                for (int y = 0; y < SceneComposer::kStatusBottom; ++y)
+                    for (int x = 0; x < MonoFrame::kWidth; ++x)
+                        if (SceneComposer::InStatusBox(x, y)) assert(!f.IsBlack(x, y));
+            }
+        }
+
+        // Each field appears in its own place and only when known.
+        auto only = [&](const StatusBar& s, int x0, int x1) {
+            MonoFrame f;
+            SceneComposer::Render(home(s), f);
+            for (int y = 0; y < SceneComposer::kStatusBottom; ++y)
+                for (int x = 0; x < MonoFrame::kWidth; ++x)
+                    if (SceneComposer::InStatusBox(x, y) && (x < x0 || x > x1))
+                        assert(!f.IsBlack(x, y));
+            assert(ink_in(f, x0, x1, 0, SceneComposer::kStatusBottom - 1));
+        };
+        StatusBar s;
+        s.hour = 7;
+        s.minute = 42;
+        only(s, 0, 115);  // clock
+        s = StatusBar{};
+        s.quiet = true;
+        only(s, 120, 156);  // moon
+        s = StatusBar{};
+        s.network = NetworkState::Online;
+        only(s, 160, 215);  // Wi-Fi
+        s.network = NetworkState::Offline;
+        only(s, 160, 215);
+        s = StatusBar{};
+        s.temp_c = 24;
+        only(s, 632, 715);  // temperature
+        s = StatusBar{};
+        s.battery_bars = 0;
+        only(s, 740, 799);  // empty battery outline
+        s.charging = true;
+        only(s, 716, 799);  // bolt next to it
+        s = StatusBar{};
+        s.charging = true;  // no battery reading: no bolt either
+        MonoFrame f;
+        SceneComposer::Render(home(s), f);
+        assert(f.Data() == none.Data());
+        s = StatusBar{};
+        s.hour = 7;  // a clock needs both hour and minute
+        SceneComposer::Render(home(s), f);
+        assert(f.Data() == none.Data());
+
+        // Every digit, battery level, sign and network state looks different.
+        std::vector<MonoFrame> digits(10);  // heap: 48 KB each
+        for (int d = 0; d < 10; ++d) {
+            s = StatusBar{};
+            s.hour = 12;
+            s.minute = static_cast<uint8_t>(50 + d);
+            SceneComposer::Render(home(s), digits[d]);
+            for (int e = 0; e < d; ++e) assert(digits[d].Data() != digits[e].Data());
+        }
+        std::vector<MonoFrame> levels(StatusBar::kBatteryBars + 1);
+        for (int n = 0; n <= StatusBar::kBatteryBars; ++n) {
+            s = StatusBar{};
+            s.battery_bars = static_cast<uint8_t>(n);
+            SceneComposer::Render(home(s), levels[n]);
+            for (int m = 0; m < n; ++m) assert(levels[n].Data() != levels[m].Data());
+        }
+        MonoFrame minus, plus, teen;
+        s = StatusBar{};
+        s.temp_c = -5;
+        SceneComposer::Render(home(s), minus);
+        s.temp_c = 5;
+        SceneComposer::Render(home(s), plus);
+        s.temp_c = 15;
+        SceneComposer::Render(home(s), teen);
+        assert(minus.Data() != plus.Data() && plus.Data() != teen.Data());
+        s.temp_c = 100;  // cannot be drawn: hidden
+        SceneComposer::Render(home(s), f);
+        assert(f.Data() == none.Data());
+
+        // Reader and sleep pictures never show the band.
+        for (SceneKind kind : {SceneKind::Reader, SceneKind::Sleep}) {
+            SceneModel plain{kind, Emotion::Happy, 2, 1};
+            SceneModel with = plain;
+            with.status = full;
+            MonoFrame p, w;
+            SceneComposer::Render(plain, p);
+            SceneComposer::Render(with, w);
+            assert(p.Data() == w.Data());
+        }
     }
 
     // Packed scene word shared between board tasks: every field survives.

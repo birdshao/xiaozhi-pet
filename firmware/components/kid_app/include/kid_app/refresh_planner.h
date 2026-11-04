@@ -12,9 +12,10 @@ namespace kid_app {
 enum class RefreshMode : uint8_t { Full, Partial };
 
 // Partial refreshes leave ghosting only where pixels change, so the budget
-// is kept per screen region: the action rail (selection, y >= 380) and the
-// pet area above it (expression and animation poses). SceneComposer tests
-// guarantee each kind of change stays inside its region.
+// is kept per screen region: the action rail (selection, y >= 380), the
+// pet area above it (expression and animation poses) and the status band
+// (two small top corner boxes, V2-05). SceneComposer tests guarantee each
+// kind of change stays inside its region.
 //
 // Past the soft budget a region "needs cleanup": the owner runs one full
 // refresh once nobody is interacting (NeedsCleanup + ForceFull). Only past
@@ -28,9 +29,19 @@ public:
     static constexpr uint8_t kDefaultSoftPartials = 40;
     static constexpr uint8_t kDefaultHardPartials = 60;
 
+    // The clock changes every minute, so the small status band gets a
+    // larger budget of its own (about an hour of clock ticks).
+    static constexpr uint8_t kDefaultStatusSoftPartials = 60;
+    static constexpr uint8_t kDefaultStatusHardPartials = 90;
+
     explicit RefreshPlanner(uint8_t soft_partials = kDefaultSoftPartials,
-                            uint8_t hard_partials = kDefaultHardPartials)
-        : soft_(soft_partials), hard_(hard_partials < soft_partials ? soft_partials : hard_partials) {}
+                            uint8_t hard_partials = kDefaultHardPartials,
+                            uint8_t status_soft_partials = kDefaultStatusSoftPartials,
+                            uint8_t status_hard_partials = kDefaultStatusHardPartials)
+        : soft_(soft_partials), hard_(hard_partials < soft_partials ? soft_partials : hard_partials),
+          status_soft_(status_soft_partials),
+          status_hard_(status_hard_partials < status_soft_partials ? status_soft_partials
+                                                                   : status_hard_partials) {}
 
     RefreshMode Plan(const SceneModel& next) const;
     void Completed(const SceneModel& shown, RefreshMode mode, bool success);
@@ -41,14 +52,19 @@ public:
     bool NeedsCleanup() const;
     uint8_t RailPartials() const { return rail_; }
     uint8_t PetPartials() const { return pet_; }
+    uint8_t StatusPartials() const { return status_; }
 
 private:
     static bool TouchesRail(const SceneModel& a, const SceneModel& b);
     static bool TouchesPet(const SceneModel& a, const SceneModel& b);
+    static bool TouchesStatus(const SceneModel& a, const SceneModel& b);
     uint8_t soft_;
     uint8_t hard_;
     uint8_t rail_ = 0;
     uint8_t pet_ = 0;
+    uint8_t status_soft_;
+    uint8_t status_hard_;
+    uint8_t status_ = 0;
     bool has_shown_ = false;
     SceneModel shown_{};
 };

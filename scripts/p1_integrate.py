@@ -242,8 +242,17 @@ BOARD_WORKER = r'''
     }
 
     // Draws one frame. Caller holds pet_screen_mutex_ and checked pet_mode_.
-    // source: gate (published scene), anim (director frame), cleanup.
-    bool DrawPetFrameLocked(const kid_app::SceneModel& scene, const char* source) {
+    // source: gate (published scene), anim (director frame), cleanup,
+    // status (new status readings on the displayed scene).
+    bool DrawPetFrameLocked(const kid_app::SceneModel& base, const char* source,
+                            const kid_app::StatusBar* status = nullptr) {
+        // V2-05: the home status band keeps what the panel shows unless this
+        // is a status refresh; a full refresh picks up the newest readings
+        // for free. Published scenes never carry a status (UnpackScene).
+        kid_app::SceneModel scene = base;
+        scene.status = scene.kind != kid_app::SceneKind::Home ? kid_app::StatusBar{}
+                       : status                              ? *status
+                                                             : status_shown_;
         bool okay = false;
         const uint32_t epd_started_ms = NowMs();
         if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready()) {
@@ -261,11 +270,13 @@ BOARD_WORKER = r'''
         kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
         if (!okay) {
             mode = refresh_planner_.Plan(scene);
+            if (mode == kid_app::RefreshMode::Full) scene.status = NewestStatus(scene.kind);
             okay = mode == kid_app::RefreshMode::Partial
                        ? display_->ShowPetSceneFast(scene)
                        : display_->ShowPetScene(scene);
         }
         refresh_planner_.Completed(scene, mode, okay);
+        if (okay && scene.kind == kid_app::SceneKind::Home) status_shown_ = scene.status;
         // The sleep cancel window starts once the final picture (all three
         // Z letters, ScenePose::Still) is on the panel.
         if (okay && scene.kind == kid_app::SceneKind::Sleep &&
@@ -276,12 +287,13 @@ BOARD_WORKER = r'''
         }
         // V1-08 / V2-06: refresh duration per mode; ghosting by eye.
         ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u sel=%u mode=%s ok=%d ms=%u n=%u "
-                 "pose=%u src=%s rail=%u pet=%u",
+                 "pose=%u src=%s rail=%u pet=%u status=%u",
                  static_cast<int>(scene.kind), scene.book_page, scene.home_selection,
                  mode == kid_app::RefreshMode::Partial ? "partial" : "full", okay ? 1 : 0,
                  static_cast<unsigned>(NowMs() - epd_started_ms),
                  static_cast<unsigned>(++epd_refreshes_), static_cast<unsigned>(scene.pose),
-                 source, refresh_planner_.RailPartials(), refresh_planner_.PetPartials());
+                 source, refresh_planner_.RailPartials(), refresh_planner_.PetPartials(),
+                 refresh_planner_.StatusPartials());
         return okay;
     }
 
@@ -318,7 +330,10 @@ BOARD_WORKER = r'''
             step = self->anim_director_.Idle(displayed, NowMs(), ambient,
                                              self->refresh_planner_.NeedsCleanup());
         }
-        if (step.kind == kid_app::DirectorStep::Kind::None) return;
+        if (step.kind == kid_app::DirectorStep::Kind::None) {
+            if (ambient) self->MaybeRefreshStatus(displayed);
+            return;
+        }
         if (xSemaphoreTake(self->pet_screen_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) return;
         const bool cleanup = step.kind == kid_app::DirectorStep::Kind::Cleanup;
         bool okay = false;
@@ -1354,6 +1369,91 @@ BOARD_WORKER = r'''
         return true;
     }
 
+    // ---- V2-05 status bar (PRD 5.1) ----
+    // pet_boot_diag reads the RTC, PMIC and Wi-Fi every heartbeat (SHTC3 once
+    // a minute) and publishes one packed word; kid_epd draws it from PetIdle.
+    std::atomic<uint32_t> status_bits_{kid_app::PackStatus(kid_app::StatusBar{})};
+    kid_app::StatusBar status_latest_;  // pet_boot_diag only (hysteresis)
+    bool env_read_once_ = false;        // pet_boot_diag only
+    bool env_ok_ = false;
+    int env_temp_c10_ = 0;
+    uint32_t env_read_ms_ = 0;
+    static constexpr uint32_t kEnvReadMs = 60000;
+    kid_app::StatusBar status_shown_;          // kid_epd only: on the panel
+    kid_app::StatusSchedule status_schedule_;  // kid_epd only
+
+    // Newest readings for a full refresh (the band is drawn on Home only).
+    kid_app::StatusBar NewestStatus(kid_app::SceneKind kind) const {
+        return kind == kid_app::SceneKind::Home ? kid_app::UnpackStatus(status_bits_.load())
+                                                : kid_app::StatusBar{};
+    }
+
+    // SHTC3 (0x70): wake, one normal-mode measurement (T first), sleep.
+    bool ReadShtc3TempC10(int* temp_c10) {
+        const uint8_t wake[] = {0x35, 0x17}, measure[] = {0x78, 0x66}, sleep[] = {0xB0, 0x98};
+        uint8_t env[6] = {};
+        bool ok = DiagI2c(0x70, wake, sizeof(wake), nullptr, 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        ok = ok && DiagI2c(0x70, measure, sizeof(measure), env, sizeof(env), 40);
+        DiagI2c(0x70, sleep, sizeof(sleep), nullptr, 0);
+        return ok && kid_app::Shtc3TempC10(env, temp_c10);
+    }
+
+    void UpdateStatusBar() {
+        const uint32_t now = NowMs();
+        kid_app::StatusReadings in{};
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        if (RtcRead(&rtc, &stopped) && !stopped && kid_app::PlausibleWallClock(rtc)) {
+            in.time_ok = true;
+            in.hour = rtc.hour;
+            in.minute = rtc.minute;
+        }
+        if (!env_read_once_ || now - env_read_ms_ >= kEnvReadMs) {
+            env_read_once_ = true;
+            env_read_ms_ = now;
+            env_ok_ = ReadShtc3TempC10(&env_temp_c10_);
+        }
+        in.temp_ok = env_ok_;
+        in.temp_c10 = env_temp_c10_;
+        if (pmic_) {
+            in.battery_pct = pmic_->GetBatteryLevel();
+            in.charging = pmic_->IsCharging();
+        }
+        in.quiet = quiet_hours_.load();
+        in.network = WifiManager::GetInstance().IsConnected() ? kid_app::NetworkState::Online
+                                                               : kid_app::NetworkState::Offline;
+        const auto bar = kid_app::MakeStatusBar(in, status_latest_);
+        if (bar != status_latest_)
+            ESP_LOGI(TAG, "PET_STATUS time=%02u:%02u temp_c=%d batt_bars=%u chg=%d quiet=%d net=%u",
+                     bar.hour, bar.minute, bar.temp_c, bar.battery_bars, bar.charging ? 1 : 0,
+                     bar.quiet ? 1 : 0, static_cast<unsigned>(bar.network));
+        status_latest_ = bar;
+        status_bits_.store(kid_app::PackStatus(bar));
+    }
+
+    // kid_epd (PetIdle) with nothing else to draw on a quiet, awake home
+    // screen: new readings reach the panel only when they look different,
+    // at most once a minute, as one small partial refresh of the band.
+    void MaybeRefreshStatus(const kid_app::SceneModel& displayed) {
+        if (displayed.kind != kid_app::SceneKind::Home) return;
+        const auto latest = kid_app::UnpackStatus(status_bits_.load());
+        if (!status_schedule_.Due(status_shown_, latest, NowMs())) return;
+        {
+            SceneStateLock lock(anim_mutex_);
+            if (anim_director_.Active()) return;  // never between two frames
+        }
+        if (xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+        bool okay = false;
+        if (pet_mode_.load() && !sleep_active_.load())
+            okay = DrawPetFrameLocked(displayed, "status", &latest);
+        xSemaphoreGive(pet_screen_mutex_);
+        // Only status refreshes count (a failed one retries a minute later);
+        // full refreshes pick up new readings without delaying the next one.
+        status_schedule_.Drawn(NowMs());
+        ESP_LOGI(TAG, "PET_STATUS_REFRESH ok=%d", okay ? 1 : 0);
+    }
+
     // ---- Host-scripted self-test (unattended hardware trials) ----
     // The host writes a PETSELFTEST1 script into the last 4 KiB of ota_1
     // (beyond the app image) before a trial and erases it afterwards. The
@@ -1502,6 +1602,7 @@ BOARD_WORKER = r'''
                 SyncRtcFromSystemTime();
                 UpdateRhythm();
                 on_battery_.store(pmic_ && pmic_->IsDischarging());
+                UpdateStatusBar();
                 ESP_LOGI(TAG, "PET_DIAG_HEARTBEAT up_s=%u pet=%d pwr_edges=%u sleep_req=%u "
                          "batt=%d chg=%d woke_by_alarm=%d rtc_synced=%d epd_n=%u",
                          static_cast<unsigned>(now / 1000), pet_mode_.load() ? 1 : 0,
@@ -1534,6 +1635,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/sleep_flow.h"\n'
         '#include "kid_app/prompt_scheduler.h"\n'
         '#include "kid_app/prompt_clips.h"\n'
+        '#include "kid_app/status_bar.h"\n'
+        '#include <wifi_manager.h>\n'
         '#include "esp_attr.h"\n'
         '#include "esp_system.h"\n'
         '// Alarm-wake note: kept across chip resets (e.g. the USB-JTAG reset\n'
