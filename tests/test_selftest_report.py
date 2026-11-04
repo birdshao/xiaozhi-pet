@@ -89,6 +89,22 @@ class SelfTestReportTests(unittest.TestCase):
                 path.write_bytes(GOOD_LOG.encode(encoding))
                 self.assertTrue(evaluate(SCENARIO, read_log(path))["passed"], encoding)
 
+    def test_status_band_refreshes_are_counted_apart(self):
+        # 2026-11-04: v2_home_rail saw 19 partials, one being the status
+        # band's once-a-minute refresh; scenario counts must not depend on
+        # the wall clock, timing limits still cover every refresh.
+        status = ("[ 73s] I (73232) b: PET_DIAG_EPD kind=0 page=1 sel=1 mode=partial ok=1 "
+                  "ms=1800 n=9 pose=0 src=status rail=4 pet=0\n")
+        lines = GOOD_LOG.splitlines()
+        log = "\n".join(lines[:4] + [status] + lines[4:])
+        report = evaluate(SCENARIO.replace("# expect commits 2\n",
+                                           "# expect commits 2\n# expect partial_refreshes 1\n"
+                                           "# expect full_refreshes 1\n"), log)
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["observed"]["partial_ms"], [640, 1800])
+        too_slow = log.replace("ms=1800", "ms=2600")
+        self.assertIn("max_partial_ms", evaluate(SCENARIO, too_slow)["failed"])
+
     def test_marker_expectations(self):
         scenario = ("PETSELFTEST1\n# expect min:PET_SLEEP_SHOWN 2\n"
                     "# expect min:woke_by_alarm=1 1\n"

@@ -9,7 +9,9 @@
 Supported expectations: home_select / prompt_seq (comma lists of
 PET_HOME_SELECT / PET_PROMPT_PLAY indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
-PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts),
+PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts;
+the once-a-minute status band refresh, ``src=status``, is counted apart as
+status_refreshes because it depends on the wall clock, not the script),
 min:<TEXT> N (TEXT appears at least N times), none:<TEXT> 0 (never appears).
 Behaviour is counted after the last ``mark begin`` (warm-up excluded).
 Panics, watchdog resets, a PET_SELFTEST_ABORT, or a log without the
@@ -61,7 +63,8 @@ def _observe(log: str) -> dict:
     # "mark begin" so warm-up/normalization steps are not counted.
     marks = [m.end() for m in re.finditer(r"PET_SELFTEST_MARK name=begin", log)]
     body = log[marks[-1]:] if marks else log
-    epd = re.findall(r"PET_DIAG_EPD .*?mode=(\w+) ok=(\d) ms=(\d+)", body)
+    epd = re.findall(r"PET_DIAG_EPD .*?mode=(\w+) ok=(\d) ms=(\d+)(?:[^\n]*?src=(\w+))?",
+                     body)
     summaries = re.findall(r"^SUMMARY .*$", log, re.MULTILINE)
     panic = wdt = 0
     for line in summaries:
@@ -75,9 +78,15 @@ def _observe(log: str) -> dict:
         "commits": len(re.findall(r"PET_EVENT_COMMITTED", body)),
         "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
                                "PET_SELFTEST_ABORT" not in log) else 0,
-        "partial_ms": [int(ms) for mode, ok, ms in epd if mode == "partial" and ok == "1"],
-        "full_ms": [int(ms) for mode, ok, ms in epd if mode == "full" and ok == "1"],
-        "failed_refreshes": sum(1 for _, ok, _ in epd if ok != "1"),
+        # Durations include every refresh; counts leave out status-band ones.
+        "partial_ms": [int(ms) for mode, ok, ms, _ in epd if mode == "partial" and ok == "1"],
+        "full_ms": [int(ms) for mode, ok, ms, _ in epd if mode == "full" and ok == "1"],
+        "partial_count": sum(1 for mode, ok, _, src in epd
+                             if mode == "partial" and ok == "1" and src != "status"),
+        "full_count": sum(1 for mode, ok, _, src in epd
+                          if mode == "full" and ok == "1" and src != "status"),
+        "status_refreshes": sum(1 for _, ok, _, src in epd if ok == "1" and src == "status"),
+        "failed_refreshes": sum(1 for _, ok, _, _ in epd if ok != "1"),
         "summaries": len(summaries),
         "body": body,
         "panic": panic,
@@ -99,9 +108,9 @@ def evaluate(scenario: str, log: str) -> dict:
         elif name == "max_full_ms":
             checks[name] = bool(obs["full_ms"]) and max(obs["full_ms"]) <= int(want)
         elif name == "partial_refreshes":
-            checks[name] = len(obs["partial_ms"]) == int(want)
+            checks[name] = obs["partial_count"] == int(want)
         elif name == "full_refreshes":
-            checks[name] = len(obs["full_ms"]) == int(want)
+            checks[name] = obs["full_count"] == int(want)
         elif name.startswith("min:"):
             checks[name] = obs["body"].count(name[4:]) >= int(want)
         elif name.startswith("none:"):
@@ -141,7 +150,8 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name:18s} expected={want}")
     obs = report["observed"]
     print("observed:", json.dumps({k: obs[k] for k in ("home_select", "prompt_seq", "commits",
-                                                        "partial_ms", "full_ms")}))
+                                                        "partial_ms", "full_ms",
+                                                        "status_refreshes")}))
     print("RESULT:", "PASS" if report["passed"] else "FAIL")
     return 0 if report["passed"] else 1
 
