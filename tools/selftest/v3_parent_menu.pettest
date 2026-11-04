@@ -1,0 +1,66 @@
+PETSELFTEST1
+# V3-06 parent menu: BOOT + dial press held 5 s opens it, dial up/down
+# moves, press edits / flips a switch, long press or 30 s idle leaves.
+# The only setting changed is Motion: off, checked, and on again, so the
+# board ends with the setting it started with (assumes Motion on, the
+# default). The wake-up edit is dropped by the idle exit (never saved).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# Opening, moving and leaving the menu are not pet interactions:
+# expect commits 0
+# expect min:PET_PARENT_OPEN 3
+# expect min:PET_PARENT_SAVED 2
+# expect none:PET_PARENT_SAVE_FAILED 0
+# expect none:PET_PARENT_REFUSED 0
+# expect min:parent_exit=long 2
+# expect min:parent_exit=idle 1
+# Gesture while Motion is off: ignored. Back on: the giggle plays.
+# expect min:motion_off=1 1
+# expect min:name=giggle 1
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# 1) Open (full refresh), walk down to Motion, switch it off, leave.
+combo 5500 7000
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap press 3000
+hold press 1500 8000
+# Motion off: no reaction.
+gesture gentle
+wait 4000
+# 2) Open, edit wake-up (+15 min), then wait out the 30 s idle exit.
+combo 5500 5000
+tap press 2000
+tap up 2000
+wait 33000
+# 3) Open, Motion back on, leave.
+combo 5500 7000
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap down 1500
+tap press 3000
+hold press 1500 8000
+# Motion on again: gentle shake -> giggle.
+gesture gentle
+wait 6000
+pet
+wait 4000
+end

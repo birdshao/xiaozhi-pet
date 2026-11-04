@@ -659,19 +659,20 @@ constexpr uint8_t kDigitSegments[10] = {0x7E, 0x30, 0x6D, 0x79, 0x33,
                                         0x5B, 0x5F, 0x70, 0x7F, 0x7B};
 constexpr int kDigitW = 18, kDigitH = 30, kSegT = 5, kStatusY = 5;
 
-void SevenSegment(MonoFrame& f, int x, int y, uint8_t segments, int w = kDigitW) {
+void SevenSegment(MonoFrame& f, int x, int y, uint8_t segments, int w = kDigitW,
+                  bool ink = true) {
     const int h = kDigitH, t = kSegT, half = h / 2;
-    if (segments & kSegA) FillRect(f, x, y, w, t);
-    if (segments & kSegB) FillRect(f, x + w - t, y, t, half + 1);
-    if (segments & kSegC) FillRect(f, x + w - t, y + half, t, h - half);
-    if (segments & kSegD) FillRect(f, x, y + h - t, w, t);
-    if (segments & kSegE) FillRect(f, x, y + half, t, h - half);
-    if (segments & kSegF) FillRect(f, x, y, t, half + 1);
-    if (segments & kSegG) FillRect(f, x, y + half - t / 2, w, t);
+    if (segments & kSegA) FillRect(f, x, y, w, t, ink);
+    if (segments & kSegB) FillRect(f, x + w - t, y, t, half + 1, ink);
+    if (segments & kSegC) FillRect(f, x + w - t, y + half, t, h - half, ink);
+    if (segments & kSegD) FillRect(f, x, y + h - t, w, t, ink);
+    if (segments & kSegE) FillRect(f, x, y + half, t, h - half, ink);
+    if (segments & kSegF) FillRect(f, x, y, t, half + 1, ink);
+    if (segments & kSegG) FillRect(f, x, y + half - t / 2, w, t, ink);
 }
 
-void Digit(MonoFrame& f, int x, int y, int value) {
-    SevenSegment(f, x, y, kDigitSegments[Clamp(value, 0, 9)]);
+void Digit(MonoFrame& f, int x, int y, int value, bool ink = true) {
+    SevenSegment(f, x, y, kDigitSegments[Clamp(value, 0, 9)], kDigitW, ink);
 }
 
 // Left box: HH:MM, quiet-hours moon, Wi-Fi.
@@ -722,6 +723,157 @@ void StatusRight(MonoFrame& f, const StatusBar& s) {
 void StatusBand(MonoFrame& f, const StatusBar& status) {
     StatusLeft(f, status);
     StatusRight(f, status);
+}
+
+// ---- Parent menu (V3-06) ---------------------------------------------------------
+// One row per ParentItem under a header (gear = settings, house = a long
+// press goes home). Still no text: an icon names each row, times are
+// seven-segment HH:MM, volumes ten rising bars, switches a pill with a knob.
+// The highlighted row has a thick frame; the row being edited turns black
+// with white content and up/down arrows (the dial changes the value).
+
+constexpr int kParentRowTop = 72, kParentRowH = 50, kParentValueX = 150;
+
+// HH:MM from minutes after midnight, digits 30 px tall around row centre cy.
+void ClockDigits(MonoFrame& f, int x, int cy, uint16_t minute, bool ink) {
+    const int y = cy - kDigitH / 2, hour = (minute / 60) % 24, mins = minute % 60;
+    Digit(f, x, y, hour / 10, ink);
+    Digit(f, x + 23, y, hour % 10, ink);
+    FillRect(f, x + 46, y + 7, kSegT, kSegT, ink);
+    FillRect(f, x + 46, y + 18, kSegT, kSegT, ink);
+    Digit(f, x + 57, y, mins / 10, ink);
+    Digit(f, x + 80, y, mins % 10, ink);
+}
+
+// Ten bars rising left to right; filled up to pct (steps of 10 %).
+void VolumeBars(MonoFrame& f, int x, int cy, uint8_t pct, bool ink) {
+    const int filled = Clamp(pct / 10, 0, 10);
+    for (int i = 0; i < 10; ++i) {
+        const int h = 8 + i * 3, bx = x + i * 30, by = cy + 16 - h;
+        if (i < filled) {
+            FillRect(f, bx, by, 20, h, ink);
+        } else {  // empty bar: outline only
+            FillRect(f, bx, by, 20, 3, ink);
+            FillRect(f, bx, by + h - 3, 20, 3, ink);
+            FillRect(f, bx, by, 3, h, ink);
+            FillRect(f, bx + 17, by, 3, h, ink);
+        }
+    }
+}
+
+void Switch(MonoFrame& f, int x, int cy, bool on, bool ink) {
+    if (on) {
+        FillRoundRect(f, x, cy - 18, 96, 36, 18, ink);
+        Disk(f, x + 78, cy, 12, !ink);
+    } else {
+        RoundRectRing(f, x, cy - 18, 96, 36, 18, 4, ink);
+        Disk(f, x + 18, cy, 10, ink);
+    }
+}
+
+void Speaker(MonoFrame& f, int cx, int cy, bool ink) {
+    FillRect(f, cx - 20, cy - 7, 10, 14, ink);
+    FillTriangle(f, cx - 10, cy - 7, cx + 2, cy - 16, cx + 2, cy + 16, ink);
+    FillTriangle(f, cx - 10, cy - 7, cx - 10, cy + 7, cx + 2, cy + 16, ink);
+}
+
+// Sun ray at `deg` degrees (clockwise from +x), from radius r0 to r1.
+void Ray(MonoFrame& f, int cx, int cy, int deg, int r0, int r1, bool ink) {
+    const double a = deg * kPi / 180.0, c = std::cos(a), s = std::sin(a);
+    Stroke(f, cx + static_cast<int>(std::lround(r0 * c)), cy + static_cast<int>(std::lround(r0 * s)),
+           cx + static_cast<int>(std::lround(r1 * c)), cy + static_cast<int>(std::lround(r1 * s)), 4,
+           ink);
+}
+
+void Moon(MonoFrame& f, int cx, int cy, int r, bool ink) {
+    Disk(f, cx, cy, r, ink);
+    Disk(f, cx + r / 2, cy - r / 2, r * 6 / 7, !ink);
+}
+
+void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
+    switch (item) {
+        case ParentItem::Wake:  // sun
+            Disk(f, cx, cy, 11, ink);
+            for (int a = 0; a < 360; a += 45) Ray(f, cx, cy, a, 15, 21, ink);
+            break;
+        case ParentItem::Evening:  // sun going down behind the horizon
+            Disk(f, cx, cy + 8, 13, ink);
+            FillRect(f, cx - 22, cy + 9, 44, 14, !ink);
+            Stroke(f, cx - 24, cy + 12, cx + 24, cy + 12, 4, ink);
+            for (int a : {210, 250, 290, 330}) Ray(f, cx, cy + 8, a, 17, 23, ink);
+            break;
+        case ParentItem::QuietStart:  // moon, arrow down: quiet hours begin
+        case ParentItem::QuietEnd: {  // moon, arrow up: quiet hours end
+            Moon(f, cx - 8, cy, 15, ink);
+            const bool down = item == ParentItem::QuietStart;
+            const int tip = down ? cy + 18 : cy - 18, tail = down ? cy - 14 : cy + 14;
+            Stroke(f, cx + 20, tail, cx + 20, tip - (down ? 6 : -6), 4, ink);
+            FillTriangle(f, cx + 12, tip + (down ? -8 : 8), cx + 28, tip + (down ? -8 : 8), cx + 20,
+                         tip, ink);
+            break;
+        }
+        case ParentItem::Nap:  // Zz
+            LetterZ(f, cx - 20, cy - 2, 16, 4, ink);
+            LetterZ(f, cx + 4, cy - 18, 11, 3, ink);
+            break;
+        case ParentItem::Volume:
+            Speaker(f, cx - 4, cy, ink);
+            Arc(f, cx, cy, 10, 10, -50, 50, 3, ink);
+            Arc(f, cx, cy, 18, 18, -50, 50, 3, ink);
+            break;
+        case ParentItem::QuietVolume:
+            Speaker(f, cx - 4, cy, ink);
+            Moon(f, cx + 16, cy - 8, 9, ink);
+            break;
+        case ParentItem::Motion:  // the board, wobbling
+            RoundRectRing(f, cx - 11, cy - 17, 22, 34, 5, 4, ink);
+            Arc(f, cx, cy, 24, 18, 150, 210, 3, ink);
+            Arc(f, cx, cy, 24, 18, -30, 30, 3, ink);
+            break;
+    }
+}
+
+void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
+    const auto item = static_cast<ParentItem>(row);
+    const int top = kParentRowTop + row * kParentRowH, cy = top + kParentRowH / 2;
+    const bool selected = row == view.cursor, editing = selected && view.editing;
+    if (editing) FillRoundRect(f, 12, top + 2, 776, kParentRowH - 4, 14);
+    else if (selected) RoundRectRing(f, 12, top + 2, 776, kParentRowH - 4, 14, 5);
+    else if (row + 1 < kParentItemCount) FillRect(f, 40, top + kParentRowH - 1, 720, 1);
+    const bool ink = !editing;
+    ParentIcon(f, item, 72, cy, ink);
+    const auto& s = view.settings;
+    switch (item) {
+        case ParentItem::Wake: ClockDigits(f, kParentValueX, cy, s.schedule.wake_min, ink); break;
+        case ParentItem::Evening: ClockDigits(f, kParentValueX, cy, s.schedule.evening_min, ink); break;
+        case ParentItem::QuietStart:
+            ClockDigits(f, kParentValueX, cy, s.schedule.quiet_start_min, ink);
+            break;
+        case ParentItem::QuietEnd:
+            ClockDigits(f, kParentValueX, cy, s.schedule.quiet_end_min, ink);
+            break;
+        case ParentItem::Nap: Switch(f, kParentValueX, cy, s.schedule.nap_enabled, ink); break;
+        case ParentItem::Volume: VolumeBars(f, kParentValueX, cy, s.volume_cap_pct, ink); break;
+        case ParentItem::QuietVolume: VolumeBars(f, kParentValueX, cy, s.quiet_volume_pct, ink); break;
+        case ParentItem::Motion: Switch(f, kParentValueX, cy, s.motion_enabled, ink); break;
+    }
+    if (editing) {  // the dial changes this value
+        FillTriangle(f, 740, cy - 4, 760, cy - 4, 750, cy - 18, false);
+        FillTriangle(f, 740, cy + 4, 760, cy + 4, 750, cy + 18, false);
+    }
+}
+
+void ParentScene(MonoFrame& f, const ParentView& view) {
+    // Gear: settings.
+    Disk(f, 44, 32, 17);
+    for (int a = 0; a < 360; a += 45) Ray(f, 44, 32, a, 16, 22, true);
+    Disk(f, 44, 32, 7, false);
+    // House: a long dial press goes home.
+    FillTriangle(f, 726, 32, 752, 8, 778, 32);
+    FillRect(f, 734, 32, 36, 24);
+    FillRect(f, 747, 40, 10, 16, false);
+    FillRect(f, 12, 62, 776, 3);
+    for (uint8_t row = 0; row < kParentItemCount; ++row) ParentRow(f, view, row);
 }
 
 // ---- Scenes --------------------------------------------------------------------
@@ -840,6 +992,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
         ReaderScene(output, model);
     } else if (model.kind == SceneKind::Sleep) {
         SleepScene(output, model.pose);
+    } else if (model.kind == SceneKind::Parent) {
+        ParentScene(output, model.parent);
     } else {
         HomeScene(output, model);
     }

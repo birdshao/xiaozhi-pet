@@ -84,6 +84,9 @@ CXX="${CXX:-g++}"
   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
   "$ROOT/tests/cpp/test_pet_atomic_ledger.cc" \
   -o "$BUILD/test_pet_atomic_ledger"
 "$BUILD/test_pet_atomic_ledger"
@@ -205,6 +208,9 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
   "$ROOT/tests/cpp/test_pet_memory.cc" \
   -o "$BUILD/test_pet_memory"
 "$BUILD/test_pet_memory"
@@ -225,3 +231,18 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_voice_face.cc" \
   -o "$BUILD/test_voice_face"
 "$BUILD/test_voice_face"
+
+# V3-06 parent menu: settings validation and codec, volume cap, dial-driven
+# menu (edit/save/long-press/30 s exit), ledger v3 with v2 migration.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_menu.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_parent_settings.cc" \
+  -o "$BUILD/test_parent_settings"
+"$BUILD/test_parent_settings"

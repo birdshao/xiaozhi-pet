@@ -156,6 +156,31 @@ int main() {
         assert(defaults.NeedsCleanup() && defaults.Plan(home_feed) == RefreshMode::Partial);
     }
 
+    // V3-06 parent menu: entering is full, row changes are partial and use
+    // the pet budget; leaving to Home is full again.
+    {
+        RefreshPlanner planner(2, 3);
+        SceneModel menu{SceneKind::Parent};
+        assert(planner.Plan(menu) == RefreshMode::Full);
+        planner.Completed(menu, RefreshMode::Full, true);
+        SceneModel moved = menu;
+        moved.parent.cursor = 1;
+        assert(planner.Plan(moved) == RefreshMode::Partial);
+        planner.Completed(moved, RefreshMode::Partial, true);
+        assert(planner.PetPartials() == 1);
+        SceneModel edited = moved;
+        edited.parent.editing = true;
+        planner.Completed(edited, RefreshMode::Partial, true);
+        assert(planner.PetPartials() == 2 && planner.NeedsCleanup());
+        SceneModel saved = edited;
+        saved.parent.settings.volume_cap_pct = 90;
+        planner.Completed(saved, RefreshMode::Partial, true);
+        SceneModel again = saved;
+        again.parent.cursor = 2;
+        assert(planner.Plan(again) == RefreshMode::Full);  // hard budget
+        assert(planner.Plan(SceneModel{}) == RefreshMode::Full);
+    }
+
     // When another owner (XiaoZhi LVGL) drew in between, start over.
     {
         RefreshPlanner planner;

@@ -7,7 +7,8 @@ bool RefreshPlanner::TouchesRail(const SceneModel& a, const SceneModel& b) {
 }
 
 bool RefreshPlanner::TouchesPet(const SceneModel& a, const SceneModel& b) {
-    return a.emotion != b.emotion || a.pose != b.pose || a.book_page != b.book_page;
+    return a.emotion != b.emotion || a.pose != b.pose || a.book_page != b.book_page ||
+           a.parent != b.parent;  // parent menu rows share the pet budget
 }
 
 bool RefreshPlanner::TouchesStatus(const SceneModel& a, const SceneModel& b) {

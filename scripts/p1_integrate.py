@@ -193,7 +193,18 @@ def patch_display_cc(text: str) -> str:
 BOARD_WORKER = r'''
     // Opt-in child pet runtime for experimental firmware only. Stock OTA0
     // remains pristine; this code is overlaid only in a disposable checkout.
-    kid_app::FreertosPetSceneMailbox pet_mailbox_;
+    // V3-06: while the parent menu is open only its own frames reach the
+    // panel. Pet commits, voice faces and power pictures still update
+    // last_pet_scene_ and come back when the menu closes. Opening and
+    // closing flip the gate under scene_state_mutex_, like every publish.
+    struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox {
+        std::atomic<bool> parent_only{false};
+        bool Publish(const kid_app::SceneModel& scene) {
+            if (parent_only.load() && scene.kind != kid_app::SceneKind::Parent) return false;
+            return kid_app::FreertosPetSceneMailbox::Publish(scene);
+        }
+    };
+    GatedSceneMailbox pet_mailbox_;
     kid_app::FreertosPetService pet_service_;
     // 500 ms pacing: full refreshes are only triggered by scene changes or
     // the planner's ghosting limit; highlights use partial refreshes.
@@ -215,6 +226,7 @@ BOARD_WORKER = r'''
     SemaphoreHandle_t anim_mutex_ = nullptr;
 
     void RequestAnimation(kid_app::Animation animation, const kid_app::SceneModel& target) {
+        if (ParentMenuOpen()) return;  // V3-06: nothing plays over the parent menu
         SceneStateLock lock(anim_mutex_);
         anim_director_.Request(animation, target, NowMs());
     }
@@ -255,6 +267,15 @@ BOARD_WORKER = r'''
         if (!self || !self->pet_mode_.load() || self->sleep_active_.load() ||
             Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
             return false;
+        // V3-06: the parent volume cap (and the quiet-hours ceiling) limits
+        // narration in software; XiaoZhi's codec volume is never changed.
+        const uint8_t pct = self->StoryVolumePct();
+        if (pct < 100) {
+            if (count > self->story_scaled_.size()) return false;
+            for (size_t i = 0; i < count; ++i) self->story_scaled_[i] = pcm[i];
+            kid_app::ScalePcm(self->story_scaled_.data(), count, pct);
+            pcm = self->story_scaled_.data();
+        }
         return Application::GetInstance().GetAudioService().TryQueueLocalStoryPcm(
             token, pcm, count);
     }
@@ -591,6 +612,12 @@ BOARD_WORKER = r'''
         // A child using the dial is activity; do not auto-power-off.
         if (power_save_timer_) power_save_timer_->WakeUp();
         if (event.kind == kid_app::InputKind::SleepRequest) sleep_requests_.fetch_add(1);
+        // V3-06: the open parent menu takes every input: no pet action, no
+        // sleep flow (PowerManager counts the menu as busy).
+        if (parent_menu_.IsOpen()) {
+            HandleParentAction(parent_menu_.OnInput(event.kind, NowMs()), "long");
+            return;
+        }
         // V3-03/V3-04: input is activity; the first dial touch in a nap or
         // in the morning window only wakes TuanTuan (restores the picture).
         if (pet_mode_.load() && HandlePowerEvent(power_.OnActivity(NowMs())) &&
@@ -601,10 +628,11 @@ BOARD_WORKER = r'''
             HandleSleepAction(sleep_flow_.OnInput(event.kind, NowMs()));
             return;
         }
-        // V1-05 only: until the parent menu exists, the parent combo in Pet
-        // mode runs the RTC-alarm power-on test.
+        // V3-06: the parent combo in Pet mode opens the parent menu. (The
+        // V1-05 RTC power-on test it used to run is covered by self-test
+        // "alarm" steps before a sleep power-off.)
         if (event.kind == kid_app::InputKind::ParentCombo && pet_mode_.load()) {
-            ArmRtcWakeTest();
+            OpenParentMenu();
             return;
         }
         if (event.kind == kid_app::InputKind::SleepRequest && pet_mode_.load()) {
@@ -800,6 +828,7 @@ BOARD_WORKER = r'''
             input_hub_.Tick(NowMs());
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
+            UpdateParentMenu();
             UpdatePower(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
@@ -816,7 +845,7 @@ BOARD_WORKER = r'''
             // reader or while going to sleep).
             prompt_scheduler_.SetEnabled(
                 pet_mode_.load() && !sleep_flow_.Active() && state == kDeviceStateIdle &&
-                kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()));
+                !ParentMenuOpen() && kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()));
             kid_app::PromptRequest prompt{};
             if (prompt_scheduler_.Tick(NowMs(), &prompt)) PostPrompt(prompt);
         }
@@ -828,7 +857,8 @@ BOARD_WORKER = r'''
     kid_app::PromptScheduler prompt_scheduler_;
     QueueHandle_t prompt_queue_ = nullptr;
     // Software prompt volume (%); only the self-test "volume" step lowers
-    // it, for this boot only. The XiaoZhi codec volume/NVS stay untouched.
+    // it, for this boot only; PromptVolumePct() applies the parent cap. The
+    // XiaoZhi codec volume/NVS stay untouched.
     std::atomic<uint8_t> prompt_volume_pct_{100};
     static constexpr uint8_t kPromptStop = 0xFF;
 
@@ -1061,9 +1091,10 @@ BOARD_WORKER = r'''
         if (power_poke_.exchange(false)) HandlePowerEvent(power_.OnActivity(now));
         kid_app::PowerConditions conditions;
         // A voice face still on the panel (its dwell, or a self-test
-        // "voice" step) counts as a voice session too.
+        // "voice" step) counts as a voice session too; so does a parent at
+        // the menu (it closes itself after 30 s).
         conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active() ||
-                          voice_face_.load() != 0;
+                          voice_face_.load() != 0 || ParentMenuOpen();
         conditions.may_power_off = on_battery_.load() && !selftest_seen_.load();
         const int phase = day_phase_.load();
         conditions.phase_known = phase >= 0;
@@ -1189,8 +1220,8 @@ BOARD_WORKER = r'''
 
     // ---- V1 round 3: measurement loop (diagnostic firmware only) ----
     // Writes are limited to: QMI8658 sensor configuration (volatile), the
-    // PCF85063 time from a plausible server clock, and the alarm used by the
-    // explicit parent-combo power-on test. Nothing is stored or uploaded.
+    // PCF85063 time from a plausible server clock, and the wake-up alarm armed
+    // at a sleep power-off. Nothing is stored or uploaded.
     uint8_t imu_address_ = 0;
 
     // ---- V4-02 gestures and V3 rhythm ----
@@ -1198,11 +1229,9 @@ BOARD_WORKER = r'''
     // step injects into the same HandleGesture() path.
     kid_app::GestureDetector gesture_detector_;  // pet_boot_diag task only
     std::atomic<bool> face_down_{false};
-    // Default day plan until the parent menu (V3-06) can change it.
-    kid_app::RhythmScheduler rhythm_;
+    // The day plan comes from the parent settings (V3-06, see Rhythm()).
     std::atomic<int> day_phase_{-1};  // kid_app::DayPhase, -1 = RTC not set
     std::atomic<bool> quiet_hours_{false};
-    static constexpr uint8_t kQuietPromptPct = 30;
 
     static const char* GestureName(kid_app::Gesture gesture) {
         switch (gesture) {
@@ -1242,7 +1271,9 @@ BOARD_WORKER = r'''
         if (gesture == kid_app::Gesture::None) return;
         if (gesture == kid_app::Gesture::FaceDown) face_down_.store(true);
         bool acted = false;
-        if (pet_mode_.load() && !sleep_active_.load() &&
+        // V3-06: parents can switch motion off; the parent menu ignores it.
+        const bool motion_off = !motion_enabled_.load();
+        if (pet_mode_.load() && !sleep_active_.load() && !motion_off && !ParentMenuOpen() &&
             Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
             if (power_save_timer_) power_save_timer_->WakeUp();
             power_poke_.store(true);
@@ -1266,8 +1297,8 @@ BOARD_WORKER = r'''
                     break;
             }
         }
-        ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=%d", GestureName(gesture), source,
-                 acted ? 1 : 0);
+        ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=%d%s", GestureName(gesture), source,
+                 acted ? 1 : 0, motion_off ? " motion_off=1" : "");
     }
 
     // Day phase and quiet hours from the PCF85063 wall clock (offline).
@@ -1275,8 +1306,9 @@ BOARD_WORKER = r'''
         kid_app::CivilTime rtc{};
         bool stopped = true;
         const bool ok = RtcRead(&rtc, &stopped) && !stopped && kid_app::PlausibleWallClock(rtc);
-        const int phase = ok ? static_cast<int>(rhythm_.PhaseAt(rtc)) : -1;
-        const bool quiet = ok && rhythm_.QuietAt(rtc);
+        const auto rhythm = Rhythm();
+        const int phase = ok ? static_cast<int>(rhythm.PhaseAt(rtc)) : -1;
+        const bool quiet = ok && rhythm.QuietAt(rtc);
         const bool phase_changed = day_phase_.exchange(phase) != phase;
         const bool quiet_changed = quiet_hours_.exchange(quiet) != quiet;
         if (phase_changed || quiet_changed)
@@ -1289,16 +1321,22 @@ BOARD_WORKER = r'''
         kid_app::CivilTime rtc{};
         bool stopped = true;
         if (!RtcRead(&rtc, &stopped) || stopped || !kid_app::PlausibleWallClock(rtc)) return 0;
-        const uint32_t seconds = rhythm_.SecondsUntilWake(rtc);
-        const auto at = rhythm_.NextWake(rtc);
+        const auto rhythm = Rhythm();
+        const uint32_t seconds = rhythm.SecondsUntilWake(rtc);
+        const auto at = rhythm.NextWake(rtc);
         ESP_LOGI(TAG, "PET_RHYTHM_NEXT_WAKE in_s=%u at=%02u:%02u", static_cast<unsigned>(seconds),
                  at.hour, at.minute);
         return seconds;
     }
 
+    // Prompt clip volume: the self-test "volume" step, capped by the parent
+    // volume and, in quiet hours, by the parent's quiet ceiling (V3-06).
     uint8_t PromptVolumePct() const {
-        const uint8_t pct = prompt_volume_pct_.load();
-        return quiet_hours_.load() ? static_cast<uint8_t>(pct * kQuietPromptPct / 100) : pct;
+        return kid_app::LimitVolumePct(ParentSettingsNow(), prompt_volume_pct_.load(),
+                                       quiet_hours_.load());
+    }
+    uint8_t StoryVolumePct() const {
+        return kid_app::LimitVolumePct(ParentSettingsNow(), 100, quiet_hours_.load());
     }
     std::atomic<uint32_t> pwr_edges_{0};
     std::atomic<uint32_t> sleep_requests_{0};
@@ -1412,16 +1450,6 @@ BOARD_WORKER = r'''
         return true;
     }
 
-    void ArmRtcWakeTest() {
-        if (!ArmRtcAlarmIn(90)) {
-            ESP_LOGW(TAG, "PET_DIAG_ALARM_TEST refused");
-            return;
-        }
-        ESP_LOGI(TAG, "PET_DIAG_ALARM_TEST powering_off_in_ms=1500");
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        if (pmic_) pmic_->PowerOff();
-    }
-
     bool ConfigureImu() {
         if (!imu_address_) return false;
         // CTRL1 little-endian + auto-increment; CTRL2 +/-4 g, 62.5 Hz;
@@ -1524,6 +1552,148 @@ BOARD_WORKER = r'''
         // full refreshes pick up new readings without delaying the next one.
         status_schedule_.Drawn(NowMs());
         ESP_LOGI(TAG, "PET_STATUS_REFRESH ok=%d", okay ? 1 : 0);
+    }
+
+    // ---- V3-06 parent menu (PRD 4, 6, 10) ----
+    // BOOT + dial press held 5 s in Pet mode. pet_input owns parent_menu_.
+    // The settings are read by pet_boot_diag (day plan, motion), pet_prompt
+    // and the story worker (volume) and pet_input / pet_selftest (next wake
+    // alarm), so readers copy them under parent_mutex_. Saved to NVS key
+    // kid_parent/settings (ParentSettingsCodec, as in ledger v3); XiaoZhi's
+    // own NVS settings are never touched. Opening, moving and leaving the
+    // menu are not pet interactions (nothing reaches pet_service_).
+    kid_app::ParentMenu parent_menu_;              // pet_input task only
+    kid_app::NvsParentSettingsStore parent_store_;
+    kid_app::ParentSettings parent_settings_;      // guarded by parent_mutex_
+    mutable std::mutex parent_mutex_;
+    std::atomic<bool> parent_ready_{false};        // loaded (or defaults)
+    std::atomic<bool> motion_enabled_{true};
+    std::atomic<bool> rhythm_refresh_{false};      // pet_boot_diag re-runs UpdateRhythm
+    std::array<int16_t, 480> story_scaled_{};      // story worker only (StoryAudioPush)
+
+    bool ParentMenuOpen() const { return pet_mailbox_.parent_only.load(); }
+
+    kid_app::ParentSettings ParentSettingsNow() const {
+        std::lock_guard<std::mutex> lock(parent_mutex_);
+        return parent_settings_;
+    }
+    // Invalid plans fall back to the default day (RhythmScheduler).
+    kid_app::RhythmScheduler Rhythm() const {
+        return kid_app::RhythmScheduler(ParentSettingsNow().schedule);
+    }
+
+    void ApplyParentSettings(const kid_app::ParentSettings& settings, const char* source) {
+        {
+            std::lock_guard<std::mutex> lock(parent_mutex_);
+            parent_settings_ = settings;
+        }
+        motion_enabled_.store(settings.motion_enabled);
+        rhythm_refresh_.store(true);
+        const auto& d = settings.schedule;
+        ESP_LOGI(TAG, "PET_PARENT_SETTINGS src=%s wake=%02u:%02u evening=%02u:%02u "
+                 "quiet=%02u:%02u-%02u:%02u nap=%d cap=%u quiet_cap=%u motion=%d", source,
+                 d.wake_min / 60, d.wake_min % 60, d.evening_min / 60, d.evening_min % 60,
+                 d.quiet_start_min / 60, d.quiet_start_min % 60, d.quiet_end_min / 60,
+                 d.quiet_end_min % 60, d.nap_enabled ? 1 : 0, settings.volume_cap_pct,
+                 settings.quiet_volume_pct, settings.motion_enabled ? 1 : 0);
+    }
+
+    // pet_boot_diag, once, before the self-test task (and so the morning
+    // flow) starts. Missing or corrupt: the defaults; NVS is left as it is.
+    void LoadParentSettings() {
+        kid_app::ParentSettings loaded;
+        const auto result = parent_store_.Load(&loaded);
+        ESP_LOGI(TAG, "PET_PARENT_LOAD result=%s", kid_app::ParentLoadResultName(result));
+        ApplyParentSettings(result == kid_app::NvsParentSettingsStore::LoadResult::Loaded
+                                ? loaded : kid_app::ParentSettings{}, "nvs");
+        parent_ready_.store(true);
+    }
+
+    // Caller holds scene_state_mutex_.
+    void PublishParentSceneLocked() {
+        kid_app::SceneModel scene{};
+        scene.kind = kid_app::SceneKind::Parent;
+        scene.parent = parent_menu_.View();
+        pet_mailbox_.Publish(scene);
+    }
+
+    void OpenParentMenu() {
+        const auto state = Application::GetInstance().GetDeviceState();
+        if (!parent_ready_.load() || sleep_active_.load() || state != kDeviceStateIdle) {
+            ESP_LOGW(TAG, "PET_PARENT_REFUSED ready=%d state=%d", parent_ready_.load() ? 1 : 0,
+                     static_cast<int>(state));
+            return;
+        }
+        prompt_scheduler_.Cancel();
+        StopPrompt();
+        if (story_pcm_.Ready()) story_pcm_.Stop();
+        Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+        parent_menu_.Open(ParentSettingsNow(), NowMs());
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            pet_mailbox_.parent_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishParentSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_PARENT_OPEN");
+    }
+
+    // Back to the pet's own (durable) picture, as it is now.
+    void CloseParentMenu(const char* reason) {
+        parent_menu_.Close();
+        input_hub_.SetAutoRepeat(false);
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            pet_mailbox_.parent_only.store(false);
+            if (pet_mode_.load() && !sleep_active_.load())
+                pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
+        }
+        ESP_LOGI(TAG, "PET_PARENT_EXIT parent_exit=%s", reason);
+    }
+
+    void HandleParentAction(kid_app::ParentMenuAction action, const char* exit_reason) {
+        const char* item = kid_app::ParentItemName(parent_menu_.Selected());
+        switch (action) {
+            case kid_app::ParentMenuAction::None:
+                return;
+            case kid_app::ParentMenuAction::Exit:
+                CloseParentMenu(exit_reason);
+                return;
+            case kid_app::ParentMenuAction::Redraw:
+                break;
+            case kid_app::ParentMenuAction::Saved: {
+                const auto next = parent_menu_.Settings();
+                if (!parent_store_.Save(next)) {
+                    // Keep running with what NVS holds; show it again.
+                    parent_menu_.Revert(ParentSettingsNow());
+                    ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=%s", item);
+                    break;
+                }
+                ApplyParentSettings(next, "menu");
+                ESP_LOGI(TAG, "PET_PARENT_SAVED item=%s", item);
+                break;
+            }
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            PublishParentSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_PARENT_ITEM item=%s editing=%d", item, parent_menu_.Editing() ? 1 : 0);
+    }
+
+    // pet_input, every loop: 30 s idle exit, Pet mode left, and dial
+    // auto-repeat while a value is being edited.
+    void UpdateParentMenu() {
+        if (!parent_menu_.IsOpen()) return;
+        if (!pet_mode_.load()) {
+            CloseParentMenu("pet_off");
+            return;
+        }
+        HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
+        input_hub_.SetAutoRepeat(parent_menu_.Editing());
     }
 
     // ---- Host-scripted self-test (unattended hardware trials) ----
@@ -1632,6 +1802,15 @@ BOARD_WORKER = r'''
                 case kid_app::SelfTestOp::Mark:
                     ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);
                     break;
+                case kid_app::SelfTestOp::Combo:
+                    // V3-06 parent entry: BOOT and dial press held together.
+                    PostKeyEdge(kid_app::InputKey::Boot, true);
+                    PostKeyEdge(kid_app::InputKey::DialPress, true);
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    PostKeyEdge(kid_app::InputKey::DialPress, false);
+                    PostKeyEdge(kid_app::InputKey::Boot, false);
+                    vTaskDelay(pdMS_TO_TICKS(step.gap_ms));
+                    break;
                 case kid_app::SelfTestOp::Hold:
                     // Same raw-edge queue as the physical buttons.
                     PostKeyEdge(step.key, true);
@@ -1671,7 +1850,8 @@ BOARD_WORKER = r'''
                 ESP_LOGI(TAG, "PET_DIAG_ACC n=%u mean_mg=%d,%d,%d mag_mg=%u..%u dev_mg=%u",
                          s.samples, s.mean_x_mg, s.mean_y_mg, s.mean_z_mg, s.min_mag_mg,
                          s.max_mag_mg, s.max_dev_mg);
-                const bool want = pet_mode_.load() && !sleep_active_.load();
+                const bool want = pet_mode_.load() && !sleep_active_.load() &&
+                                  motion_enabled_.load();  // V3-06 parent switch
                 if (want != gestures_on) {
                     gesture_detector_.SetEnabled(want);  // re-enable starts fresh
                     gestures_on = want;
@@ -1693,6 +1873,8 @@ BOARD_WORKER = r'''
                          pmic_ && pmic_->IsCharging() ? 1 : 0, woke_by_alarm_.load(),
                          rtc_synced_ ? 1 : 0, static_cast<unsigned>(epd_refreshes_.load()));
             }
+            // New parent day plan: phase and quiet hours now, not at the next heartbeat.
+            if (rhythm_refresh_.exchange(false)) UpdateRhythm();
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
@@ -1735,6 +1917,9 @@ def patch_board(text: str) -> str:
         '#include "kid_app/gesture_detector.h"\n'
         '#include "kid_app/rhythm_scheduler.h"\n'
         '#include "kid_app/power_manager.h"\n'
+        '#include "kid_app/parent_menu.h"\n'
+        '#include "kid_app/nvs_parent_settings_store.h"\n'
+        '#include <mutex>\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
@@ -1746,6 +1931,7 @@ def patch_board(text: str) -> str:
                 "board pet worker")
     text = once(text, "            app.ToggleChatState();",
         """            if (DialPressHeld()) return;  // BOOT + dial = parent combo
+            if (ParentMenuOpen()) return;  // V3-06: BOOT does nothing in the parent menu
             if (pet_mode_.load()) {
                 // V6-01: on the pet home screen BOOT talks to XiaoZhi (press
                 // to start, press again to stop); TuanTuan listens, thinks
@@ -1772,14 +1958,14 @@ def patch_board(text: str) -> str:
         // exits the reader; triple feeds only on the Pet home screen.
         // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
-            if (!pet_mode_.load() || DialPressHeld()) return;
+            if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Double);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
                 ESP_LOGW(TAG, "PET_INPUT_REJECTED");
         });
         boot_button_.OnMultipleClick([this]() {
-            if (!pet_mode_.load() || DialPressHeld()) return;
+            if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Triple);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
@@ -1816,6 +2002,7 @@ def patch_board(text: str) -> str:
                 ESP_LOGI(TAG, "PET_FIRMWARE_BOOT_MARKER phase=delay12s");
                 auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
                 self->RunHardwareDiag();
+                self->LoadParentSettings();  // V3-06, before any rhythm use
                 self->StartSelfTestTask();
                 self->RunDiagLoop();  // never returns
                 vTaskDelete(nullptr);
