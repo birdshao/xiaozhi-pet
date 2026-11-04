@@ -2,6 +2,7 @@
 
 #include "kid_app/battery_policy.h"
 #include "kid_app/gesture_detector.h"
+#include "kid_app/selftest_clock.h"
 #include "kid_app/voice_face.h"
 
 #include <cstring>
@@ -12,6 +13,8 @@ namespace {
 constexpr size_t kMaxLine = 80;
 constexpr size_t kMaxText = 4096;
 constexpr const char kHeader[] = "PETSELFTEST1";
+static_assert(SelfTestScript::kMinTimeScalePct == SelfTestClock::kMinPct,
+              "timescale bounds follow the clock");
 
 // Splits a line into at most four whitespace-separated words.
 size_t Words(char* line, char* words[4]) {
@@ -176,6 +179,17 @@ bool SelfTestScript::Parse(const char* text) {
                     return false;
                 if (charging) step.ms |= kBatteryCharging;
             }
+        } else if (std::strcmp(words[0], "timescale") == 0) {
+            if (n != 2 || !Number(words[1], &step.ms) || step.ms < kMinTimeScalePct ||
+                step.ms > 100)
+                return false;
+            step.op = SelfTestOp::TimeScale;
+        } else if (std::strcmp(words[0], "twait") == 0) {
+            if (n != 2 || !Number(words[1], &step.ms)) return false;
+            step.op = SelfTestOp::TimerWait;
+        } else if (std::strcmp(words[0], "waitidle") == 0) {
+            if (n != 2 || !Number(words[1], &step.ms) || step.ms < kIdleSettleMs) return false;
+            step.op = SelfTestOp::WaitIdle;
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
@@ -228,11 +242,12 @@ bool SelfTestScript::ParseSector(const uint8_t* sector, size_t size) {
 uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
-        // Alarm seconds, Volume percent, Gesture, Voice and Battery codes
-        // are not delays.
+        // Alarm seconds, Volume / TimeScale percent, Gesture, Voice and
+        // Battery codes are not delays; WaitIdle counts its timeout and
+        // TimerWait its real-time length (an upper bound at any scale).
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
             steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice ||
-            steps_[i].op == SelfTestOp::Battery)
+            steps_[i].op == SelfTestOp::Battery || steps_[i].op == SelfTestOp::TimeScale)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

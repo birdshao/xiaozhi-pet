@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.selftest_report import evaluate, expectations, read_log, sector_bytes
+from tools.selftest_report import (apply_timescale, evaluate, expectations, plan, read_log,
+                                   sector_bytes)
 
 SCENARIO = """PETSELFTEST1
 # expect home_select 0,1,2
@@ -176,6 +177,98 @@ class SelfTestReportTests(unittest.TestCase):
                             and int(words[1]) < 8)
                 if words[0] == "morning" or words[:2] == ["tap", "pwr"] or critical:
                     self.assertTrue(armed, f"{path.name}: {' '.join(words)} before an alarm step")
+
+    def test_committed_scenarios_use_known_ops_and_say_their_time_scale(self):
+        # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
+        known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
+                 "morning", "voice", "battery", "timescale", "twait", "waitidle", "end"}
+        root = Path(__file__).resolve().parents[1] / "tools/selftest"
+        scaled = []
+        for path in sorted(root.glob("*.pettest")):
+            text = path.read_text(encoding="ascii")
+            steps = [line.split() for line in text.splitlines()[1:]
+                     if line.strip() and not line.lstrip().startswith("#")]
+            self.assertLessEqual({w[0] for w in steps}, known, path.name)
+            self.assertLessEqual(len(steps) - 1, 64, path.name)  # kMaxSteps, "end" aside
+            # Every scenario starts as soon as XiaoZhi is ready, not after
+            # a fixed boot wait.
+            self.assertIn(["waitidle", "60000"], steps, path.name)
+            self.assertNotIn(["wait", "20000"], steps, path.name)
+            scales = [int(w[1]) for w in steps if w[0] == "timescale"]
+            if scales:
+                scaled.append(path.stem)
+                self.assertEqual(len(scales), 1, path.name)
+                self.assertEqual(expectations(text).get("timescale"), str(scales[0]), path.name)
+                self.assertTrue(10 <= scales[0] < 100, path.name)
+                # The real-speed path: same scenario, same expectations.
+                real = apply_timescale(text, 100)
+                self.assertIn("\ntimescale 100\n", real)
+                self.assertEqual(expectations(real)["timescale"], "100")
+                self.assertGreater(plan(real)["script_s"], plan(text)["script_s"], path.name)
+            else:
+                self.assertNotIn("twait", {w[0] for w in steps}, path.name)
+                self.assertEqual(apply_timescale(text, 100), text)
+            self.assertEqual(len(sector_bytes(apply_timescale(text, 100))), 4096, path.name)
+        self.assertEqual(sorted(scaled),
+                         ["v3_animations", "v3_battery", "v3_morning", "v3_parent_menu"])
+
+    def test_apply_timescale(self):
+        text = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\ntwait 8000\nend\n"
+        self.assertEqual(apply_timescale(text, None), text)
+        self.assertEqual(apply_timescale(text, 50),
+                         "PETSELFTEST1\n# expect timescale 50\ntimescale 50\ntwait 8000\nend\n")
+        for bad in (0, 9, 101):
+            with self.assertRaises(ValueError):
+                apply_timescale(text, bad)
+        real_time = "PETSELFTEST1\nwait 100\nend\n"
+        self.assertEqual(apply_timescale(real_time, 100), real_time)
+        with self.assertRaises(ValueError):
+            apply_timescale(real_time, 25)  # nothing in it would follow a scale
+
+    def test_timescale_expectation(self):
+        scenario = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\nend\n"
+        scaled = GOOD_LOG.replace(
+            "[ 12s]", "[ 12s] I (12010) b: PET_SELFTEST_TIMESCALE pct=25\n[ 12s]")
+        scaled = scaled.replace(
+            "[ 30s]", "[ 30s] I (30000) b: PET_SELFTEST_TIMESCALE pct=100 reason=end\n[ 30s]")
+        report = evaluate(scenario, scaled)
+        self.assertTrue(report["passed"], report["failed"])
+        self.assertEqual(report["observed"]["timescale"], [25])  # the end reset is no step
+        self.assertIn("timescale", evaluate(scenario, GOOD_LOG)["failed"])  # never applied
+        self.assertIn("timescale",
+                      evaluate(scenario, scaled.replace("pct=25", "pct=50"))["failed"])
+        # Real speed: no step, or only 100 %.
+        real = apply_timescale(scenario, 100)
+        self.assertTrue(evaluate(real, GOOD_LOG)["passed"])
+        self.assertTrue(evaluate(real, scaled.replace("pct=25", "pct=100"))["passed"])
+        self.assertIn("timescale", evaluate(real, scaled)["failed"])
+
+    def test_plan_estimates_monitor_time_and_end_marker(self):
+        done = plan("PETSELFTEST1\nwaitidle 60000\npet\nwait 5000\ntap up 2000\nend\n")
+        # 6 s ready estimate + 1 s toggle + 5 s + 2.08 s -> 15 s of script.
+        self.assertEqual(done["script_s"], 15)
+        self.assertFalse(done["power_off"])
+        self.assertEqual(done["until"], "PET_SELFTEST_DONE")
+        self.assertEqual(done["expect_s"], 13 + 15)
+        self.assertEqual(done["monitor_s"], 13 + 15 + 10)
+        # twait follows the scale; plain waits do not.
+        scaled = "PETSELFTEST1\ntimescale 25\ntwait 40000\nwait 4000\nend\n"
+        self.assertEqual(plan(scaled)["script_s"], 14)
+        self.assertEqual(plan(apply_timescale(scaled, 100))["script_s"], 44)
+        # Power-off scenarios end at the boot the alarm brings.
+        off = plan("PETSELFTEST1\nalarm 30\ntap pwr 30000\nend\n")
+        self.assertTrue(off["power_off"])
+        self.assertEqual(off["until"], "PET_SELFTEST_NONE reason=alarm_wake")
+        self.assertEqual(off["expect_s"], 13 + 11 + 30 + 15)
+        self.assertEqual(off["monitor_s"], 13 + 31 + 10 + 30 + 15)
+        # A morning with a dial touch after it stays awake; the last one sleeps.
+        stays = "PETSELFTEST1\nalarm 30\nmorning\nwait 5000\ntap down 1000\nend\n"
+        self.assertFalse(plan(stays)["power_off"])
+        sleeps = stays.replace("end\n", "morning\ntimescale 50\ntwait 60000\nend\n")
+        self.assertEqual(plan(sleeps)["until"], "PET_SELFTEST_NONE reason=alarm_wake")
+        critical = "PETSELFTEST1\nalarm 30\nbattery 5 0\nwait 1000\nend\n"
+        self.assertTrue(plan(critical)["power_off"])
+        self.assertFalse(plan(critical.replace("battery 5 0", "battery 5 1"))["power_off"])
 
 
 if __name__ == "__main__":

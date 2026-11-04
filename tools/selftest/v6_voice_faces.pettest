@@ -16,12 +16,14 @@ PETSELFTEST1
 # expect max_partial_ms 2500
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize restored pet state to "home, neutral".
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 mark begin
 voice listen
 wait 3000

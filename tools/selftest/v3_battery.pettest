@@ -4,7 +4,7 @@ PETSELFTEST1
 # 1) plugged in: TuanTuan eats electricity; 2) unplugged, then low: a yawn
 # with the "charge me" bubble; 3) critical (< 8 %): safe shutdown through
 # the sleep flow. A flat battery arms no wake alarm, so the "alarm" step
-# brings the board back 60 s after the power-off (self-test wake: no
+# brings the board back 30 s after the power-off (self-test wake: no
 # morning, the host restores the board).
 # Counted from "mark begin" (see tools/selftest_report.py).
 # expect min:event=plugged 1
@@ -25,28 +25,42 @@ PETSELFTEST1
 # expect none:PET_SLEEP_POWEROFF_RETURNED 0
 # expect none:skipped=pet_off 0
 # expect none:PET_SELFTEST_ABORT 0
+# expect timescale 25
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# TEST ONLY: battery sampling (2 s, so the debounce) and the reaction
+# timers at 25 %. "twait" scales with it; the animations, the status band
+# and the sleep flow stay real ("wait").
+# Real speed: timescale 100 (selftest_report.py --timescale 100).
+timescale 25
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize restored pet state to "home, neutral".
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 # Baseline: on battery, half full (the USB boot reads "charging").
 battery 60 0
-wait 8000
+twait 5000
+wait 3000
 mark begin
-# 1) Plugged in: eat electricity.
+# 1) Plugged in (2 agreeing samples): eat electricity (3 s hold).
 battery 60 1
-wait 12000
-# 2) Unplugged, then low: yawn and the "charge me" bubble.
+twait 5000
+wait 7000
+# 2) Unplugged, then low (3 agreeing samples): yawn and the "charge me"
+#    bubble (4 s hold).
 battery 60 0
-wait 8000
+twait 5000
+wait 3000
 battery 15 0
-wait 16000
+twait 7000
+wait 9000
 # 3) Critical: sleep flow, PMIC off; the alarm brings the board back.
-alarm 60
+alarm 30
 battery 5 0
-wait 90000
+twait 7000
+wait 25000
 end

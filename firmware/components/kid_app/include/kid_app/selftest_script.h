@@ -37,18 +37,31 @@ namespace kid_app {
 //                           level on battery (< 8 %) powers off, so it is
 //                           only accepted after an "alarm" step.
 //   battery off             back to the real PMIC readings
+//   timescale <percent>     TEST ONLY: feature timers (idle blink, cleanup,
+//                           power idle/nap, morning window, parent idle exit,
+//                           battery sampling/reactions) run at 10..100 % of
+//                           their real length until the script ends (RAM
+//                           only, see selftest_clock.h); 100 = real time
+//   twait <ms>              wait for one of those timers: <ms> as at real
+//                           time, scaled by "timescale" (refreshes, sounds
+//                           and animations around it go in plain "wait"s),
+//                           so one scenario runs at any scale
+//   waitidle <timeout_ms>   wait until XiaoZhi is idle (Wi-Fi up, activated)
+//                           for 1 s, at most timeout_ms; then go on anyway
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo
+    Combo, TimeScale, WaitIdle, TimerWait
 };
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;
     InputKey key = InputKey::DialPress;
-    uint32_t ms = 0;      // wait/hold/combo ms; seconds for Alarm; percent for Volume;
+    uint32_t ms = 0;      // wait/hold/combo ms; seconds for Alarm; percent for Volume
+                          // and TimeScale; timeout ms for WaitIdle; real-time
+                          // ms for TimerWait (scaled when it runs);
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff
@@ -64,6 +77,8 @@ public:
     static constexpr uint32_t kMaxMs = 600000;
     static constexpr uint32_t kBatteryCharging = 0x100;
     static constexpr uint32_t kBatteryOff = 0x200;
+    static constexpr uint32_t kMinTimeScalePct = 10;  // SelfTestClock::kMinPct
+    static constexpr uint32_t kIdleSettleMs = 1000;   // WaitIdle: idle this long
 
     // Text must be NUL-terminated. On failure no steps are kept.
     bool Parse(const char* text);

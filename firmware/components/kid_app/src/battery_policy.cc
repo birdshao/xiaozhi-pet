@@ -1,4 +1,5 @@
 #include "kid_app/battery_policy.h"
+#include "kid_app/selftest_clock.h"
 
 namespace kid_app {
 
@@ -88,7 +89,7 @@ BatteryEvent BatteryPolicy::Update(const BatteryReading& reading, uint32_t now_m
                 Schedule(BatteryReaction::Yawn, now_ms);
             }
         } else if (band_ == Band::Critical &&
-                   Reached(now_ms, critical_ms_ + kCriticalRetryMs)) {
+                   Reached(now_ms, critical_ms_ + SelfTestClock::Scaled(kCriticalRetryMs))) {
             critical_ms_ = now_ms;
             event = BatteryEvent::Critical;
         }
@@ -97,9 +98,11 @@ BatteryEvent BatteryPolicy::Update(const BatteryReading& reading, uint32_t now_m
     // Reactions follow the state; an event above may have made one due now.
     const BatteryState state = State();
     if (state == BatteryState::Charging) {
-        if (next_ != BatteryReaction::Eat) Schedule(BatteryReaction::Eat, now_ms + kEatEveryMs);
+        if (next_ != BatteryReaction::Eat)
+            Schedule(BatteryReaction::Eat, now_ms + SelfTestClock::Scaled(kEatEveryMs));
     } else if (state == BatteryState::Low) {
-        if (next_ != BatteryReaction::Yawn) Schedule(BatteryReaction::Yawn, now_ms + kYawnEveryMs);
+        if (next_ != BatteryReaction::Yawn)
+            Schedule(BatteryReaction::Yawn, now_ms + SelfTestClock::Scaled(kYawnEveryMs));
     } else {
         next_ = BatteryReaction::None;
     }
@@ -110,7 +113,8 @@ BatteryReaction BatteryPolicy::Reaction(uint32_t now_ms, bool allowed) {
     if (next_ == BatteryReaction::None || !allowed || !Reached(now_ms, due_ms_))
         return BatteryReaction::None;
     const BatteryReaction reaction = next_;
-    due_ms_ = now_ms + (reaction == BatteryReaction::Eat ? kEatEveryMs : kYawnEveryMs);
+    due_ms_ = now_ms + SelfTestClock::Scaled(reaction == BatteryReaction::Eat ? kEatEveryMs
+                                                                           : kYawnEveryMs);
     return reaction;
 }
 
