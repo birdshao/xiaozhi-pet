@@ -294,7 +294,9 @@ BOARD_WORKER = r'''
         }
     };
     GatedSceneMailbox pet_mailbox_;
-    kid_app::FreertosPetService pet_service_;
+    // The one owner of pet state, V5 memory and V3-06 parent settings: the
+    // atomic ledger (kid_pet_sync), see StartPetLedger().
+    kid_app::FreertosAtomicPetService pet_service_;
     // 500 ms pacing: full refreshes are only triggered by scene changes or
     // the planner's ghosting limit; highlights use partial refreshes.
     kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 500};
@@ -497,11 +499,11 @@ BOARD_WORKER = r'''
     }
 
     static void PetCommitted(const kid_app::PetEvent& event,
-                              kid_app::PumpResult outcome,
+                              kid_app::CommitResult outcome,
                               const kid_app::PetEffects& effects,
                               const kid_app::PetSnapshot& snapshot, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
-        if (!self || outcome != kid_app::PumpResult::Committed) return;
+        if (!self || outcome != kid_app::CommitResult::Committed) return;
         // Suspend the old page immediately when a new page/scene is
         // committed. The new page starts only after the slow EPD refresh.
         if (self->story_pcm_.Ready() &&
@@ -538,8 +540,67 @@ BOARD_WORKER = r'''
             self->PostPhrase(kid_app::PhraseContext::Feed);
         else if (event.action == kid_app::PetAction::Pickup)
             self->PostPhrase(kid_app::PhraseContext::Greeting);
-        ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s",
-                 (event.id & kid_app::kLocalEventBit) ? "local" : "external");
+        ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s fed=%u",
+                 (event.id & kid_app::kLocalEventBit) ? "local" : "external",
+                 static_cast<unsigned>(snapshot.interaction_count));
+    }
+
+    // ---- Atomic Pet ledger on the board ----
+    // Started once, by pet_boot_diag (the parent settings are needed before
+    // Pet mode: rhythm, alarm) or by the first Pet-mode toggle, whichever
+    // comes first. MigrateLegacyLocal: the one-time verified migration from
+    // the old kid_pet checkpoint and kid_parent/settings (both only read,
+    // kept as rollback copy), then no outbox (no server on this board yet).
+    // A refused start erases nothing; the next toggle tries again.
+    std::mutex pet_ledger_mutex_;
+    bool pet_ledger_ready_ = false;                // under pet_ledger_mutex_
+    kid_app::PetSnapshot pet_ledger_restored_{};   // under pet_ledger_mutex_
+    std::atomic<uint32_t> local_day_{0};           // RTC civil day, 0 = unknown
+
+    // Pet worker: the day for today's memory counters (V5-02).
+    static uint32_t LocalDay(void* context) {
+        return static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->local_day_.load();
+    }
+
+    bool StartPetLedger(kid_app::PetSnapshot* restored = nullptr) {
+        std::lock_guard<std::mutex> lock(pet_ledger_mutex_);
+        if (!pet_ledger_ready_) {
+            pet_service_.SetDayProvider(&LocalDay, this);
+            pet_ledger_ready_ = pet_service_.Start(
+                kid_app::FreertosAtomicPetService::StartMode::MigrateLegacyLocal,
+                "tuantuan-board", &PetCommitted, nullptr, this, &pet_ledger_restored_);
+            const auto migration = pet_service_.Migration();
+            const auto& s = pet_ledger_restored_;
+            const auto today = pet_service_.TodayNow();  // small copy: 4 KiB boot stack
+            ESP_LOGI(TAG, "PET_LEDGER_READY ok=%d migration=%s failure=%s flags=0x%02x "
+                     "gen=%llu fed=%u mode=%d mood=%d today=%u feeds=%u temperament=%u",
+                     pet_ledger_ready_ ? 1 : 0,
+                     kid_app::PetLedgerMigration::OutcomeName(migration.outcome),
+                     kid_app::PetLedgerMigration::FailureName(migration.failure),
+                     static_cast<unsigned>(migration.flags),
+                     static_cast<unsigned long long>(pet_service_.GenerationNow()),
+                     static_cast<unsigned>(s.interaction_count), static_cast<int>(s.mode),
+                     static_cast<int>(s.mood), static_cast<unsigned>(today.day),
+                     static_cast<unsigned>(today.feeds),
+                     static_cast<unsigned>(pet_service_.TemperamentNow()));
+            if (pet_ledger_ready_) {
+                // V3-06 settings now live in the ledger (schema v3).
+                ApplyParentSettings(pet_service_.ParentNow(), "ledger");
+                parent_ready_.store(true);
+            }
+        }
+        if (pet_ledger_ready_ && restored) *restored = pet_ledger_restored_;
+        return pet_ledger_ready_;
+    }
+
+    // V5: structured memory from trusted on-device rules only (a like from a
+    // dial choice question, a finished book or game); committed with the pet
+    // state in the ledger, day from the RTC. Never from voice. Any task.
+    bool RecordMemory(const kid_app::MemoryEvent& event) {
+        const bool posted = pet_service_.PostMemory(event);
+        if (!posted)
+            ESP_LOGW(TAG, "PET_MEMORY_REJECTED kind=%u", static_cast<unsigned>(event.kind));
+        return posted;
     }
 
     bool InitializePetRuntime() {
@@ -560,7 +621,7 @@ BOARD_WORKER = r'''
         }
         if (!pet_event_task_ready_) {
             kid_app::PetSnapshot restored{};
-            if (!pet_service_.Start(&PetCommitted, this, &restored)) return false;
+            if (!StartPetLedger(&restored)) return false;
             auto scene = kid_app::PetScenePresenter::Present(restored);
             scene.home_selection = home_selection_.load();
             last_pet_scene_.store(PackPetScene(scene));
@@ -880,9 +941,13 @@ BOARD_WORKER = r'''
         // Nothing armed (RTC not set, or a flat battery): PWR wakes the pet.
         if (!wake_s) wake_by = battery ? "none_battery" : "none";
         const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
-        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s battery=%d",
+        // ledger_gen: the last durable commit; the next boot's PET_LEDGER_READY
+        // must restore exactly this generation (self-test ledger_restored).
+        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s battery=%d "
+                 "ledger_gen=%llu",
                  pet_service_.Settled() ? 1 : 0, static_cast<unsigned>(wake_s), alarm ? 1 : 0,
-                 wake_by, battery ? 1 : 0);
+                 wake_by, battery ? 1 : 0,
+                 static_cast<unsigned long long>(pet_service_.GenerationNow()));
         vTaskDelay(pdMS_TO_TICKS(300));
         if (pmic_) pmic_->PowerOff();
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -1294,6 +1359,9 @@ BOARD_WORKER = r'''
             const auto context =
                 static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
             const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
+            // V5-01: the parent-set temperament from the ledger's memory
+            // (gentle until a parent sets one).
+            if (phrase) phrase_planner_.SetTemperament(pet_service_.TemperamentNow());
             const uint16_t phrase_id = phrase ? phrase_planner_.Next(context, NowMs()) : 0;
             if (phrase && !phrase_id) {
                 ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
@@ -1858,6 +1926,8 @@ BOARD_WORKER = r'''
         const auto rhythm = Rhythm();
         const int phase = ok ? static_cast<int>(rhythm.PhaseAt(rtc)) : -1;
         const bool quiet = ok && rhythm.QuietAt(rtc);
+        // V5-02: today's memory counters roll over on the local civil day.
+        local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc) / 86400) : 0);
         const bool phase_changed = day_phase_.exchange(phase) != phase;
         const bool quiet_changed = quiet_hours_.exchange(quiet) != quiet;
         if (phase_changed || quiet_changed)
@@ -2113,15 +2183,15 @@ BOARD_WORKER = r'''
     // BOOT + dial press held 5 s in Pet mode. pet_input owns parent_menu_.
     // The settings are read by pet_boot_diag (day plan, motion), pet_prompt
     // and the story worker (volume) and pet_input / pet_selftest (next wake
-    // alarm), so readers copy them under parent_mutex_. Saved to NVS key
-    // kid_parent/settings (ParentSettingsCodec, as in ledger v3); XiaoZhi's
+    // alarm), so readers copy them under parent_mutex_. Saved in the atomic
+    // ledger (schema v3, one commit, never a pet interaction); the old
+    // kid_parent/settings key is only read once by the migration. XiaoZhi's
     // own NVS settings are never touched. Opening, moving and leaving the
-    // menu are not pet interactions (nothing reaches pet_service_).
+    // menu post no pet action.
     kid_app::ParentMenu parent_menu_;              // pet_input task only
-    kid_app::NvsParentSettingsStore parent_store_;
     kid_app::ParentSettings parent_settings_;      // guarded by parent_mutex_
     mutable std::mutex parent_mutex_;
-    std::atomic<bool> parent_ready_{false};        // loaded (or defaults)
+    std::atomic<bool> parent_ready_{false};        // the ledger is running
     std::atomic<bool> motion_enabled_{true};
     std::atomic<bool> rhythm_refresh_{false};      // pet_boot_diag re-runs UpdateRhythm
     std::array<int16_t, 480> story_scaled_{};      // story worker only (StoryAudioPush)
@@ -2154,14 +2224,13 @@ BOARD_WORKER = r'''
     }
 
     // pet_boot_diag, once, before the self-test task (and so the morning
-    // flow) starts. Missing or corrupt: the defaults; NVS is left as it is.
+    // flow) starts: starts the ledger (migrating once), which applies the
+    // settings. Ledger refused: the defaults, the menu stays closed until a
+    // later Pet-mode toggle starts it; NVS is left as it is.
     void LoadParentSettings() {
-        kid_app::ParentSettings loaded;
-        const auto result = parent_store_.Load(&loaded);
-        ESP_LOGI(TAG, "PET_PARENT_LOAD result=%s", kid_app::ParentLoadResultName(result));
-        ApplyParentSettings(result == kid_app::NvsParentSettingsStore::LoadResult::Loaded
-                                ? loaded : kid_app::ParentSettings{}, "nvs");
-        parent_ready_.store(true);
+        const bool ready = StartPetLedger();
+        ESP_LOGI(TAG, "PET_PARENT_LOAD result=%s", ready ? "loaded" : "error");
+        if (!ready) ApplyParentSettings(kid_app::ParentSettings{}, "defaults");
     }
 
     // Caller holds scene_state_mutex_.
@@ -2221,10 +2290,14 @@ BOARD_WORKER = r'''
                 break;
             case kid_app::ParentMenuAction::Saved: {
                 const auto next = parent_menu_.Settings();
-                if (!parent_store_.Save(next)) {
-                    // Keep running with what NVS holds; show it again.
+                const auto saved = pet_service_.SaveParentSettings(next, pdMS_TO_TICKS(3000));
+                if (saved != kid_app::CommitResult::Committed) {
+                    // Keep running with what the ledger holds; show it again.
+                    const auto kept = pet_service_.ParentNow();
+                    if (kept != ParentSettingsNow()) ApplyParentSettings(kept, "ledger");
                     parent_menu_.Revert(ParentSettingsNow());
-                    ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=%s", item);
+                    ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=%s result=%d", item,
+                             static_cast<int>(saved));
                     break;
                 }
                 ApplyParentSettings(next, "menu");
@@ -2475,7 +2548,7 @@ BOARD_WORKER = r'''
 def patch_board(text: str) -> str:
     text = once(text, "#include <stdio.h>",
         '#include <stdio.h>\n#include <atomic>\n'
-        '#include "kid_app/freertos_pet_service.h"\n'
+        '#include "kid_app/freertos_atomic_pet_service.h"\n'
         '#include "kid_app/freertos_pet_scene_mailbox.h"\n'
         '#include "kid_app/freertos_pet_display_worker.h"\n'
         '#include "kid_app/pet_scene_presenter.h"\n'
@@ -2512,7 +2585,6 @@ def patch_board(text: str) -> str:
         '#include "kid_app/power_manager.h"\n'
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/parent_menu.h"\n'
-        '#include "kid_app/nvs_parent_settings_store.h"\n'
         '#include <mutex>\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'

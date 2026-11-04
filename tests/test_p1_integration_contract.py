@@ -48,7 +48,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = patch_board(original)
         self.assertIn('struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox', patched)
         self.assertIn('GatedSceneMailbox pet_mailbox_', patched)
-        self.assertIn('FreertosPetService pet_service_', patched)
+        self.assertIn('FreertosAtomicPetService pet_service_', patched)
         self.assertIn('FreertosPetDisplayWorker pet_display_worker_', patched)
         self.assertIn('ShowPetScene(scene)', patched)
         self.assertIn('PET_FIRMWARE_BOOT_MARKER phase=board_init', patched)
@@ -928,7 +928,7 @@ class DisplayOverlayTest(unittest.TestCase):
 
     def test_v3_parent_menu_wiring(self):
         patched = self._board()
-        for header in ('parent_menu.h', 'nvs_parent_settings_store.h'):
+        for header in ('parent_menu.h', 'freertos_atomic_pet_service.h'):
             self.assertIn(f'#include "kid_app/{header}"', patched)
         # The combo (after the sleep-flow guard) opens the menu; while it is
         # open it takes every input before power, sleep and pet handling.
@@ -937,13 +937,17 @@ class DisplayOverlayTest(unittest.TestCase):
         menu_at = handle.index('if (parent_menu_.IsOpen())')
         self.assertLess(menu_at, handle.index('power_.OnActivity(NowMs())'))
         self.assertLess(menu_at, handle.index('PetInputRouter::'))
-        # Entering, moving and leaving are never pet interactions.
+        # Entering, moving and leaving are never pet interactions; only a
+        # save reaches the ledger (SaveParentSettings, not a pet action).
         for fn in ('void OpenParentMenu()', 'void CloseParentMenu(', 'void HandleParentAction(',
                    'void UpdateParentMenu()', 'void ApplyParentSettings(',
                    'void LoadParentSettings()'):
             body = self._body(patched, fn)
             self.assertNotIn('PostLocal', body, fn)
-            self.assertNotIn('pet_service_', body, fn)
+            self.assertNotIn('PostMemory', body, fn)
+        for fn in ('void OpenParentMenu()', 'void CloseParentMenu(', 'void UpdateParentMenu()',
+                   'void ApplyParentSettings('):
+            self.assertNotIn('pet_service_', self._body(patched, fn), fn)
         opened = self._body(patched, 'void OpenParentMenu()')
         self.assertIn('state != kDeviceStateIdle', opened)
         self.assertIn('parent_ready_.load()', opened)
@@ -961,10 +965,13 @@ class DisplayOverlayTest(unittest.TestCase):
         gate = gate[:gate.index('GatedSceneMailbox pet_mailbox_')]
         self.assertIn('scene.kind != kid_app::SceneKind::Parent) return false;', gate)
         self.assertIn('if (ParentMenuOpen()) return;', self._body(patched, 'void RequestAnimation('))
-        # Saved settings go to NVS first, then apply; a failed write reverts.
+        # Saved settings are committed to the ledger first, then applied; a
+        # failed commit reverts to what the ledger holds.
         action = self._body(patched, 'void HandleParentAction(')
-        self.assertLess(action.index('parent_store_.Save(next)'),
+        self.assertLess(action.index('pet_service_.SaveParentSettings(next, '),
                         action.index('ApplyParentSettings(next, "menu")'))
+        self.assertIn('if (saved != kid_app::CommitResult::Committed) {', action)
+        self.assertIn('const auto kept = pet_service_.ParentNow();', action)
         self.assertIn('parent_menu_.Revert(ParentSettingsNow())', action)
         for marker in ('PET_PARENT_SAVED item=%s', 'PET_PARENT_SAVE_FAILED item=%s',
                        'PET_PARENT_ITEM item=%s'):
@@ -990,9 +997,12 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(boot.index('self->LoadParentSettings();'),
                         boot.index('self->StartSelfTestTask();'))
         load = self._body(patched, 'void LoadParentSettings()')
-        self.assertIn('parent_store_.Load(&loaded)', load)
-        self.assertIn('kid_app::ParentSettings{}', load)
-        self.assertIn('parent_ready_.store(true)', load)
+        self.assertIn('const bool ready = StartPetLedger();', load)
+        self.assertIn('if (!ready) ApplyParentSettings(kid_app::ParentSettings{}, "defaults");',
+                      load)
+        start = self._body(patched, 'bool StartPetLedger(')
+        self.assertLess(start.index('ApplyParentSettings(pet_service_.ParentNow(), "ledger")'),
+                        start.index('parent_ready_.store(true)'))
         # Day plan: every rhythm use goes through the parent settings.
         self.assertIn('kid_app::RhythmScheduler(ParentSettingsNow().schedule)', patched)
         self.assertIn('const auto rhythm = Rhythm();', self._body(patched, 'void UpdateRhythm()'))
@@ -1046,6 +1056,56 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('# expect commits 0', scenario)
         self.assertIn('# expect min:parent_exit=idle 1', scenario)
         self.assertIn('# expect min:motion_off=1 1', scenario)
+
+    def test_board_runs_the_atomic_ledger(self):
+        patched = self._board()
+        # One Pet owner: the atomic ledger; the legacy service and the V3-06
+        # board-only settings store are gone from the board.
+        self.assertIn('kid_app::FreertosAtomicPetService pet_service_;', patched)
+        self.assertNotIn('FreertosPetService pet_service_', patched)
+        self.assertNotIn('freertos_pet_service.h', patched)
+        self.assertNotIn('NvsParentSettingsStore', patched)
+        self.assertNotIn('parent_store_', patched)
+        start = self._body(patched, 'bool StartPetLedger(')
+        self.assertIn('std::lock_guard<std::mutex> lock(pet_ledger_mutex_)', start)
+        self.assertLess(start.index('pet_service_.SetDayProvider(&LocalDay, this)'),
+                        start.index('pet_service_.Start('))
+        self.assertIn('StartMode::MigrateLegacyLocal', start)
+        self.assertIn('&PetCommitted, nullptr, this', start)  # no outbound: local only
+        self.assertIn('PET_LEDGER_READY ok=%d migration=%s failure=%s', start)
+        # Pet mode and the boot both go through the same guarded start.
+        init = self._body(patched, 'bool InitializePetRuntime()')
+        self.assertIn('if (!StartPetLedger(&restored)) return false;', init)
+        boot = patched[patched.index('self->RunHardwareDiag();'):]
+        self.assertLess(boot.index('self->LoadParentSettings();'),
+                        boot.index('self->StartSelfTestTask();'))
+        # Commits keep their scene publishing and log marker.
+        committed = self._body(patched, 'static void PetCommitted(')
+        self.assertIn('outcome != kid_app::CommitResult::Committed) return;', committed)
+        self.assertIn('self->pet_mailbox_.Publish(self->WithVoiceFace(scene))', committed)
+        self.assertIn('PET_EVENT_COMMITTED id_class=%s fed=%u', committed)
+        # Power-off waits for the ledger and logs the generation to restore.
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('pet_service_.Settled()'), off.index('pmic_->PowerOff()'))
+        self.assertIn('ledger_gen=%llu', off)
+        self.assertLess(off.index('pet_service_.GenerationNow()'), off.index('pmic_->PowerOff()'))
+        # V5: day for memory counters from the RTC, temperament for pet lines,
+        # memory events only through the ledger.
+        rhythm = self._body(patched, 'void UpdateRhythm()')
+        self.assertIn('local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc)'
+                      ' / 86400) : 0);', rhythm)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertLess(player.index('phrase_planner_.SetTemperament(pet_service_.TemperamentNow())'),
+                        player.index('phrase_planner_.Next(context, NowMs())'))
+        self.assertIn('pet_service_.PostMemory(event)',
+                      self._body(patched, 'bool RecordMemory('))
+        # Every child action still goes through PostLocal on that one service.
+        self.assertGreaterEqual(patched.count('pet_service_.PostLocal('), 5)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v7_ledger_persist.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('# expect ledger_restored 1', scenario)
+        self.assertLess(scenario.index('\nalarm '), scenario.index('\ntap pwr'))
 
 if __name__ == "__main__":
     unittest.main()
