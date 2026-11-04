@@ -82,6 +82,7 @@ CXX="${CXX:-g++}"
 # Single atomic NVS blob: pet action+outbound event AND remote ACK dequeue.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
   "$ROOT/tests/cpp/test_pet_atomic_ledger.cc" \
   -o "$BUILD/test_pet_atomic_ledger"
@@ -188,3 +189,23 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_pet_animation.cc" \
   -o "$BUILD/test_pet_animation"
 "$BUILD/test_pet_animation"
+
+# V5-02/03 memory: today/likes/growth/recent books, dial-only likes guard,
+# ledger v2 with v1 migration, replay idempotence, parent wipe, voice summary.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/tests/cpp/test_pet_memory.cc" \
+  -o "$BUILD/test_pet_memory"
+"$BUILD/test_pet_memory"
+
+# V5-01 personality: fixed temperament parameters, reviewed phrase ids and
+# home-item proposals; same input -> same output.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/tests/cpp/test_personality.cc" \
+  -o "$BUILD/test_personality"
+"$BUILD/test_personality"

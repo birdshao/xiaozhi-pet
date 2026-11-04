@@ -7,6 +7,7 @@ In the previous P3 design the ESP32 committed a Pet action to kid_pet NVS and la
 The new PetAtomicLedger, its codec, and NvsAtomicPetStore persist *both* in one 1,480-byte A/B NVS blob. An accepted action and its outbound record either both commit or neither commits. A remote ACK removes the outbox entry in the very same kind of durable aggregate write. No send occurs here; the Pet controller remains the owner of local effects.
 
 - Namespace kid_pet_sync, keys joint_a / joint_b; neither old kid_pet nor kid_bridge is overwritten.
+- Schema v2 (V5) appends a 288-byte MemoryStore before the CRC (1,768 bytes). v1 1,480-byte blobs still load with empty memory; the next commit writes v2 to the other slot. See V5_PERSONALITY_MEMORY.md.
 - Composite blob embeds the byte-exact verified PetCheckpointCodec, a 16-event FIFO, next server sequence, generation, CRC32 and schema magic. CRC detects corruption, not malicious alteration. Newest valid A/B slot is selected.
 - Refuses unknown/corrupt-only NVS and failures reading either slot; never auto-erases.
 - Applies feed/pickup/voice-start/voice-end/quiet-start/quiet-end in a single persistent blob. Story events remain local until book_id and approved-page context can be carried in the device event schema.
