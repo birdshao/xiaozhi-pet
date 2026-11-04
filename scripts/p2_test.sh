@@ -239,3 +239,15 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/tests/cpp/test_sound_pack.cc" \
   -o "$BUILD/test_sound_pack"
 "$BUILD/test_sound_pack" "$BUILD/sound-demo/sounds"
+
+# V4-04 KPB2 content packs: grey pages, dial choice questions, like -> memory
+# mapping and KPB1 compatibility, read from the golden packs the tool made.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_content_pack_reader.cc" \
+  -o "$BUILD/test_content_pack_reader"
+"$BUILD/test_content_pack_reader" "$ROOT/tests/fixtures/kpb2"

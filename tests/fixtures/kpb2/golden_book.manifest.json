@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "format": "KPB2",
+  "package_type": "book",
+  "book_id": "golden_book",
+  "content_id": 101,
+  "revision": 1,
+  "title": "灰度样例书（测试样例，非儿童内容）",
+  "reviewer": "CI 测试",
+  "approved": true,
+  "width": 800,
+  "height": 480,
+  "pages": [
+    {
+      "page": 1,
+      "text": "四条灰色带子。（测试样例，非儿童内容）",
+      "image_mode": "grey",
+      "mono_sha256": "a40da8d152e80095eaf90b04b7668295548853eaacca4d7becf80c82be9f65c6",
+      "grey_sha256": "e76bdc5709a452defef86fd014d561a7c4189f056745bf688c7373c60ce856cf",
+      "pcm_sha256": "a4a4eb971b0ba2106c3a0252b42cbaf0b684c8f96687b04d5c807f88c9dab69c",
+      "duration_ms": 100,
+      "questions": [
+        {
+          "prompt": "你最喜欢哪个小动物？",
+          "answer": null,
+          "like_topic": "favorite_animal",
+          "like_slot": 1,
+          "voice_answer": false,
+          "options": [
+            {
+              "key": "rabbit",
+              "label": "小兔子",
+              "id": 3,
+              "writes_like": true,
+              "box": [
+                96,
+                320,
+                64,
+                64
+              ]
+            },
+            {
+              "key": "bird",
+              "label": "小鸟",
+              "id": 4,
+              "writes_like": true,
+              "box": [
+                336,
+                320,
+                64,
+                64
+              ]
+            },
+            {
+              "key": "skip",
+              "label": "都喜欢",
+              "id": 65283,
+              "writes_like": false,
+              "box": [
+                576,
+                336,
+                48,
+                48
+              ]
+            }
+          ]
+        },
+        {
+          "prompt": "哪个是圆形？",
+          "answer": "circle",
+          "like_topic": null,
+          "like_slot": 0,
+          "voice_answer": true,
+          "options": [
+            {
+              "key": "circle",
+              "label": "圆形",
+              "id": 65281,
+              "writes_like": false,
+              "box": [
+                160,
+                200,
+                96,
+                96
+              ]
+            },
+            {
+              "key": "square",
+              "label": "方形",
+              "id": 65282,
+              "writes_like": false,
+              "box": [
+                480,
+                200,
+                96,
+                96
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "text": "黑色方块。（测试样例，非儿童内容）",
+      "image_mode": "mono",
+      "mono_sha256": "5fd6d32404ec47071ed51f7a6b67674ef279730aa643e0a7d27d01c1e57d54b2",
+      "grey_sha256": null,
+      "pcm_sha256": "8ce910edc10390cce6a6d3e7e6e5c34f47bd5ec556080368d7b9f2cd96df1010",
+      "duration_ms": 100,
+      "questions": []
+    }
+  ],
+  "question_count": 2,
+  "package_bytes": 215751,
+  "sha256": "67beddb8d49fbc5285648105654d17d819087aab4a911b77ed01220e3be89efe",
+  "integrity": "CRC32 per table and payload; no cryptographic authentication"
+}

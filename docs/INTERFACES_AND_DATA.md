@@ -176,7 +176,7 @@ animals_001/
 
 `sha256` 位置仅是格式示意，最终应定义究竟对哪个规范化字节序列计算哈希，避免将 manifest 中自己的 hash 再参与哈希产生循环依赖。计划采用单独的包索引文件记录每个文件哈希与整体打包产物哈希。
 
-**已落地格式**：P4 实现了单文件 KPB1（1-bit 页 + 24 kHz PCM16），见 [P4_OFFLINE_STORY_PACK](P4_OFFLINE_STORY_PACK.md)。v0.2 计划扩展为 **KPB2**：页帧可为 1-bit（48,000 B）或 4 灰度（96,000 B）；每页可带 0–2 个选择题（题干音频、2–3 个选项的图标区域坐标与选项音频、正确项或"无对错"）；包类型 `book | game | soundpack | costume | phrases`；KPB1 继续可读。
+**已落地格式**：P4 实现了单文件 KPB1（1-bit 页 + 24 kHz PCM16），见 [P4_OFFLINE_STORY_PACK](P4_OFFLINE_STORY_PACK.md)。v0.2 计划扩展为 **KPB2**：页帧可为 1-bit（48,000 B）或 4 灰度（96,000 B）；每页可带 0–2 个选择题（题干音频、2–3 个选项的图标区域坐标与选项音频、正确项或"无对错"）；包类型 `book | game | soundpack | costume | phrases`；KPB1 继续可读。**V4-04 已落地**：格式、白名单喜好主题和工具见 [V4_KPB2_CONTENT_FORMAT.md](V4_KPB2_CONTENT_FORMAT.md)（1-bit 回退帧总是存在，4 灰度为可选附加帧；包类型值 1 book、2 soundpack、3 game、4 costume、5 phrases，目前只读 book）。
 
 画面格式 `.bin`、语音 `.opus` 是早期候选；P4 根据实际播放器/解码器选择（可替换为 PCM/WAV 或其他具备稳定硬解码/软解码路径的格式）。对传入素材应限制尺寸、时长和解码后缓冲预算；未标记 `approved` 的内容不得同步给儿童设备。
 
