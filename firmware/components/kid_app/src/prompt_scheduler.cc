@@ -17,7 +17,7 @@ void PromptScheduler::SetEnabled(bool enabled) {
 bool PromptScheduler::Tick(uint32_t now_ms, PromptRequest* out) {
     if (!pending_ || !out || static_cast<int32_t>(now_ms - due_ms_) < 0) return false;
     pending_ = false;
-    *out = {index_, ++token_};
+    *out = {index_, ++token_, 0};  // an option name, not a pet line
     return true;
 }
 

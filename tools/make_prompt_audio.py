@@ -59,11 +59,11 @@ def tones(out_dir: Path = PROMPT_DIR) -> None:
         _write(out_dir / f"prompt_{item}.wav", pcm)
 
 
-def ffmpeg_command(src: Path, dst: Path) -> list[str]:
+def ffmpeg_command(src: Path, dst: Path, seconds: int = 2) -> list[str]:
     return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
             "-af", "silenceremove=start_periods=1:start_threshold=-45dB:"
                    "stop_periods=1:stop_threshold=-45dB,loudnorm=I=-24:TP=-9",
-            "-ac", "1", "-ar", str(RATE), "-c:a", "pcm_s16le", "-t", "2", str(dst)]
+            "-ac", "1", "-ar", str(RATE), "-c:a", "pcm_s16le", "-t", str(seconds), str(dst)]
 
 
 def convert(recordings: Path, out_dir: Path = PROMPT_DIR) -> None:

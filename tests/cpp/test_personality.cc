@@ -158,7 +158,8 @@ void TestMemoryDrivesSlotTemplates() {
     assert(invites > 0);
 
     assert(Personality::SelectPhrase(static_cast<T>(4), C::Greeting, true, true, 0) == 0);
-    assert(Personality::SelectPhrase(T::Gentle, static_cast<C>(6), true, true, 0) == 0);
+    assert(Personality::SelectPhrase(T::Gentle, static_cast<C>(kPhraseContextCount), true, true,
+                                     0) == 0);
 }
 }  // namespace
 

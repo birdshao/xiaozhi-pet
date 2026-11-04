@@ -1,0 +1,46 @@
+PETSELFTEST1
+# V5-04 pet lines through the V2-08 sound bank: pickup says hi, a gentle
+# shake giggles (a second one within 4 s stays quiet), feeding says yummy,
+# going to sleep says good night (then cancelled). Gentle temperament, so
+# the ids are fixed (test_sound_pack.cc). No TF pack: src=chime; with
+# /sounds/default.kps on the card: src=pack. Good morning: v3_morning.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect phrase_seq 211,272,241,261
+# expect min:PET_PHRASE_SKIPPED 1
+# expect min:PET_PHRASE_QUEUED 3
+# expect none:PET_PHRASE_FAILED 0
+# expect min:PET_SLEEP_CANCELLED 1
+# expect none:PET_SLEEP_POWEROFF 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# Quiet sounds while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+# Only a safety net: if the cancel below were missed, the board powers
+# off and this alarm wakes it 60 s later.
+alarm 60
+mark begin
+# Pickup: hello (211). A gentle shake right after: too soon, skipped.
+gesture pickup
+wait 1500
+gesture gentle
+wait 6000
+# Gentle shake again: giggle (272).
+gesture gentle
+wait 6000
+# Rail Story(1) -> Feed(3), press: yummy (241).
+tap down 2500
+tap down 2500
+tap press 8000
+# Feed(3) -> Sleep(4), press: good night (261), then cancel in the window.
+tap down 2500
+tap press 8000
+tap up 7000
+pet
+wait 4000
+end
