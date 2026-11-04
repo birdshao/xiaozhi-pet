@@ -187,6 +187,16 @@ BOARD_WORKER = r'''
     std::atomic<uint8_t> home_selection_{kid_app::HomeMenu::kDefaultIndex};
     kid_app::RefreshPlanner refresh_planner_;  // kid_epd task only
     std::atomic<bool> planner_reset_{false};
+    // Short animations, idle blink and deferred ghosting cleanup. Idle()/
+    // SceneShown()/FrameShown() run on kid_epd; Request()/Reset() come from
+    // other tasks, so every call takes anim_mutex_ (never held while drawing).
+    kid_app::PetAnimationDirector anim_director_;
+    SemaphoreHandle_t anim_mutex_ = nullptr;
+
+    void RequestAnimation(kid_app::Animation animation, const kid_app::SceneModel& target) {
+        SceneStateLock lock(anim_mutex_);
+        anim_director_.Request(animation, target, NowMs());
+    }
 
     // Host-tested layout lives in kid_app::PackScene / UnpackScene.
     static uint32_t PackPetScene(const kid_app::SceneModel& scene) {
@@ -231,6 +241,50 @@ BOARD_WORKER = r'''
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
     }
 
+    // Draws one frame. Caller holds pet_screen_mutex_ and checked pet_mode_.
+    // source: gate (published scene), anim (director frame), cleanup.
+    bool DrawPetFrameLocked(const kid_app::SceneModel& scene, const char* source) {
+        bool okay = false;
+        const uint32_t epd_started_ms = NowMs();
+        if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready()) {
+            okay = display_->ShowStoryPage(*story_sd_.Reader(), scene.book_page);
+            // Only speak after EPD shows a validated book page;
+            // invalid/out-of-range pages must cancel prior narration.
+            if (story_pcm_.Ready()) {
+                if (okay && !sleep_active_.load()) story_pcm_.RequestPage(scene.book_page);
+                else story_pcm_.Stop();
+            }
+        }
+        // Missing SD or a page outside a reviewed book falls back to
+        // the pre-existing monochrome reader placeholder.
+        if (planner_reset_.exchange(false)) refresh_planner_.ForceFull();
+        kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
+        if (!okay) {
+            mode = refresh_planner_.Plan(scene);
+            okay = mode == kid_app::RefreshMode::Partial
+                       ? display_->ShowPetSceneFast(scene)
+                       : display_->ShowPetScene(scene);
+        }
+        refresh_planner_.Completed(scene, mode, okay);
+        // The sleep cancel window starts once the final picture (all three
+        // Z letters, ScenePose::Still) is on the panel.
+        if (okay && scene.kind == kid_app::SceneKind::Sleep &&
+            scene.pose == kid_app::ScenePose::Still) {
+            const uint32_t shown_ms = NowMs();
+            sleep_shown_ms_.store(shown_ms ? shown_ms : 1);
+            ESP_LOGI(TAG, "PET_SLEEP_SHOWN");
+        }
+        // V1-08 / V2-06: refresh duration per mode; ghosting by eye.
+        ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u sel=%u mode=%s ok=%d ms=%u n=%u "
+                 "pose=%u src=%s rail=%u pet=%u",
+                 static_cast<int>(scene.kind), scene.book_page, scene.home_selection,
+                 mode == kid_app::RefreshMode::Partial ? "partial" : "full", okay ? 1 : 0,
+                 static_cast<unsigned>(NowMs() - epd_started_ms),
+                 static_cast<unsigned>(++epd_refreshes_), static_cast<unsigned>(scene.pose),
+                 source, refresh_planner_.RailPartials(), refresh_planner_.PetPartials());
+        return okay;
+    }
+
     static bool PetRender(const kid_app::SceneModel& scene, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || !self->pet_screen_mutex_ ||
@@ -240,44 +294,52 @@ BOARD_WORKER = r'''
         // This mutex also serializes ExitPetPreview, so no late pet frame
         // can overwrite the original XiaoZhi LVGL screen after exit.
         bool okay = false;
-        const uint32_t epd_started_ms = NowMs();
+        if (self->pet_mode_.load()) okay = self->DrawPetFrameLocked(scene, "gate");
+        xSemaphoreGive(self->pet_screen_mutex_);
+        if (okay) {
+            SceneStateLock lock(self->anim_mutex_);
+            self->anim_director_.SceneShown(scene, NowMs());
+        }
+        return okay;
+    }
+
+    // kid_epd, ~every 100 ms while no published scene is waiting.
+    static void PetIdle(const kid_app::SceneModel& displayed, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || !self->pet_mode_.load()) return;
+        // Blink and cleanup only on a quiet, awake Pet home screen.
+        const bool ambient = !self->sleep_active_.load() &&
+                             displayed.kind == kid_app::SceneKind::Home &&
+                             Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+        kid_app::DirectorStep step{};
+        {
+            SceneStateLock lock(self->anim_mutex_);
+            step = self->anim_director_.Idle(displayed, NowMs(), ambient,
+                                             self->refresh_planner_.NeedsCleanup());
+        }
+        if (step.kind == kid_app::DirectorStep::Kind::None) return;
+        if (xSemaphoreTake(self->pet_screen_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+        const bool cleanup = step.kind == kid_app::DirectorStep::Kind::Cleanup;
+        bool okay = false;
         if (self->pet_mode_.load()) {
-            if (scene.kind == kid_app::SceneKind::Reader &&
-                self->story_sd_.Ready()) {
-                okay = self->display_->ShowStoryPage(
-                    *self->story_sd_.Reader(), scene.book_page);
-                // Only speak after EPD shows a validated book page;
-                // invalid/out-of-range pages must cancel prior narration.
-                if (self->story_pcm_.Ready()) {
-                    if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage(scene.book_page);
-                    else self->story_pcm_.Stop();
-                }
+            if (cleanup) {
+                ESP_LOGI(TAG, "PET_EPD_CLEANUP rail=%u pet=%u", self->refresh_planner_.RailPartials(),
+                         self->refresh_planner_.PetPartials());
+                self->refresh_planner_.ForceFull();
             }
-            // Missing SD or a page outside a reviewed book falls back to
-            // the pre-existing monochrome reader placeholder.
-            if (self->planner_reset_.exchange(false)) self->refresh_planner_.ForceFull();
-            kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
-            if (!okay) {
-                mode = self->refresh_planner_.Plan(scene);
-                okay = mode == kid_app::RefreshMode::Partial
-                           ? self->display_->ShowPetSceneFast(scene)
-                           : self->display_->ShowPetScene(scene);
-            }
-            self->refresh_planner_.Completed(scene, mode, okay);
-            if (okay && scene.kind == kid_app::SceneKind::Sleep) {
-                const uint32_t shown_ms = NowMs();
-                self->sleep_shown_ms_.store(shown_ms ? shown_ms : 1);
-                ESP_LOGI(TAG, "PET_SLEEP_SHOWN");
-            }
-            // V1-08 / V2-06: refresh duration per mode; ghosting by eye.
-            ESP_LOGI(TAG, "PET_DIAG_EPD kind=%d page=%u sel=%u mode=%s ok=%d ms=%u n=%u",
-                     static_cast<int>(scene.kind), scene.book_page, scene.home_selection,
-                     mode == kid_app::RefreshMode::Partial ? "partial" : "full", okay ? 1 : 0,
-                     static_cast<unsigned>(NowMs() - epd_started_ms),
-                     static_cast<unsigned>(++self->epd_refreshes_));
+            okay = self->DrawPetFrameLocked(step.scene, cleanup ? "cleanup" : "anim");
         }
         xSemaphoreGive(self->pet_screen_mutex_);
-        return okay;
+        SceneStateLock lock(self->anim_mutex_);
+        if (cleanup) {
+            self->anim_director_.SceneShown(step.scene, NowMs());
+            return;
+        }
+        self->anim_director_.FrameShown(NowMs(), okay);
+        ESP_LOGI(TAG, "PET_ANIM_FRAME anim=%s pose=%u ok=%d last=%d",
+                 kid_app::AnimationName(step.animation), static_cast<unsigned>(step.scene.pose),
+                 okay ? 1 : 0, step.last ? 1 : 0);
+        if (step.last) ESP_LOGI(TAG, "PET_ANIM_DONE name=%s", kid_app::AnimationName(step.animation));
     }
 
     static void PetCommitted(const kid_app::PetEvent& event,
@@ -304,6 +366,14 @@ BOARD_WORKER = r'''
             // Mode after scene: the input task never sees a home mode
             // paired with a stale reader scene.
             self->pet_event_mode_.store(snapshot.mode);
+            // Plays once this scene is on the panel (hearts after the happy
+            // face), also when the expression did not change.
+            if (!self->sleep_active_.load()) {
+                if (event.action == kid_app::PetAction::Feed)
+                    self->RequestAnimation(kid_app::Animation::Feed, scene);
+                else if (event.action == kid_app::PetAction::Pickup)
+                    self->RequestAnimation(kid_app::Animation::Greet, scene);
+            }
         }
         // Deliberately do NOT play audio here. AudioCoordinator/AudioPort
         // will be wired separately; only committed events can emit effects.
@@ -317,12 +387,14 @@ BOARD_WORKER = r'''
         if (!pet_screen_mutex_) return false;
         if (!scene_state_mutex_) scene_state_mutex_ = xSemaphoreCreateMutex();
         if (!scene_state_mutex_) return false;
+        if (!anim_mutex_) anim_mutex_ = xSemaphoreCreateMutex();
+        if (!anim_mutex_) return false;
         if (!pet_mailbox_ready_) {
             if (!pet_mailbox_.Initialize()) return false;
             pet_mailbox_ready_ = true;
         }
         if (!pet_display_task_ready_) {
-            if (!pet_display_worker_.Start(&PetRender, this)) return false;
+            if (!pet_display_worker_.Start(&PetRender, this, &PetIdle)) return false;
             pet_display_task_ready_ = true;
         }
         if (!pet_event_task_ready_) {
@@ -371,6 +443,10 @@ BOARD_WORKER = r'''
                 pet_mode_.store(false);
                 display_->ExitPetPreview();
                 planner_reset_.store(true);
+                {
+                    SceneStateLock lock(anim_mutex_);
+                    anim_director_.Reset(NowMs());
+                }
                 xSemaphoreGive(pet_screen_mutex_);
                 ESP_LOGI(TAG, "PET_RUNTIME_OFF");
             } else {
@@ -390,7 +466,14 @@ BOARD_WORKER = r'''
         pet_display_worker_.SetEnabled(true);
         {
             SceneStateLock lock(scene_state_mutex_);
-            pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
+            const auto scene = UnpackPetScene(last_pet_scene_.load());
+            pet_mailbox_.Publish(scene);
+            // TuanTuan waves hello when Pet mode opens on the home screen.
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            RequestAnimation(kid_app::Animation::Greet, scene);
         }
         ESP_LOGI(TAG, "PET_RUNTIME_ON");
     }
@@ -555,8 +638,11 @@ BOARD_WORKER = r'''
                 // SceneComposer ignores the page for Sleep; a fresh value stops
                 // the gate from skipping a request right after a cancel.
                 scene.book_page = ++sleep_seq_;
+                // Falls asleep on screen: one Z, two, then all three.
+                scene.pose = kid_app::ScenePose::Zzz1;
                 SceneStateLock lock(scene_state_mutex_);
                 pet_mailbox_.Publish(scene);
+                RequestAnimation(kid_app::Animation::SleepIn, scene);
                 ESP_LOGI(TAG, "PET_SLEEP_REQUESTED");
                 return;
             }
@@ -1100,6 +1186,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/input_hub.h"\n'
         '#include "kid_app/home_menu.h"\n'
         '#include "kid_app/refresh_planner.h"\n'
+        '#include "kid_app/pet_animation.h"\n'
         '#include "kid_app/selftest_script.h"\n'
         '#include "kid_app/sleep_flow.h"\n'
         '#include "kid_app/prompt_scheduler.h"\n'

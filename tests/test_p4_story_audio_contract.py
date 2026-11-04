@@ -64,10 +64,10 @@ class StoryAudioContract(unittest.TestCase):
         self.assertIn("StoryAudioPush", BOARD_WORKER)
         self.assertIn("StoryAudioCancel", BOARD_WORKER)
         self.assertIn("GetAudioService().TryQueueLocalStoryPcm",BOARD_WORKER)
-        self.assertIn("if (self->story_pcm_.Ready())",BOARD_WORKER)
+        self.assertIn("if (story_pcm_.Ready()) {",BOARD_WORKER)
         # V2-09: still only after a shown page, and never while going to sleep.
-        self.assertIn("if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage",BOARD_WORKER)
-        self.assertIn("else self->story_pcm_.Stop()",BOARD_WORKER)
+        self.assertIn("if (okay && !sleep_active_.load()) story_pcm_.RequestPage",BOARD_WORKER)
+        self.assertIn("else story_pcm_.Stop()",BOARD_WORKER)
         self.assertIn("story_pcm_.RequestPage(scene.book_page)",BOARD_WORKER)
         self.assertIn("story_pcm_.Stop()",BOARD_WORKER)
         src=(ROOT/"firmware/components/kid_app/src/freertos_story_pcm_worker.cc").read_text()

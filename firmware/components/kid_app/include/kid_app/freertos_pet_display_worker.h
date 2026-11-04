@@ -11,6 +11,10 @@ namespace kid_app {
 // Called ONLY on the dedicated display worker. May block on LVGL + EPD BUSY.
 // Return true only after actual physical refresh is complete.
 using PetRenderCallback = bool (*)(const SceneModel& scene, void* context);
+// Called on the same worker about every 100 ms while no scene is pending or
+// in flight, with the last scene the gate displayed. It may draw extra
+// frames itself (animations, ghosting cleanup); new scenes wait meanwhile.
+using PetIdleCallback = void (*)(const SceneModel& displayed, void* context);
 
 // Owns the refresh gate and consumes last-wins scene messages.
 // It never allocates a 48KiB frame; the board adapter owns any PSRAM buffers.
@@ -23,7 +27,7 @@ public:
     FreertosPetDisplayWorker(const FreertosPetDisplayWorker&) = delete;
     FreertosPetDisplayWorker& operator=(const FreertosPetDisplayWorker&) = delete;
 
-    bool Start(PetRenderCallback renderer, void* context);
+    bool Start(PetRenderCallback renderer, void* context, PetIdleCallback idle = nullptr);
     // Enabled only in interactive pet mode. Default disabled.
     void SetEnabled(bool enabled) {
         if (enabled) reset_before_next_frame_.store(true);
@@ -36,6 +40,7 @@ private:
     FreertosPetSceneMailbox& source_;
     PetRefreshGate gate_;
     PetRenderCallback renderer_ = nullptr;
+    PetIdleCallback idle_ = nullptr;
     void* context_ = nullptr;
     TaskHandle_t worker_ = nullptr;
     std::atomic<bool> enabled_{false};

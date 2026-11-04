@@ -69,5 +69,14 @@ int main() {
     assert(output.home_selection == 3);
     assert(gate.Complete(true, 29100));
     assert(!gate.Request(sleepy_feed));
+
+    // Animation pose is part of the scene (falling asleep starts at Zzz1).
+    SceneModel zzz = sleepy_feed;
+    zzz.pose = ScenePose::Zzz1;
+    assert(gate.Request(zzz));
+    assert(gate.Acquire(35000, &output));
+    assert(output.pose == ScenePose::Zzz1);
+    assert(gate.Complete(true, 35100));
+    assert(!gate.Request(zzz));
     std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }

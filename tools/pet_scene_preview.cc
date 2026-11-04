@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|reader> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|reader|sleep> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -15,6 +15,8 @@ int main(int argc, char** argv) {
     if (mode == "happy") model.emotion = kid_app::Emotion::Happy;
     else if (mode == "sleepy") model.emotion = kid_app::Emotion::Sleepy;
     else if (mode == "curious") model.emotion = kid_app::Emotion::Curious;
+    else if (mode == "surprised") model.emotion = kid_app::Emotion::Surprised;
+    else if (mode == "sleep") model.kind = kid_app::SceneKind::Sleep;
     else if (mode == "reader") {
         model.kind = kid_app::SceneKind::Reader;
         model.emotion = kid_app::Emotion::Happy;

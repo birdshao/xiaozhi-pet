@@ -19,7 +19,7 @@
 bash scripts/p1_preview.sh
 ```
 
-输出 `build/p1/{happy,sleepy,curious,reader}.pbm`。PBM 可以用 GIMP、ImageMagick 等打开。全部为黑白线稿占位图，不是最终美术素材。
+输出 `build/p1/{happy,sleepy,curious,surprised,reader,sleep}.pbm`。PBM 可以用 GIMP、ImageMagick 等打开。画面为程序绘制的 1-bit 矢量风格（粗描边、Bayer 4×4 网点模拟灰度、选中卡片反白），不依赖字体或位图素材。
 
 ## 已覆盖 / 未覆盖
 
