@@ -56,9 +56,11 @@ public:
     // slot is available. Returns 0 only for invalid input.
     static uint16_t SelectPhrase(Temperament t, PhraseContext context,
                                  bool has_book, bool has_like, uint32_t seed);
-    // Convenience: slot availability from the pet's memory.
+    // Convenience: slot availability from the pet's memory. MorningRecap's
+    // {book} means "yesterday", so it needs a book read on current_day - 1;
+    // other contexts use any recent book.
     static uint16_t SelectPhrase(const MemoryStore& memory, PhraseContext context,
-                                 uint32_t seed);
+                                 uint32_t current_day, uint32_t seed);
 
     static const PhraseTemplate* FindPhrase(uint16_t id);
     static size_t PhraseCount();

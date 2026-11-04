@@ -275,7 +275,8 @@ bool PetAtomicLedger::ImportLegacyForFreshServer(
 }
 
 CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
-                                           PetEffects* effects) {
+                                           PetEffects* effects,
+                                           uint32_t day) {
     if (!effects) return CommitResult::Rejected;
     *effects=PetEffects{};
     if (!initialized_) return CommitResult::StorageError;
@@ -302,7 +303,7 @@ CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
     // Today's feed / greeting counters ride in the same commit, so a
     // replayed (Duplicate) event can never count twice.
     MemoryStore memory=memory_;
-    memory.NotePetAction(event.action);
+    memory.NotePetAction(event.action,day);
 
     // One physical NVS commit contains both updated controller checkpoint
     // and outbound message. A write failure restores the entire live state.

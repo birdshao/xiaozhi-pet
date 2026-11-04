@@ -137,9 +137,11 @@ uint16_t Personality::SelectPhrase(Temperament t, PhraseContext context,
 }
 
 uint16_t Personality::SelectPhrase(const MemoryStore& memory, PhraseContext context,
-                                   uint32_t seed) {
-    return SelectPhrase(memory.GetTemperament(), context,
-                        memory.RecentBookCount() > 0,
+                                   uint32_t current_day, uint32_t seed) {
+    const bool has_book = context == PhraseContext::MorningRecap
+        ? current_day > 1 && memory.BookReadOn(current_day - 1) != 0
+        : memory.RecentBookCount() > 0;
+    return SelectPhrase(memory.GetTemperament(), context, has_book,
                         memory.PreferenceCount() > 0, seed);
 }
 

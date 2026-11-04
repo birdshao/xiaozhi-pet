@@ -430,6 +430,56 @@ void TestLedgerParentWipe() {
     assert(rebooted.Memory().GetTemperament() == Temperament::Lively);
 }
 
+// Review finding: a week of feeding only (no dated memory events) must not
+// pile up in one stale "today".
+void TestDatedPetActionsRollTheDay() {
+    FakeNvs disk;
+    Ledger l(disk);
+    assert(l.Load() == Ledger::LoadResult::Empty && l.InitializeFresh());
+    assert(l.RecordMemory(Book(1, 42, 100)) == CommitResult::Committed);
+    PetEffects fx{};
+    for (uint32_t day = 101; day <= 107; ++day) {
+        assert(l.ApplyDurably({1000 + day, PetAction::Feed}, &fx, day) ==
+               CommitResult::Committed);
+    }
+    const auto& m = l.Memory();
+    assert(m.Today().day == 107 && m.Today().feeds == 1);
+    assert(m.Yesterday().day == 106 && m.Yesterday().feeds == 1);
+    assert(m.GetGrowth().active_days == 8);
+    assert(m.GetGrowth().milestones & MemoryStore::kSevenDays);
+    assert(m.BookReadOn(100) == 0);  // day 100 is no longer kept
+    // Clock went backwards: the feed still commits to the Pet, not to today.
+    assert(l.ApplyDurably({2000, PetAction::Feed}, &fx, 90) == CommitResult::Committed);
+    assert(m.Today().day == 107 && m.Today().feeds == 1);
+    assert(l.Snapshot().interaction_count == 8);
+    // Undated pet actions still count into the current day.
+    assert(l.ApplyDurably({2001, PetAction::Pickup}, &fx) == CommitResult::Committed);
+    assert(m.Today().greetings == 1);
+
+    Ledger rebooted(disk);
+    assert(rebooted.Load() == Ledger::LoadResult::Ready);
+    assert(rebooted.Memory() == m);
+
+    // A summary asked for on a later day reports nothing done today yet.
+    const MinimalSummary later = MakeMinimalSummary(m, 110);
+    assert(!later.feeds && !later.greetings && !later.books && !later.games);
+    assert(later.last_book == 42);  // recent books are not per-day
+    const MinimalSummary now = MakeMinimalSummary(m, 107);
+    assert(now.feeds == 1 && now.greetings == 1);
+}
+
+void TestBookReadOn() {
+    MemoryStore m;
+    assert(m.BookReadOn(0) == 0 && m.BookReadOn(5) == 0);
+    assert(m.Apply(Book(1, 7, 10)) == MemoryResult::Applied);
+    assert(m.Apply(Book(2, 8, 10)) == MemoryResult::Applied);
+    assert(m.BookReadOn(10) == 8);
+    m.NotePetAction(PetAction::Feed, 11);
+    assert(m.BookReadOn(10) == 8 && m.BookReadOn(11) == 0);
+    assert(m.Apply(Book(3, 9, 11)) == MemoryResult::Applied);
+    assert(m.BookReadOn(11) == 9 && m.BookReadOn(10) == 8 && m.BookReadOn(9) == 0);
+}
+
 void TestLedgerRejectsCorruptMemoryBlock() {
     FakeNvs disk;
     Ledger l(disk);
@@ -461,5 +511,7 @@ int main() {
     TestLedgerGuardAndPowerLoss();
     TestLedgerParentWipe();
     TestLedgerRejectsCorruptMemoryBlock();
+    TestDatedPetActionsRollTheDay();
+    TestBookReadOn();
     std::cout << "PASS: V5 memory guard, bounds, codec, v1 migration, replay, wipe, summary\n";
 }

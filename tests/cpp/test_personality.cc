@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <set>
 #include <string>
@@ -118,8 +119,8 @@ void TestMemoryDrivesSlotTemplates() {
     MemoryStore memory;
     std::set<uint16_t> recap, favourite;
     for (uint32_t seed = 0; seed < 200; ++seed) {
-        recap.insert(Personality::SelectPhrase(memory, C::MorningRecap, seed));
-        favourite.insert(Personality::SelectPhrase(memory, C::FavoriteMention, seed));
+        recap.insert(Personality::SelectPhrase(memory, C::MorningRecap, 51, seed));
+        favourite.insert(Personality::SelectPhrase(memory, C::FavoriteMention, 51, seed));
     }
     assert(recap == std::set<uint16_t>{221});
     assert(favourite == std::set<uint16_t>{231});
@@ -128,6 +129,7 @@ void TestMemoryDrivesSlotTemplates() {
     book.id = 1;
     book.kind = MemoryEventKind::BookFinished;
     book.source = MemorySource::Device;
+    book.day = 50;
     book.option = 12;
     assert(memory.Apply(book) == MemoryResult::Applied);
     MemoryEvent like{};
@@ -139,10 +141,21 @@ void TestMemoryDrivesSlotTemplates() {
     assert(memory.Apply(like) == MemoryResult::Applied);
     unsigned book_lines = 0, like_lines = 0;
     for (uint32_t seed = 0; seed < 400; ++seed) {
-        book_lines += Personality::SelectPhrase(memory, C::MorningRecap, seed) == 222;
-        like_lines += Personality::SelectPhrase(memory, C::FavoriteMention, seed) == 232;
+        book_lines += Personality::SelectPhrase(memory, C::MorningRecap, 51, seed) == 222;
+        like_lines += Personality::SelectPhrase(memory, C::FavoriteMention, 51, seed) == 232;
     }
     assert(book_lines > 200 && like_lines > 200);  // weight 3 vs 1
+    // "Yesterday we read {book}" only when the book really was yesterday:
+    // same day, a week later or with the clock unknown it is never said.
+    for (uint32_t day : {0u, 1u, 50u, 58u}) {
+        for (uint32_t seed = 0; seed < 200; ++seed)
+            assert(Personality::SelectPhrase(memory, C::MorningRecap, day, seed) == 221);
+    }
+    // Other contexts may mention any recent book.
+    unsigned invites = 0;
+    for (uint32_t seed = 0; seed < 200; ++seed)
+        invites += Personality::SelectPhrase(memory, C::StoryInvite, 58, seed) == 252;
+    assert(invites > 0);
 
     assert(Personality::SelectPhrase(static_cast<T>(4), C::Greeting, true, true, 0) == 0);
     assert(Personality::SelectPhrase(T::Gentle, static_cast<C>(6), true, true, 0) == 0);

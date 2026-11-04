@@ -52,7 +52,10 @@ public:
     bool ImportLegacyForFreshServer(const PetCheckpoint& checkpoint,
                                     uint64_t legacy_generation);
 
-    CommitResult ApplyDurably(const PetEvent& event, PetEffects* effects);
+    // `day` (local civil day number, 0 = unknown) dates today's feed /
+    // greeting memory counters committed with the event.
+    CommitResult ApplyDurably(const PetEvent& event, PetEffects* effects,
+                              uint32_t day = 0);
     // V5 structured memory event (choice answer, finished book/game, parent
     // wipe or temperament). Shares the Pet replay-id window, so a replayed
     // id is Duplicate and never double-counts. Guard rules: MemoryStore::Apply.

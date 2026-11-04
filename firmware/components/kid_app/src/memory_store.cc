@@ -149,7 +149,9 @@ MemoryResult MemoryStore::Apply(const MemoryEvent& e) {
     return MemoryResult::Applied;
 }
 
-void MemoryStore::NotePetAction(PetAction action) {
+void MemoryStore::NotePetAction(PetAction action, uint32_t day) {
+    RollTo(day);
+    if (!CountsToday(day)) return;
     uint8_t* counter = nullptr;
     if (action == PetAction::Feed) counter = &today_.feeds;
     else if (action == PetAction::Pickup) counter = &today_.greetings;
@@ -231,6 +233,13 @@ bool MemoryStore::FindPreference(uint16_t slot, uint16_t* option) const {
         }
     }
     return false;
+}
+
+uint16_t MemoryStore::BookReadOn(uint32_t day) const {
+    if (!day) return 0;
+    if (today_.day == day) return today_.last_book;
+    if (yesterday_.day == day) return yesterday_.last_book;
+    return 0;
 }
 
 bool MemoryStore::Empty() const {
@@ -322,7 +331,8 @@ const char* TemperamentName(Temperament t) {
     return "gentle";
 }
 
-MinimalSummary MakeMinimalSummary(const MemoryStore& memory) {
+MinimalSummary MakeMinimalSummary(const MemoryStore& memory,
+                                  uint32_t current_day) {
     MinimalSummary s{};
     s.temperament = memory.GetTemperament();
     s.preference_count = static_cast<uint8_t>(memory.PreferenceCount());
@@ -331,10 +341,13 @@ MinimalSummary MakeMinimalSummary(const MemoryStore& memory) {
                             memory.PreferenceAt(i).option};
     }
     const auto& today = memory.Today();
-    s.feeds = today.feeds;
-    s.greetings = today.greetings;
-    s.books = today.books;
-    s.games = today.games;
+    const bool stale = current_day && today.day && today.day != current_day;
+    if (!stale) {
+        s.feeds = today.feeds;
+        s.greetings = today.greetings;
+        s.books = today.books;
+        s.games = today.games;
+    }
     s.last_book = memory.RecentBookCount() ? memory.RecentBookAt(0) : 0;
     s.milestones = memory.GetGrowth().milestones;
     return s;

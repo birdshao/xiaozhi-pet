@@ -93,8 +93,9 @@ public:
     // unchanged. Replay dedupe is the ledger's job (shared event-id window).
     MemoryResult Apply(const MemoryEvent& event);
 
-    // Counted inside the same ledger commit as an applied Pet action.
-    void NotePetAction(PetAction action);
+    // Counted inside the same ledger commit as an applied Pet action. `day`
+    // follows the same rollover rules as MemoryEvent::day (0 = unknown).
+    void NotePetAction(PetAction action, uint32_t day = 0);
 
     Temperament GetTemperament() const { return temperament_; }
     const Day& Today() const { return today_; }
@@ -106,6 +107,9 @@ public:
     bool FindPreference(uint16_t slot, uint16_t* option) const;
     size_t RecentBookCount() const { return recent_book_count_; }
     uint16_t RecentBookAt(size_t i) const { return recent_books_[i]; }  // 0 = newest
+    // Last book finished on that calendar day if still remembered (today or
+    // the last active day), else 0. Morning recap asks for current_day - 1.
+    uint16_t BookReadOn(uint32_t day) const;
     bool Empty() const;  // nothing remembered ("just met"), profile ignored
 
     bool Encode(uint8_t* out, size_t size) const;
@@ -146,7 +150,10 @@ struct MinimalSummary {
     uint32_t milestones = 0;
 };
 
-MinimalSummary MakeMinimalSummary(const MemoryStore& memory);
+// With a known current_day, counts from an older day are reported as zero
+// (nothing happened today yet) instead of leaking a stale "today".
+MinimalSummary MakeMinimalSummary(const MemoryStore& memory,
+                                  uint32_t current_day = 0);
 // Compact JSON for the voice adapter. False if the buffer is too small.
 bool FormatMinimalSummary(const MinimalSummary& summary, char* out, size_t size);
 const char* TemperamentName(Temperament t);
