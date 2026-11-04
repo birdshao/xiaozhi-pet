@@ -40,12 +40,15 @@ namespace kid_app {
 //   book <id>               V4-05: read /sdcard/books/<id>.kpb ([a-z0-9_], <= 15
 //                           chars) instead of the demo book; only before the
 //                           first "pet" step (the card is read once per boot)
+//   game <seed>             the next mini game (V4-06) uses this seed (1..
+//                           600000) instead of a random one, so a script
+//                           knows its rounds and right answers
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo, Book
+    Combo, Book, Game
 };
 
 struct SelfTestStep {
@@ -54,7 +57,8 @@ struct SelfTestStep {
     uint32_t ms = 0;      // wait/hold/combo ms; seconds for Alarm; percent for Volume;
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
-                          // Battery: percent | kBatteryCharging, or kBatteryOff
+                          // Battery: percent | kBatteryCharging, or kBatteryOff;
+                          // Game: the seed
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark; Book: book id
 };

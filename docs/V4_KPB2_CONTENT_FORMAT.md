@@ -302,6 +302,6 @@ python -m tools.story_pack preview  --package out/forest_friends.kpb --output ou
 
 - V4-05 绘本阅读器：灰度全刷驱动（扩展 `CustomEpdDisplay`）、出题/高亮局刷、题目音频播放、语音回答匹配、读完贴纸，都没有接到板上。按现有代码路径，板子打开 KPB2 书只会显示 1-bit 回退帧并播放页朗读（KPB2 卡尚未上板验证）。
 - 4 灰度平面与控制器 RAM 的对应关系、刷新耗时、灰度残影：待真板确认。
-- 声音包、游戏包等其他包类型：只保留了类型值，没有格式和读取器。
+- 声音包、游戏包等其他包类型：只保留了类型值，没有格式和读取器。（后续：声音包用自己的 KPS1，见 [V2_SOUND_PACK.md](V2_SOUND_PACK.md)；小游戏包用自己的 KPG1，见 [V4_MINI_GAMES.md](V4_MINI_GAMES.md)；都不套 KPB2 外壳，清单里的 `package_type` 名称沿用本表。）
 - 板端仍固定打开 `forest_friends`，没有书目列表和家长白名单。
 - 打开一本大书时全量 CRC 的耗时未在真板上测量。

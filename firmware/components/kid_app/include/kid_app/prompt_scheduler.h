@@ -8,6 +8,7 @@ struct PromptRequest {
     uint8_t index = 0;   // HomeItem index to speak
     uint32_t token = 0;  // increasing; a newer token supersedes older audio
     uint8_t phrase = 0;  // V5-04: 1 + PhraseContext = a pet line, 0 = option name
+    uint16_t game = 0;   // V4-06: a mini-game clip id (mini_game.h), 0 = none
 };
 
 // Option name prompts on the home rail (V2-07): speak the item a child

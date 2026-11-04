@@ -286,10 +286,13 @@ BOARD_WORKER = r'''
     // panel. Pet commits, voice faces and power pictures still update
     // last_pet_scene_ and come back when the menu closes. Opening and
     // closing flip the gate under scene_state_mutex_, like every publish.
+    // V4-06: the same for a mini game (game_only, only Game frames).
     struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox {
         std::atomic<bool> parent_only{false};
+        std::atomic<bool> game_only{false};
         bool Publish(const kid_app::SceneModel& scene) {
             if (parent_only.load() && scene.kind != kid_app::SceneKind::Parent) return false;
+            if (game_only.load() && scene.kind != kid_app::SceneKind::Game) return false;
             return kid_app::FreertosPetSceneMailbox::Publish(scene);
         }
     };
@@ -318,6 +321,7 @@ BOARD_WORKER = r'''
 
     void RequestAnimation(kid_app::Animation animation, const kid_app::SceneModel& target) {
         if (ParentMenuOpen()) return;  // V3-06: nothing plays over the parent menu
+        if (GameActive()) return;      // V4-06: nor over a mini game
         SceneStateLock lock(anim_mutex_);
         anim_director_.Request(animation, target, NowMs());
     }
@@ -808,6 +812,11 @@ BOARD_WORKER = r'''
             HandleSleepAction(sleep_flow_.Request(NowMs()));
             return;
         }
+        // V4-06: a running mini game takes the dial (long press = home).
+        if (GameActive()) {
+            HandleGameInput(event.kind);
+            return;
+        }
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
@@ -828,6 +837,11 @@ BOARD_WORKER = r'''
         }
         if (begin_sleep) {
             HandleSleepAction(sleep_flow_.Request(NowMs()));
+            return;
+        }
+        if (game_requested_) {
+            game_requested_ = false;
+            StartGame();
             return;
         }
         // The durable action is queued outside the lock; the pet task
@@ -862,6 +876,12 @@ BOARD_WORKER = r'''
             *begin_sleep = true;  // started after the lock is released
             return {};
         }
+        // V4-06: a mini game (UI only); refused in quiet hours or on a low
+        // battery, where the pet says hi instead (PetInputRouter).
+        if (home_menu_.Selected() == kid_app::HomeItem::Game && GameStartAllowed()) {
+            game_requested_ = true;  // started after the lock is released
+            return {};
+        }
         return kid_app::PetInputRouter::DecideHome(pet_mode, home_menu_.Selected());
     }
 
@@ -882,6 +902,7 @@ BOARD_WORKER = r'''
                 // V3-06: going to sleep (PWR, rail, idle, flat battery) wins
                 // over the parent menu; an unsaved draft is dropped.
                 if (parent_menu_.IsOpen()) CloseParentMenu("sleep");
+                EndGame("sleep", false);  // V4-06: a game too
                 sleep_active_.store(true);
                 prompt_scheduler_.Cancel();
                 StopPrompt();
@@ -1022,6 +1043,7 @@ BOARD_WORKER = r'''
             while (input_hub_.Next(&event)) HandleInputEvent(event);
             UpdateParentMenu();
             UpdateBook();
+            UpdateGame(state);
             UpdatePower(state);
             UpdateBattery(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
@@ -1039,6 +1061,7 @@ BOARD_WORKER = r'''
             // reader or while going to sleep).
             prompt_scheduler_.SetEnabled(
                 pet_mode_.load() && !sleep_flow_.Active() && state == kDeviceStateIdle &&
+                !GameActive() &&  // V4-06
                 !ParentMenuOpen() && kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()));
             kid_app::PromptRequest prompt{};
             if (prompt_scheduler_.Tick(NowMs(), &prompt)) PostPrompt(prompt);
@@ -1314,13 +1337,14 @@ BOARD_WORKER = r'''
                  static_cast<unsigned>(sound_pack_.ClipCount()),
                  static_cast<unsigned>(sound_pack_.Revision()),
                  static_cast<unsigned>(NowMs() - started_ms));
+        LoadGamePack();  // V4-06: same card, same task
     }
 
     // Any task. Never asleep (good night only while falling asleep) or
     // napping; the player re-checks voice / Pet mode before and while it
     // plays. Overwrites a waiting option prompt, like a newer prompt would.
     void PostPhrase(kid_app::PhraseContext context) {
-        if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() ||
+        if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() || GameActive() ||
             (sleep_active_.load() && context != kid_app::PhraseContext::Bedtime))
             return;
         kid_app::PromptRequest request{};
@@ -1356,6 +1380,7 @@ BOARD_WORKER = r'''
             // V5-04: pick the pet's line first; one too soon after the last
             // is dropped without cutting what is playing.
             const bool phrase = request.phrase != 0;
+            const bool game = request.game != 0;  // V4-06 mini-game clip
             const auto context =
                 static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
             const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
@@ -1375,16 +1400,30 @@ BOARD_WORKER = r'''
             // Logs: PET_PROMPT_* index=<rail item>, PET_PHRASE_* id=<phrase id>.
             const char* kind = phrase ? "PHRASE" : "PROMPT";
             const char* key = phrase ? "id" : "index";
-            const unsigned what = phrase ? phrase_id : request.index;
+            unsigned what = phrase ? phrase_id : request.index;
+            if (game) {  // V4-06: PET_GAME_* clip=<mini-game clip id>
+                kind = "GAME";
+                key = "clip";
+                what = request.game;
+            }
             kid_app::SoundClip clip;
-            if (phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
-                       : !sound_bank_.LoadOption(request.index, &clip)) {
+            kid_app::GameClip game_clip;
+            if (game     ? !kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)
+                : phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
+                         : !sound_bank_.LoadOption(request.index, &clip)) {
                 ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=clip", kind, key, what);
                 continue;
             }
+            if (game) clip.samples = game_clip.samples;  // streamed by game_clip below
             const uint64_t session =
-                (uint64_t{phrase ? 0x50485253u : 0x50524F4Du} << 32) | request.token;
-            if (phrase)
+                (uint64_t{game ? 0x47414D45u : phrase ? 0x50485253u : 0x50524F4Du} << 32) |
+                request.token;
+            if (game)
+                ESP_LOGI(TAG, "PET_GAME_PLAY clip=%u src=%s token=%u samples=%u", what,
+                         kid_app::GameClipSourceName(game_clip.source),
+                         static_cast<unsigned>(request.token),
+                         static_cast<unsigned>(clip.samples));
+            else if (phrase)
                 ESP_LOGI(TAG, "PET_PHRASE_PLAY id=%u ctx=%s src=%s token=%u samples=%u", what,
                          kid_app::PhraseContextName(context), kid_app::SoundSourceName(clip.source),
                          static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
@@ -1418,7 +1457,8 @@ BOARD_WORKER = r'''
                     interrupted = true;
                     break;
                 }
-                const size_t n = clip.Copy(offset, chunk, 480);
+                const size_t n = game ? game_clip.Copy(offset, chunk, 480)
+                                      : clip.Copy(offset, chunk, 480);
                 if (n == 0) break;  // TF card read failed
                 kid_app::ScalePcm(chunk, n, PromptVolumePct());
                 if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
@@ -1553,6 +1593,7 @@ BOARD_WORKER = r'''
     }
 
     void BeginMorning(uint32_t now) {
+        EndGame("morning", false);  // V4-06
         power_.StartMorning(now);
         napping_.store(false);
         morning_shown_.store(true);
@@ -1595,6 +1636,7 @@ BOARD_WORKER = r'''
         // the menu (it closes itself after 30 s).
         conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active() ||
                           voice_face_.load() != 0 || ParentMenuOpen();
+        if (GameActive()) conditions.busy = true;  // V4-06: so does a game in progress
         conditions.may_power_off = on_battery_.load() && !selftest_seen_.load() &&
                                    !battery_.External();  // V3-05: never while charging
         conditions.low_battery = battery_.LowPower();
@@ -1726,7 +1768,7 @@ BOARD_WORKER = r'''
             !morning_shown_.load() && voice_face_.load() == 0 && state == kDeviceStateIdle &&
             kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
             (!selftest_seen_.load() || battery_scripted_.load()) &&
-            !ParentMenuOpen();  // V3-06: not over the parent menu
+            !ParentMenuOpen() && !GameActive();  // V3-06 / V4-06: not over the menu or a game
         const auto reaction = battery_.Reaction(now, allowed);
         if (reaction == kid_app::BatteryReaction::None) return;
         const bool acted = RequestHomeAnimation(reaction == kid_app::BatteryReaction::Eat
@@ -1890,6 +1932,7 @@ BOARD_WORKER = r'''
         // V3-06: parents can switch motion off; the parent menu ignores it.
         const bool motion_off = !motion_enabled_.load();
         if (pet_mode_.load() && !sleep_active_.load() && !motion_off && !ParentMenuOpen() &&
+            !GameActive() &&  // V4-06: holding TuanTuan while playing is no gesture
             Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
             if (power_save_timer_) power_save_timer_->WakeUp();
             power_poke_.store(true);
@@ -2252,6 +2295,7 @@ BOARD_WORKER = r'''
         StopPrompt();
         if (story_pcm_.Ready()) story_pcm_.Stop();
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+        EndGame("parent", false);  // V4-06
         parent_menu_.Open(ParentSettingsNow(), NowMs());
         {
             SceneStateLock lock(scene_state_mutex_);
@@ -2322,6 +2366,209 @@ BOARD_WORKER = r'''
         }
         HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
         input_hub_.SetAutoRepeat(parent_menu_.Editing());
+    }
+
+    // ---- V4-06 mini games (PRD 7) ----
+    // The Game rail item starts a short game of reviewed rounds: from the
+    // TF pack /sdcard/games/default.kpg when it is valid, else the built-in
+    // set. pet_input owns game_. The game is UI only, like the parent menu:
+    // no Pet action, last_pet_scene_ keeps the home picture and only Game
+    // frames reach the panel while it runs (pet_mailbox_.game_only). It
+    // ends by itself (rounds done, long press, 60 s without input) or for
+    // sleep, a voice session, the parent menu, the morning picture or Pet
+    // mode off. pet_prompt opens the pack right after the sound pack and
+    // plays every game clip (PromptRequest::game) under the same volume
+    // rules (parent cap, quiet ceiling) as the other pet sounds.
+    kid_app::GameSession game_;                // pet_input only
+    std::atomic<bool> game_active_{false};     // read by the other tasks
+    bool game_requested_ = false;              // pet_input: rail press seen
+    uint8_t game_round_logged_ = 0;            // pet_input
+    std::atomic<uint32_t> game_seed_{0};       // self-test "game" step, 0 = random
+    std::atomic<uint32_t> game_tokens_{0};
+    kid_app::SoundPackFilePort game_file_;     // pet_prompt only
+    // Written by pet_prompt before game_pack_state_ says ready; read-only after.
+    kid_app::GamePackReader game_pack_;
+    static constexpr uint8_t kGamePackPending = 0, kGamePackNone = 1, kGamePackReady = 2;
+    std::atomic<uint8_t> game_pack_state_{kGamePackPending};
+
+    bool GameActive() const { return game_active_.load(); }
+    kid_app::GamePackReader* GamePackNow() {
+        return game_pack_state_.load() == kGamePackReady ? &game_pack_ : nullptr;
+    }
+
+    // pet_prompt, once, after the sound pack. Missing or invalid: built-in set.
+    void LoadGamePack() {
+        const uint32_t started_ms = NowMs();
+        const char* state = "no_sd";
+        if (sound_sd_.load() == kSoundSdMounted) {
+            state = "absent";
+            if (game_file_.Open("/sdcard/games", "default", "kpg")) {
+                state = game_pack_.Open(game_file_) ? "ready" : "invalid";
+                if (!game_pack_.Ready()) game_file_.Close();
+            }
+        }
+        game_pack_state_.store(game_pack_.Ready() ? kGamePackReady : kGamePackNone);
+        ESP_LOGI(TAG, "PET_GAME_PACK state=%s rounds=%u clips=%u id=%u rev=%u ms=%u", state,
+                 static_cast<unsigned>(game_pack_.RoundCount()),
+                 static_cast<unsigned>(game_pack_.ClipCount()),
+                 static_cast<unsigned>(game_pack_.ContentId()),
+                 static_cast<unsigned>(game_pack_.Revision()),
+                 static_cast<unsigned>(NowMs() - started_ms));
+    }
+
+    // pet_input. Quiet hours are for sleeping, a low battery for charging:
+    // then the rail's Game item only makes TuanTuan say hi.
+    bool GameStartAllowed() {
+        const char* refused =
+            quiet_hours_.load()   ? "quiet"
+            : battery_.LowPower() ? "battery"
+            : Application::GetInstance().GetDeviceState() != kDeviceStateIdle ? "voice"
+                                                                               : nullptr;
+        if (!refused) return true;
+        ESP_LOGI(TAG, "PET_GAME_REFUSED reason=%s", refused);
+        return false;
+    }
+
+    void PostGameClip(uint16_t clip) {
+        if (!clip || !pet_mode_.load() || sleep_active_.load() || ParentMenuOpen()) return;
+        kid_app::PromptRequest request{};
+        request.game = clip;
+        request.token = game_tokens_.fetch_add(1) + 1;
+        PostPrompt(request);
+    }
+
+    // Caller holds scene_state_mutex_.
+    void PublishGameSceneLocked() {
+        kid_app::SceneModel scene{};
+        scene.kind = kid_app::SceneKind::Game;
+        scene.game = game_.View();
+        pet_mailbox_.Publish(scene);
+    }
+
+    void LogGameRound() {
+        const auto& round = game_.Current();
+        const auto view = game_.View();
+        game_round_logged_ = view.round;
+        ESP_LOGI(TAG, "PET_GAME_ROUND n=%u/%u kind=%s options=%u answer=%u",
+                 static_cast<unsigned>(view.round), static_cast<unsigned>(view.rounds),
+                 kid_app::GameKindName(round.kind), static_cast<unsigned>(round.option_count),
+                 static_cast<unsigned>(round.correct));
+    }
+
+    // pet_input, after the rail press (scene_state_mutex_ released).
+    void StartGame() {
+        kid_app::GamePackReader* pack = GamePackNow();
+        const kid_app::GameRound* pool = pack ? pack->Rounds() : kid_app::BuiltinGameRounds();
+        const size_t count = pack ? pack->RoundCount() : kid_app::BuiltinGameRoundCount();
+        const uint16_t id = pack ? pack->ContentId() : kid_app::kBuiltinGameId;
+        uint32_t seed = game_seed_.exchange(0);
+        if (!seed) seed = esp_random();
+        kid_app::GameOutput out{};
+        if (!game_.Start(pool, count, id, seed, kid_app::GameSession::kDefaultRounds, NowMs(),
+                         &out)) {
+            ESP_LOGW(TAG, "PET_GAME_START_FAILED src=%s", pack ? "pack" : "builtin");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_START src=%s id=%u seed=%u rounds=%u", pack ? "pack" : "builtin",
+                 static_cast<unsigned>(id), static_cast<unsigned>(seed),
+                 static_cast<unsigned>(game_.Result().rounds));
+        LogGameRound();
+        PostGameClip(out.clip);
+    }
+
+    void ApplyGameOutput(const kid_app::GameOutput& out) {
+        PostGameClip(out.clip);
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(game_.Result().end));
+            return;
+        }
+        if (!out.redraw) return;
+        if (game_.View().round != game_round_logged_) LogGameRound();
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    // pet_input: the dial while a game runs. BOOT and PWR keep their own
+    // handlers (talking or sleeping ends the game).
+    void HandleGameInput(kid_app::InputKind kind) {
+        kid_app::GameInput input = kid_app::GameInput::Press;
+        switch (kind) {
+            case kid_app::InputKind::DialUp: input = kid_app::GameInput::Up; break;
+            case kid_app::InputKind::DialDown: input = kid_app::GameInput::Down; break;
+            case kid_app::InputKind::DialPress: input = kid_app::GameInput::Press; break;
+            case kid_app::InputKind::DialLong: input = kid_app::GameInput::Long; break;
+            default: return;
+        }
+        const auto before = game_.View();
+        const auto out = game_.Input(input, NowMs());
+        if (input == kid_app::GameInput::Press && out.redraw) {
+            static const char* const kFeedback[] = {"none", "right", "try_again", "reveal"};
+            ESP_LOGI(TAG, "PET_GAME_ANSWER n=%u pick=%u right=%d feedback=%s correct=%u",
+                     static_cast<unsigned>(before.round), static_cast<unsigned>(before.highlight),
+                     out.right ? 1 : 0, kFeedback[static_cast<uint8_t>(game_.View().feedback) & 3],
+                     static_cast<unsigned>(game_.Result().correct));
+        } else if (out.redraw) {
+            ESP_LOGI(TAG, "PET_GAME_SELECT index=%u", static_cast<unsigned>(game_.View().highlight));
+        }
+        ApplyGameOutput(out);
+    }
+
+    // pet_input, every loop.
+    void UpdateGame(DeviceState state) {
+        if (!game_active_.load()) return;
+        if (!pet_mode_.load()) {
+            EndGame("pet_off");
+            return;
+        }
+        if (state != kDeviceStateIdle) {  // BOOT: TuanTuan listens instead
+            EndGame("voice");
+            return;
+        }
+        ApplyGameOutput(game_.Tick(NowMs()));
+    }
+
+    // pet_input. Back to the pet's own (durable) home picture, as it is now;
+    // publish_home=false when the caller shows its own picture right away
+    // (sleep, parent menu, morning), so the panel skips a needless refresh.
+    void EndGame(const char* reason, bool publish_home = true) {
+        if (!game_active_.load()) return;
+        game_.Interrupt();  // no-op when the game already finished by itself
+        const kid_app::GameResult result = game_.Result();
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(false);
+            pet_mailbox_.game_only.store(false);
+            if (publish_home && pet_mode_.load() && !sleep_active_.load())
+                pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
+        }
+        // ADR-012: only a finished game with a correct dial answer counts for
+        // growth (GAME_COMPLETED, source Device, option = game id), through
+        // the ledger like every other memory (RecordMemory). Id and day go
+        // back to 0: the atomic Pet worker assigns the next local id and the
+        // RTC day.
+        kid_app::MemoryEvent memory{};
+        const bool growth =
+            kid_app::GameCompletedMemoryEvent(result, kid_app::kLocalEventBit, 0, &memory);
+        bool posted = false;
+        if (growth) {
+            memory.id = 0;
+            posted = RecordMemory(memory);
+        }
+        ESP_LOGI(TAG, "PET_GAME_END end=%s reason=%s played=%u/%u correct=%u id=%u growth=%d "
+                 "posted=%d",
+                 kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
+                 static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
+                 static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
     }
 
     // ---- Host-scripted self-test (unattended hardware trials) ----
@@ -2474,6 +2721,11 @@ BOARD_WORKER = r'''
                     PostKeyEdge(kid_app::InputKey::Boot, false);
                     vTaskDelay(pdMS_TO_TICKS(step.gap_ms));
                     break;
+                case kid_app::SelfTestOp::Game:
+                    // V4-06: the next mini game plays these rounds.
+                    game_seed_.store(step.ms);
+                    ESP_LOGI(TAG, "PET_SELFTEST_GAME seed=%u", static_cast<unsigned>(step.ms));
+                    break;
                 case kid_app::SelfTestOp::Hold:
                     // Same raw-edge queue as the physical buttons.
                     PostKeyEdge(step.key, true);
@@ -2585,6 +2837,10 @@ def patch_board(text: str) -> str:
         '#include "kid_app/power_manager.h"\n'
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/parent_menu.h"\n'
+        '#include "kid_app/mini_game.h"\n'
+        '#include "kid_app/game_pack_reader.h"\n'
+        '#include "kid_app/memory_store.h"\n'
+        '#include "esp_random.h"\n'
         '#include <mutex>\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
@@ -2628,6 +2884,7 @@ def patch_board(text: str) -> str:
         // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
             if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
+            if (GameActive()) return;  // V4-06: no story or feeding mid-game
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Double);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
@@ -2635,6 +2892,7 @@ def patch_board(text: str) -> str:
         });
         boot_button_.OnMultipleClick([this]() {
             if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
+            if (GameActive()) return;  // V4-06
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Triple);
             if (decision.valid && !pet_service_.PostLocal(decision.action))

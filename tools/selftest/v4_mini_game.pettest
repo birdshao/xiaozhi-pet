@@ -1,0 +1,69 @@
+PETSELFTEST1
+# V4-06 mini games with the built-in set: three games, dial steps only.
+# Needs no TF pack: take /games/default.kpg off the card (or expect
+# src=pack). Run outside the quiet hours (default 20:30-07:00) and above
+# the low-battery level, or the Game item only says hi (PET_GAME_REFUSED).
+# Seed 4242 plays (tests/cpp/test_mini_game.cc checks the same order):
+#   1) heart: third card   2) circle: second card   3) one block: third card
+# Counted from "mark begin" (see tools/selftest_report.py).
+# Games are UI only: no pet commits.
+# expect commits 0
+# expect min:PET_GAME_START 3
+# expect min:src=builtin 3
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_GAME_START_FAILED 0
+# Game 1: right, reveal (two wrong presses), try again then right.
+# expect min:right=1 2
+# expect min:feedback=reveal 1
+# expect min:feedback=try_again 2
+# expect min:end=completed 1
+# expect min:growth=1 1
+# Game 2: long press goes home. Game 3: nobody plays, home after 60 s.
+# expect min:end=home 1
+# expect min:end=idle 1
+# expect min:PET_GAME_QUEUED 8
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# Home rail: left end (Chat), then two to the right = Game.
+tap up 800
+tap up 800
+tap up 800
+tap up 800
+tap down 800
+tap down 2000
+# Game 1 (full refresh into the game, then the question tone).
+game 4242
+tap press 8000
+# Round 1: the heart is the third card: right first time.
+tap down 1500
+tap down 1500
+tap press 5000
+# Round 2: the circle is the second card; the first one twice:
+# "try another", then TuanTuan shows the answer (no reward).
+tap press 2500
+tap press 6000
+# Round 3: one block = one dot, the third card. Second card first.
+tap down 1500
+tap press 2500
+tap down 1500
+tap press 9000
+# Game 2: a long press goes home at once.
+game 4242
+tap press 8000
+tap down 1500
+hold press 1500 8000
+# Game 3: nobody plays: the question again after 12 s, home after 60 s.
+game 4242
+tap press 8000
+wait 62000
+end

@@ -24,8 +24,9 @@ int main() {
         assert(!menu.Select(5) && menu.Selected() == HomeItem::Feed);
     }
 
-    // Confirm on the home rail: Story/Feed are real Pet actions; Chat and
-    // Game say hi until V6/V4; Sleep belongs to the board's sleep flow.
+    // Confirm on the home rail: Story/Feed are real Pet actions; Chat says
+    // hi until V6; Game says hi only when the board cannot start a V4-06
+    // mini game; Sleep belongs to the board's sleep flow.
     {
         const auto story = PetInputRouter::DecideHome(PetMode::Idle, HomeItem::Story);
         assert(story.valid && story.action == PetAction::StartStory);

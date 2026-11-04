@@ -176,6 +176,9 @@ bool SelfTestScript::Parse(const char* text) {
                     return false;
                 if (charging) step.ms |= kBatteryCharging;
             }
+        } else if (std::strcmp(words[0], "game") == 0) {
+            if (n != 2 || !Number(words[1], &step.ms) || step.ms == 0) return false;
+            step.op = SelfTestOp::Game;
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
@@ -232,10 +235,10 @@ uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
         // Alarm seconds, Volume percent, Gesture, Voice and Battery codes
-        // are not delays.
+        // and Game seeds are not delays.
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
             steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice ||
-            steps_[i].op == SelfTestOp::Battery)
+            steps_[i].op == SelfTestOp::Battery || steps_[i].op == SelfTestOp::Game)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

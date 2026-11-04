@@ -145,6 +145,19 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\ncombo 600001\nend\n"));
     }
 
+    // game <seed>: the next mini game's seed (V4-06); not a delay.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\ngame 42\nwait 100\nend\n"));
+        assert(script.Count() == 2);
+        assert(script.Steps()[0].op == SelfTestOp::Game && script.Steps()[0].ms == 42);
+        assert(script.TotalMs() == 100);
+        assert(!script.Parse("PETSELFTEST1\ngame\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ngame 0\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ngame x3\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ngame 4 5\nend\n"));
+    }
+
     // Raw flash sector: text followed by erased 0xFF bytes.
     {
         char sector[4096];

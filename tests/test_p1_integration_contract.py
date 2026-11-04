@@ -1106,6 +1106,77 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
         self.assertIn('# expect ledger_restored 1', scenario)
         self.assertLess(scenario.index('\nalarm '), scenario.index('\ntap pwr'))
+    def test_v4_mini_game_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/mini_game.h"', patched)
+        self.assertIn('#include "kid_app/game_pack_reader.h"', patched)
+        # The Game rail item starts a game (UI only) after the lock is
+        # released; quiet hours or a low battery fall back to "say hi".
+        rail = self._body(patched, 'kid_app::PetInputDecision HandleHomeRailLocked(')
+        self.assertLess(rail.index('HomeItem::Game && GameStartAllowed()'),
+                        rail.index('PetInputRouter::DecideHome('))
+        allowed = self._body(patched, 'bool GameStartAllowed()')
+        self.assertIn('quiet_hours_.load()', allowed)
+        self.assertIn('battery_.LowPower()', allowed)
+        self.assertIn('!= kDeviceStateIdle ? "voice"', allowed)
+        handle = self._body(patched, 'void HandleInputEvent(')
+        # Sleep and the parent combo still come first; then the game takes the dial.
+        self.assertLess(handle.index('InputKind::SleepRequest && pet_mode_.load()'),
+                        handle.index('HandleGameInput(event.kind)'))
+        self.assertLess(handle.index('OpenParentMenu();'), handle.index('HandleGameInput(event.kind)'))
+        self.assertLess(handle.index('if (game_requested_)'), handle.index('pet_service_.PostLocal('))
+        start = self._body(patched, 'void StartGame()')
+        self.assertIn('kid_app::BuiltinGameRounds()', start)  # works without a TF card
+        self.assertIn('game_seed_.exchange(0)', start)
+        self.assertIn('pet_mailbox_.game_only.store(true)', start)
+        self.assertNotIn('pet_service_', start)  # no Pet action, no NVS
+        # Only Game frames reach the panel while it runs.
+        mailbox = self._body(patched, 'struct GatedSceneMailbox')
+        self.assertIn('game_only.load() && scene.kind != kid_app::SceneKind::Game', mailbox)
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
+        self.assertIn('pet_mailbox_.game_only.store(false)', end)
+        self.assertIn('last_pet_scene_.load()', end)
+        self.assertIn('GameCompletedMemoryEvent(', end)
+        self.assertIn('posted = RecordMemory(memory);', end)  # the #64 ledger path only
+        self.assertNotIn('pet_service_', end)
+        # Every other owner of the screen or the speaker ends the game first.
+        show = patched[patched.index('case kid_app::SleepAction::ShowSleepScene: {'):]
+        self.assertLess(show.index('EndGame("sleep", false)'), show.index('sleep_active_.store(true);'))
+        self.assertLess(self._body(patched, 'void OpenParentMenu()').index('EndGame("parent", false)'),
+                        self._body(patched, 'void OpenParentMenu()').index('parent_menu_.Open('))
+        self.assertIn('EndGame("morning", false)', self._body(patched, 'void BeginMorning('))
+        update = self._body(patched, 'void UpdateGame(DeviceState state)')
+        self.assertIn('EndGame("pet_off")', update)
+        self.assertIn('EndGame("voice")', update)
+        self.assertIn('game_.Tick(NowMs())', update)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdateGame(state)'), loop.index('UpdatePower(state)'))
+        # No pet lines, gestures, battery reactions, animations or naps over a game.
+        self.assertIn('GameActive()', self._body(patched, 'void PostPhrase('))
+        self.assertIn('!GameActive()', self._body(patched, 'void HandleGesture('))
+        self.assertIn('if (GameActive()) return;', self._body(patched, 'void RequestAnimation('))
+        self.assertIn('if (GameActive()) conditions.busy = true;', self._body(patched, 'void UpdatePower('))
+        battery = self._body(patched, 'void UpdateBattery(')
+        self.assertIn('!GameActive()', battery[battery.index('const bool allowed'):])
+        # Game sounds share the one prompt player and its volume rules.
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertIn('kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)', player)
+        self.assertIn('game_clip.Copy(offset, chunk, 480)', player)
+        self.assertIn('0x47414D45u', player)
+        self.assertEqual(patched.count('kid_app::ScalePcm(chunk, n, PromptVolumePct())'), 1)
+        self.assertIn('LoadGamePack();', self._body(patched, 'void LoadSoundPack()'))
+        self.assertIn('game_file_.Open("/sdcard/games", "default", "kpg")',
+                      self._body(patched, 'void LoadGamePack()'))
+        # Self-test "game" step fixes the next seed.
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        self.assertIn('case kid_app::SelfTestOp::Game:', run)
+        self.assertIn('game_seed_.store(step.ms)', run)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v4_mini_game.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('\ngame 4242\n', scenario)
+        self.assertIn('# expect commits 0', scenario)
+        self.assertIn('# expect min:end=completed 1', scenario)
 
 if __name__ == "__main__":
     unittest.main()
