@@ -9,16 +9,17 @@ PETSELFTEST1
 # expect max_full_ms 5000
 # expect partial_refreshes 18
 # expect full_refreshes 3
-# Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize the restored pet state to "home, neutral": press opens the
 # preselected Story (no-op if already reading), hold returns home.
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 mark begin
 # 9 highlight moves, all partial (rail budget 40, cleanup only when idle).
 tap up 2500

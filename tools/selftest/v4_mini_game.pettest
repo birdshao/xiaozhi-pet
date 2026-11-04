@@ -25,14 +25,22 @@ PETSELFTEST1
 # expect none:PET_SELFTEST_ABORT 0
 # expect selftest_done 1
 # expect max_partial_ms 2500
+# expect timescale 50
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# TEST ONLY: the "nobody plays" timers (question again 12 s, home 60 s) at
+# 50 %; the answers below come well inside 6 s. "twait" scales with it;
+# right/reveal holds and refreshes stay real ("wait").
+# Real speed: timescale 100 (selftest_report.py --timescale 100).
+timescale 50
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize restored pet state to "home, neutral".
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 mark begin
 # Home rail: left end (Chat), then two to the right = Game.
 tap up 800
@@ -62,8 +70,10 @@ game 4242
 tap press 8000
 tap down 1500
 hold press 1500 8000
-# Game 3: nobody plays: the question again after 12 s, home after 60 s.
+# Game 3: nobody plays: the question again after 12 s, home after 60 s
+# (scaled, counted from the question).
 game 4242
 tap press 8000
-wait 62000
+twait 60000
+wait 6000
 end

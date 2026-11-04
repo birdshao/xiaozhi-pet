@@ -1,4 +1,5 @@
 #include "kid_app/power_manager.h"
+#include "kid_app/selftest_clock.h"
 
 namespace kid_app {
 
@@ -45,7 +46,8 @@ PowerEvent PowerManager::Tick(uint32_t now_ms, const PowerConditions& conditions
         return previous == PowerState::Nap ? PowerEvent::LeaveNap : PowerEvent::None;
     }
     if (morning_) {
-        if (now_ms - morning_since_ms_ < kMorningAwakeMs) return PowerEvent::None;
+        if (now_ms - morning_since_ms_ < SelfTestClock::Scaled(kMorningAwakeMs))
+            return PowerEvent::None;
         morning_ = false;
         return SleepNow(SleepReason::Morning);
     }
@@ -54,11 +56,12 @@ PowerEvent PowerManager::Tick(uint32_t now_ms, const PowerConditions& conditions
     const bool night = conditions.phase_known && conditions.phase == DayPhase::Night;
     switch (state_) {
         case PowerState::Active:
-            if (quiet_ms < kIdleAfterMs) return PowerEvent::None;
+            if (quiet_ms < SelfTestClock::Scaled(kIdleAfterMs)) return PowerEvent::None;
             state_ = PowerState::Idle;
             return PowerEvent::EnterIdle;
         case PowerState::Idle:
-            if (quiet_ms < (drowsy ? kIdleAfterMs : kNapAfterMs)) return PowerEvent::None;
+            if (quiet_ms < SelfTestClock::Scaled(drowsy ? kIdleAfterMs : kNapAfterMs))
+                return PowerEvent::None;
             state_ = PowerState::Nap;
             nap_since_ms_ = now_ms;
             return PowerEvent::EnterNap;
@@ -67,7 +70,8 @@ PowerEvent PowerManager::Tick(uint32_t now_ms, const PowerConditions& conditions
             const uint32_t off_after = night ? kNightOffAfterNapMs
                                        : low ? kLowBatteryOffAfterNapMs
                                              : kOffAfterNapMs;
-            if (!conditions.may_power_off || now_ms - nap_since_ms_ < off_after)
+            if (!conditions.may_power_off ||
+                now_ms - nap_since_ms_ < SelfTestClock::Scaled(off_after))
                 return PowerEvent::None;
             return SleepNow(night ? SleepReason::Night
                             : low ? SleepReason::LowBattery

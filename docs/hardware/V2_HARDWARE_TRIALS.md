@@ -9,6 +9,15 @@
 - 板子：测试固件从 ota_1 启动时读取该扇区；脚本合法就按步骤把模拟按键注入**与实体按键相同**的队列，否则什么都不做。固件只读不写。
 - 试验结束：恢复启动选择器、擦除脚本扇区、`python tools/selftest_report.py report <场景> <日志>` 按场景里的 `# expect` 判定。行为只统计 `mark begin` 之后；无汇总行、崩溃、看门狗、中止一律失败。
 
+### 测试专用时间缩放（2026-11-04 起）
+
+- 只在 ota_1 上、脚本合法时生效：`timescale <10..100>` 把**等人用的功能定时器**缩短到该百分比——空闲眨眼、空闲 20 s 后的清残影全刷、电源空闲/小睡/关机、早安 60 s 窗口、家长菜单 30 s 无操作退出、小游戏 12 s 重复提问与 60 s 无人退出、电池采样（即防抖）与吃电/哈欠/临界重试周期。只存 RAM，脚本结束或中止即回到 100 %，重启必为实时；孩子手里的设备永远是 100 %。缩放源是 `kid_app/selftest_clock.h`，只有 `MaybeRunSelfTest` 能设置（契约测试保证）。
+- **不缩放**：墨水屏刷新与等待、动画帧停留、音频播放、哄睡 3 s 反悔窗口、语音表情/选项播报的防抖、状态栏按分钟刷新、RTC 闹钟秒数。
+- 场景里等定时器用 `twait <ms>`（按实时写，运行时乘比例），等刷新/动画用普通 `wait`；所以同一个场景改成 `timescale 100` 就是原速版本。`waitidle 60000` 代替原来固定的 `wait 20000`：小智空闲（联网、激活完成）1 s 即开始，最多等 60 s。
+- 原速运行：`python tools/selftest_report.py sector --timescale 100 <场景> <镜像>`，判定时同样加 `--timescale 100`（会同步改写 `# expect timescale`）。`python tools/selftest_report.py plan tools/selftest/*.pettest` 给出每个场景的预计时长、监视上限和结束标记（`PET_SELFTEST_DONE`，或断电场景闹钟唤醒后的 `PET_SELFTEST_NONE reason=alarm_wake`）。
+- 使用缩放的场景：`v3_animations`（25 %）、`v3_battery`（25 %）、`v3_morning`（50 %）、`v3_parent_menu`（50 %）、`v4_mini_game`（50 %）；其余 8 个场景（含 `v4_book_reader`、`v7_ledger_persist`）本来就不等功能定时器，始终原速。
+- **发版前必须原速（`--timescale 100`）跑一遍的场景**：`v3_animations`（真实 45–90 s 眨眼间隔与 20 s 清残影）、`v3_morning`（真实 60 s 早安窗口与随后的关机/闹钟唤醒）、`v3_parent_menu`（真实 30 s 无操作退出，家长会碰到）、`v3_battery`（真实 2 s 采样的电量防抖与临界关机）、`v4_mini_game`（真实 12 s 重复提问与 60 s 无人退出）。日常回归可用缩放版本。
+
 ## 第 1 轮：首页动作条 + 局部刷新（2026-11-03，自动）
 
 | 项目 | 内容 |

@@ -216,6 +216,37 @@ int main() {
         assert(script.Count() == 0);
     }
 
+    // timescale <percent>: test-only feature-timer scale, 10..100 %;
+    // waitidle <timeout_ms>: XiaoZhi ready, bounded (counts as a delay).
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\ntimescale 25\nwaitidle 45000\ntimescale 100\nend\n"));
+        assert(script.Count() == 3);
+        assert(script.Steps()[0].op == SelfTestOp::TimeScale && script.Steps()[0].ms == 25);
+        assert(script.Steps()[1].op == SelfTestOp::WaitIdle && script.Steps()[1].ms == 45000);
+        assert(script.Steps()[2].op == SelfTestOp::TimeScale && script.Steps()[2].ms == 100);
+        assert(script.TotalMs() == 45000);
+        assert(script.Parse("PETSELFTEST1\ntimescale 10\nwaitidle 1000\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale 9\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale 0\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale 101\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale 25 50\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntimescale 25%\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nwaitidle\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nwaitidle 999\nend\n"));     // < settle time
+        assert(!script.Parse("PETSELFTEST1\nwaitidle 600001\nend\n"));  // > 10 minutes
+        assert(!script.Parse("PETSELFTEST1\nwaitidle 5000 1\nend\n"));
+        assert(script.Count() == 0);
+        // twait <ms>: a feature-timer wait, real-time length in the script.
+        assert(script.Parse("PETSELFTEST1\ntimescale 25\ntwait 90000\nwait 3000\nend\n"));
+        assert(script.Steps()[1].op == SelfTestOp::TimerWait && script.Steps()[1].ms == 90000);
+        assert(script.TotalMs() == 93000);
+        assert(!script.Parse("PETSELFTEST1\ntwait\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntwait 600001\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntwait 1 2\nend\n"));
+    }
+
     // Bounded: at most kMaxSteps steps.
     {
         std::string text = "PETSELFTEST1\n";

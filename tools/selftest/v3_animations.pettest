@@ -12,14 +12,21 @@ PETSELFTEST1
 # expect selftest_done 1
 # expect max_partial_ms 2500
 # expect max_full_ms 5000
+# expect timescale 25
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# TEST ONLY: cleanup (20 s) and blink (45..90 s) timers at 25 %. "twait"
+# scales with it; refreshes and animation frames stay real ("wait").
+# Real speed: timescale 100 (selftest_report.py --timescale 100).
+timescale 25
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize restored pet state to "home, neutral".
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 mark begin
 # Chat (0): the pet says hi and waves.
 tap up 2500
@@ -30,7 +37,7 @@ tap down 2500
 tap down 2500
 tap press 7000
 # 40 highlight moves Feed <-> Sleep pass the rail's soft budget without
-# a full refresh; 25 s of quiet then runs one cleanup full refresh.
+# a full refresh; 20 s of quiet (scaled) then run one cleanup full refresh.
 tap down 1500
 tap up 1500
 tap down 1500
@@ -71,9 +78,11 @@ tap down 1500
 tap up 1500
 tap down 1500
 tap up 1500
-wait 25000
-# Quiet home screen: an idle blink within 45..90 s.
-wait 95000
+twait 20000
+wait 6000
+# Quiet home screen: an idle blink within 45..90 s (scaled) of the cleanup.
+twait 90000
+wait 3000
 # Sleep (4): Zzz one by one; cancel inside the 3 s window.
 tap down 2500
 tap press 8000

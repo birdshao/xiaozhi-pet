@@ -145,6 +145,21 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_selftest_script"
 "$BUILD/test_selftest_script"
 
+# Test-only self-test time scale: real time by default, 10..100 %, and the
+# feature timers that wrap it (blink, cleanup, power, parent exit, battery).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/selftest_script.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_animation.cc" \
+  "$ROOT/firmware/components/kid_app/src/power_manager.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_menu.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/battery_policy.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_selftest_clock.cc" \
+  -o "$BUILD/test_selftest_clock"
+"$BUILD/test_selftest_clock"
+
 # V2-09 sleep flow: show, 3 s cancel window after display, power off once.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/sleep_flow.cc" \

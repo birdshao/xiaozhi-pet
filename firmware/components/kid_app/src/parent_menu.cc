@@ -1,4 +1,5 @@
 #include "kid_app/parent_menu.h"
+#include "kid_app/selftest_clock.h"
 
 namespace kid_app {
 
@@ -111,7 +112,8 @@ ParentMenuAction ParentMenu::OnInput(InputKind kind, uint32_t now_ms) {
 }
 
 ParentMenuAction ParentMenu::Tick(uint32_t now_ms) {
-    if (!open_ || now_ms - last_input_ms_ < kIdleExitMs) return ParentMenuAction::None;
+    if (!open_ || now_ms - last_input_ms_ < SelfTestClock::Scaled(kIdleExitMs))
+        return ParentMenuAction::None;
     Close();
     return ParentMenuAction::Exit;
 }

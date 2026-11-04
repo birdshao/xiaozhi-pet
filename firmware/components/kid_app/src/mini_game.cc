@@ -1,6 +1,7 @@
 #include "kid_app/mini_game.h"
 
 #include "kid_app/memory_store.h"
+#include "kid_app/selftest_clock.h"
 
 #include <algorithm>
 #include <cmath>
@@ -317,9 +318,10 @@ GameOutput GameSession::Input(GameInput input, uint32_t now_ms) {
 GameOutput GameSession::Tick(uint32_t now_ms) {
     GameOutput out{};
     if (phase_ == Phase::Asking) {
-        if (Reached(now_ms, last_input_ms_ + kIdleExitMs)) {
+        if (Reached(now_ms, last_input_ms_ + SelfTestClock::Scaled(kIdleExitMs))) {
             Finish(GameEnd::Idle, &out);
-        } else if (!repeated_ && Reached(now_ms, last_input_ms_ + kRepeatPromptMs)) {
+        } else if (!repeated_ &&
+                   Reached(now_ms, last_input_ms_ + SelfTestClock::Scaled(kRepeatPromptMs))) {
             repeated_ = true;  // say the question once more, then wait
             out.clip = current_.prompt_clip;
         }

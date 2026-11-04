@@ -1607,7 +1607,8 @@ BOARD_WORKER = r'''
         }
         PostPhrase(kid_app::PhraseContext::MorningRecap);  // V5-04 good morning
         ESP_LOGI(TAG, "PET_MORNING_BEGIN awake_s=%u phase=%s",
-                 static_cast<unsigned>(kid_app::PowerManager::kMorningAwakeMs / 1000),
+                 static_cast<unsigned>(
+                     kid_app::SelfTestClock::Scaled(kid_app::PowerManager::kMorningAwakeMs) / 1000),
                  PhaseName(day_phase_.load()));
     }
 
@@ -1729,7 +1730,10 @@ BOARD_WORKER = r'''
     }
 
     void SampleBattery(uint32_t now) {
-        if (battery_sample_ms_ && now - battery_sample_ms_ < kBatterySampleMs) return;
+        // A self-test time scale shortens the debounce (counted in samples).
+        if (battery_sample_ms_ &&
+            now - battery_sample_ms_ < kid_app::SelfTestClock::Scaled(kBatterySampleMs))
+            return;
         battery_sample_ms_ = now ? now : 1;
         kid_app::BatteryReading reading{};
         if (!ReadBattery(&reading)) return;
@@ -1763,7 +1767,8 @@ BOARD_WORKER = r'''
         // napping, in the morning window, talking or on the reader; and
         // not in a scripted trial that does not script the battery.
         const bool allowed =
-            pet && now - battery_pet_since_ms_ >= kBatteryReactAfterPetMs &&
+            pet &&
+            now - battery_pet_since_ms_ >= kid_app::SelfTestClock::Scaled(kBatteryReactAfterPetMs) &&
             !sleep_flow_.Active() && !sleep_active_.load() && !napping_.load() &&
             !morning_shown_.load() && voice_face_.load() == 0 && state == kDeviceStateIdle &&
             kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
@@ -2610,6 +2615,15 @@ BOARD_WORKER = r'''
         }
         // PowerManager never powers off by itself during a trial.
         selftest_seen_.store(true);
+        // TEST ONLY time scale ("timescale" steps): real time again however
+        // the script ends (done or abort); a reboot is real time anyway.
+        struct RealTimeAtEnd {
+            ~RealTimeAtEnd() {
+                if (!kid_app::SelfTestClock::Scaling()) return;
+                kid_app::SelfTestClock::SetForSelfTest(kid_app::SelfTestClock::kRealPct);
+                ESP_LOGI(TAG, "PET_SELFTEST_TIMESCALE pct=100 reason=end");
+            }
+        } real_time_at_end;
         ESP_LOGI(TAG, "PET_SELFTEST_START steps=%u total_ms=%u",
                  static_cast<unsigned>(script->Count()),
                  static_cast<unsigned>(script->TotalMs()));
@@ -2701,6 +2715,38 @@ BOARD_WORKER = r'''
                 case kid_app::SelfTestOp::Mark:
                     ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);
                     break;
+                case kid_app::SelfTestOp::TimeScale:
+                    // The parser keeps it within 10..100 %; see selftest_clock.h
+                    // for which timers follow it (refresh and audio never do).
+                    kid_app::SelfTestClock::SetForSelfTest(step.ms);
+                    ESP_LOGI(TAG, "PET_SELFTEST_TIMESCALE pct=%u",
+                             static_cast<unsigned>(kid_app::SelfTestClock::Pct()));
+                    break;
+                case kid_app::SelfTestOp::TimerWait:
+                    // Waits for a scaled feature timer: as long as it is now.
+                    vTaskDelay(pdMS_TO_TICKS(kid_app::SelfTestClock::Scaled(step.ms)));
+                    break;
+                case kid_app::SelfTestOp::WaitIdle: {
+                    // Instead of a fixed boot wait: XiaoZhi idle (Wi-Fi up,
+                    // activated) for 1 s in a row, at most step.ms. Not ready
+                    // in time: go on, the pet toggle retries or aborts.
+                    const uint32_t start = NowMs();
+                    uint32_t idle_since = 0;
+                    bool ready = false;
+                    while (!ready && NowMs() - start < step.ms) {
+                        const uint32_t now = NowMs();
+                        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
+                            idle_since = 0;
+                        else if (!idle_since)
+                            idle_since = now ? now : 1;
+                        else if (now - idle_since >= kid_app::SelfTestScript::kIdleSettleMs)
+                            ready = true;
+                        if (!ready) vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    ESP_LOGI(TAG, "PET_SELFTEST_IDLE ready=%d ms=%u", ready ? 1 : 0,
+                             static_cast<unsigned>(NowMs() - start));
+                    break;
+                }
                 case kid_app::SelfTestOp::Book:
                     // V4-05: read a test book from the card instead of the
                     // demo book. The card is opened once, when Pet mode
@@ -2812,6 +2858,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/pet_animation.h"\n'
         '#include "kid_app/voice_face.h"\n'
         '#include "kid_app/selftest_script.h"\n'
+        '#include "kid_app/selftest_clock.h"\n'
         '#include "kid_app/sleep_flow.h"\n'
         '#include "kid_app/prompt_scheduler.h"\n'
         '#include "kid_app/prompt_clips.h"\n'

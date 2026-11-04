@@ -919,7 +919,8 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
         steps = [line.strip() for line in scenario.splitlines()
                  if line.strip() and not line.lstrip().startswith('#')]
-        self.assertLess(steps.index('alarm 60'), steps.index('battery 5 0'))
+        alarm = next(i for i, s in enumerate(steps) if s.startswith('alarm '))
+        self.assertLess(alarm, steps.index('battery 5 0'))
         for needle in ('battery 60 1', 'battery 15 0', 'mark begin'):
             self.assertIn(needle, steps)
         for expect in ('min:event=plugged', 'min:anim=yawn', 'min:event=critical',
@@ -1056,6 +1057,79 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('# expect commits 0', scenario)
         self.assertIn('# expect min:parent_exit=idle 1', scenario)
         self.assertIn('# expect min:motion_off=1 1', scenario)
+
+    def test_selftest_time_scale_only_inside_a_scripted_trial(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/selftest_clock.h"', patched)
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        # The only setter calls in the whole board are in MaybeRunSelfTest,
+        # after the ota_1 check and a valid script (else: no scaling ever).
+        self.assertEqual(patched.count('SetForSelfTest('), run.count('SetForSelfTest('))
+        self.assertEqual(run.count('SetForSelfTest('), 2)
+        first = run.index('SetForSelfTest(')
+        for guard in ('ESP_PARTITION_SUBTYPE_APP_OTA_1', 'PET_SELFTEST_NONE reason=alarm_wake',
+                      'ParseSector(', 'PET_SELFTEST_NONE reason=no_script'):
+            self.assertLess(run.index(guard), first, guard)
+        # Real time again whenever the script ends (done or any abort).
+        self.assertIn('struct RealTimeAtEnd', run)
+        self.assertLess(run.index('real_time_at_end;'), run.index('PET_SELFTEST_START'))
+        self.assertIn('SetForSelfTest(kid_app::SelfTestClock::kRealPct)', run)
+        step = run[run.index('case kid_app::SelfTestOp::TimeScale:'):]
+        self.assertIn('kid_app::SelfTestClock::SetForSelfTest(step.ms)', step[:step.index('break;')])
+        # Nothing else in the tree sets it: the header defines it, the
+        # host test exercises it, the board script calls it.
+        allowed = {'firmware/components/kid_app/include/kid_app/selftest_clock.h',
+                   'tests/cpp/test_selftest_clock.cc', 'scripts/p1_integrate.py'}
+        for path in list((ROOT / 'firmware').rglob('*')) + list((ROOT / 'scripts').rglob('*')) + \
+                list((ROOT / 'integrations').rglob('*')) + list((ROOT / 'tools').rglob('*')):
+            if path.suffix not in ('.h', '.cc', '.cpp', '.c', '.py', '.sh'):
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            if rel in allowed:
+                continue
+            self.assertNotIn('SetForSelfTest', path.read_text(encoding='utf-8', errors='replace'),
+                             rel)
+
+    def test_selftest_time_scale_covers_feature_timers_not_physics(self):
+        src = ROOT / 'firmware' / 'components' / 'kid_app' / 'src'
+        scaled = {
+            'pet_animation.cc': ('Scaled(kBlinkMinMs)', 'Scaled(kCleanupIdleMs)'),
+            'power_manager.cc': ('Scaled(kMorningAwakeMs)', 'Scaled(kIdleAfterMs)',
+                                 'Scaled(drowsy ? kIdleAfterMs : kNapAfterMs)',
+                                 'Scaled(off_after)'),
+            'parent_menu.cc': ('Scaled(kIdleExitMs)',),
+            'mini_game.cc': ('Scaled(kIdleExitMs)', 'Scaled(kRepeatPromptMs)'),
+            'battery_policy.cc': ('Scaled(kCriticalRetryMs)', 'Scaled(kEatEveryMs)',
+                                  'Scaled(kYawnEveryMs)'),
+        }
+        for name, needles in scaled.items():
+            text = (src / name).read_text(encoding='utf-8')
+            for needle in needles:
+                self.assertIn('SelfTestClock::' + needle, text, name)
+        # Refresh physics, audio, the sleep cancel window, voice-face and
+        # prompt settle times and the wall-clock status band stay real.
+        for name in ('sleep_flow.cc', 'status_bar.cc', 'prompt_scheduler.cc', 'voice_face.cc',
+                     'refresh_planner.cc', 'pet_refresh_gate.cc', 'pet_phrases.cc',
+                     'freertos_pet_display_worker.cc', 'audio_coordinator.cc',
+                     'book_reader.cc'):
+            self.assertNotIn('SelfTestClock', (src / name).read_text(encoding='utf-8'), name)
+        patched = self._board()
+        self.assertIn('kid_app::SelfTestClock::Scaled(kBatterySampleMs)', patched)
+        self.assertIn('kid_app::SelfTestClock::Scaled(kBatteryReactAfterPetMs)', patched)
+        # EPD and audio waits in the board never go through the scale.
+        for body in ('void PowerOffForSleep()', 'void MorningFallbackPowerOff()'):
+            self.assertNotIn('SelfTestClock', self._body(patched, body), body)
+
+    def test_selftest_waitidle_waits_for_xiaozhi_idle_with_a_timeout(self):
+        patched = self._board()
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        step = run[run.index('case kid_app::SelfTestOp::WaitIdle:'):]
+        step = step[:step.index('break;')]
+        self.assertIn('GetDeviceState() != kDeviceStateIdle', step)
+        self.assertIn('NowMs() - start < step.ms', step)
+        self.assertIn('kid_app::SelfTestScript::kIdleSettleMs', step)
+        self.assertIn('PET_SELFTEST_IDLE ready=', step)
+        self.assertNotIn('ABORT', step)  # not ready: the pet toggle decides
 
     def test_board_runs_the_atomic_ledger(self):
         patched = self._board()

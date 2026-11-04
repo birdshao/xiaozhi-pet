@@ -6,6 +6,7 @@
 #include "kid_app/pet_refresh_gate.h"
 #include "kid_app/refresh_planner.h"
 #include "kid_app/scene_model.h"
+#include "kid_app/selftest_clock.h"
 
 #include <cassert>
 #include <iostream>
@@ -331,6 +332,20 @@ int main() {
         GameSession w = Started(pool, 6, 3, 0xFFFFF000u);
         assert(!w.Tick(0x00000100u).finished);
         assert(w.Tick(0xFFFFF000u + GameSession::kIdleExitMs).finished);
+    }
+    {
+        // Test-only self-test time scale: both "nobody plays" timers follow
+        // it (50 %: question again after 6 s, home after 30 s), then real again.
+        assert(SelfTestClock::SetForSelfTest(50));
+        GameSession s = Started(pool, 6, 3, 1000);
+        assert(s.Tick(1000 + GameSession::kRepeatPromptMs / 2 - 1).clip == 0);
+        assert(s.Tick(1000 + GameSession::kRepeatPromptMs / 2).clip == s.Current().prompt_clip);
+        assert(!s.Tick(1000 + GameSession::kIdleExitMs / 2 - 1).finished);
+        assert(s.Tick(1000 + GameSession::kIdleExitMs / 2).finished);
+        assert(SelfTestClock::SetForSelfTest(SelfTestClock::kRealPct));
+        GameSession r = Started(pool, 6, 3, 1000);
+        assert(r.Tick(1000 + GameSession::kRepeatPromptMs - 1).clip == 0);
+        assert(!r.Tick(1000 + GameSession::kIdleExitMs - 1).finished);
     }
     {
         GameSession s = Started(pool, 8);

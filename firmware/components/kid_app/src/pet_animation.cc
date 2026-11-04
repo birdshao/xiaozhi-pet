@@ -1,4 +1,5 @@
 #include "kid_app/pet_animation.h"
+#include "kid_app/selftest_clock.h"
 
 #include <cstddef>
 
@@ -69,7 +70,8 @@ bool PetAnimationDirector::SameBase(const SceneModel& a, const SceneModel& b) {
 
 void PetAnimationDirector::ScheduleBlink(uint32_t now_ms) {
     rng_ = rng_ * 1664525u + 1013904223u;  // deterministic jitter
-    next_blink_ms_ = now_ms + kBlinkMinMs + (rng_ >> 8) % kBlinkSpanMs;
+    next_blink_ms_ = now_ms + SelfTestClock::Scaled(kBlinkMinMs) +
+                     SelfTestClock::Scaled((rng_ >> 8) % kBlinkSpanMs);
 }
 
 void PetAnimationDirector::Request(Animation animation, const SceneModel& target,
@@ -141,7 +143,8 @@ DirectorStep PetAnimationDirector::Idle(const SceneModel& displayed, uint32_t no
     }
     if (pending_ != Animation::None || !ambient) return step;
 
-    if (needs_cleanup && static_cast<uint32_t>(now_ms - last_shown_ms_) >= kCleanupIdleMs) {
+    if (needs_cleanup && static_cast<uint32_t>(now_ms - last_shown_ms_) >=
+                             SelfTestClock::Scaled(kCleanupIdleMs)) {
         step.kind = DirectorStep::Kind::Cleanup;
         step.scene = displayed;
         return step;
