@@ -335,7 +335,7 @@ BOARD_WORKER = r'''
             self->anim_director_.SceneShown(step.scene, NowMs());
             return;
         }
-        self->anim_director_.FrameShown(NowMs());
+        self->anim_director_.FrameShown(NowMs(), okay);
         ESP_LOGI(TAG, "PET_ANIM_FRAME anim=%s pose=%u ok=%d last=%d",
                  kid_app::AnimationName(step.animation), static_cast<unsigned>(step.scene.pose),
                  okay ? 1 : 0, step.last ? 1 : 0);

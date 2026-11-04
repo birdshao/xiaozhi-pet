@@ -70,11 +70,16 @@ void PetAnimationDirector::SceneShown(const SceneModel& scene, uint32_t now_ms) 
     if (active_ != Animation::None && !SameBase(scene, base_)) active_ = Animation::None;
 }
 
-void PetAnimationDirector::FrameShown(uint32_t now_ms) {
+void PetAnimationDirector::FrameShown(uint32_t now_ms, bool ok) {
     last_shown_ms_ = now_ms;
     if (active_ == Animation::None) return;
     const AnimationFrame* frames = nullptr;
     const uint8_t count = AnimationFrames(active_, &frames);
+    if (!ok && index_ + 1 < count) {
+        index_ = static_cast<uint8_t>(count - 1);
+        next_frame_ms_ = now_ms + 1000;
+        return;
+    }
     const uint16_t hold = index_ < count ? frames[index_].hold_ms : 0;
     if (++index_ >= count) {
         active_ = Animation::None;

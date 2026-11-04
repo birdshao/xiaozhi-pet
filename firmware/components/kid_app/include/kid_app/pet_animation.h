@@ -47,8 +47,10 @@ public:
     void Request(Animation animation, const SceneModel& target, uint32_t now_ms);
     // The gate drew a new base scene (also after a Cleanup step).
     void SceneShown(const SceneModel& scene, uint32_t now_ms);
-    // A Frame step was drawn (or failed: the animation still advances).
-    void FrameShown(uint32_t now_ms);
+    // A Frame step was drawn. ok=false (EPD error): skip to the resting
+    // frame 1 s later so the panel never stays on a pose the gate does not
+    // know about; a failed resting frame ends the animation.
+    void FrameShown(uint32_t now_ms, bool ok = true);
     // displayed: the gate's base scene. ambient: idle blink and cleanup are
     // allowed (Pet home, awake, voice idle). needs_cleanup: planner budget.
     DirectorStep Idle(const SceneModel& displayed, uint32_t now_ms, bool ambient,

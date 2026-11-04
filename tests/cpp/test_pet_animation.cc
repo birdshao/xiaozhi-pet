@@ -163,6 +163,23 @@ int main() {
         assert(after.kind == Kind::None);
     }
 
+    // A failed frame jumps to the resting frame (after 1 s), never leaving
+    // a pose on the panel; a failed resting frame ends the animation.
+    {
+        PetAnimationDirector d;
+        uint32_t now = 100;
+        d.SceneShown(happy, now);
+        d.Request(Animation::Feed, happy, now);
+        DirectorStep step = d.Idle(happy, now += 100, true, false);
+        assert(step.kind == Kind::Frame && step.scene.pose == ScenePose::Hearts1);
+        d.FrameShown(now += 620, false);
+        assert(d.Idle(happy, now += 500, true, false).kind == Kind::None);
+        step = d.Idle(happy, now += 600, true, false);
+        assert(step.kind == Kind::Frame && step.scene.pose == ScenePose::Still && step.last);
+        d.FrameShown(now += 620, false);
+        assert(!d.Active());
+    }
+
     // Wrap-safe timers around the 32-bit millisecond rollover.
     {
         PetAnimationDirector d;
