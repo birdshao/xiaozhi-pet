@@ -225,3 +225,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_voice_face.cc" \
   -o "$BUILD/test_voice_face"
 "$BUILD/test_voice_face"
+
+# V3-05 low battery and charging: debounced plug/unplug, low/critical bands
+# with hysteresis, critical retry, rate-limited eat/yawn reactions.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/battery_policy.cc" \
+  "$ROOT/tests/cpp/test_battery_policy.cc" \
+  -o "$BUILD/test_battery_policy"
+"$BUILD/test_battery_policy"

@@ -13,6 +13,9 @@ namespace kid_app {
 //   Active --60 s no input--> Idle --10 min no input--> Nap --30 min--> Off
 //   Night (quiet hours) and the afternoon Nap phase: Nap right after Idle;
 //   at Night Off follows 5 min into the nap.
+//   Low battery (V3-05, BatteryPolicy): Nap right after Idle and Off 5 min
+//   into the nap, as at night (the next wake alarm is still armed; only a
+//   critical battery powers off without one).
 //
 // Off means "go to sleep": the board runs the usual sleep flow (sleeping
 // picture, 3 s cancel window, RTC alarm for the next wake, PMIC power-off).
@@ -33,7 +36,7 @@ enum class PowerEvent : uint8_t {
     StayAwake,  // input during the morning window: restore the home picture
     Sleep,      // start the sleep flow (see SleepReason)
 };
-enum class SleepReason : uint8_t { None, Idle, Night, Morning };
+enum class SleepReason : uint8_t { None, Idle, Night, Morning, LowBattery };
 
 struct PowerConditions {
     // Voice session, sleep flow or anything else that must not be cut
@@ -45,6 +48,8 @@ struct PowerConditions {
     // DayPhase from RhythmScheduler; false when the RTC is not set.
     bool phase_known = false;
     DayPhase phase = DayPhase::Day;
+    // V3-05: on battery and low (BatteryPolicy::LowPower()).
+    bool low_battery = false;
 };
 
 class PowerManager {
@@ -53,6 +58,7 @@ public:
     static constexpr uint32_t kNapAfterMs = 10u * 60 * 1000;
     static constexpr uint32_t kOffAfterNapMs = 30u * 60 * 1000;
     static constexpr uint32_t kNightOffAfterNapMs = 5u * 60 * 1000;
+    static constexpr uint32_t kLowBatteryOffAfterNapMs = 5u * 60 * 1000;
     static constexpr uint32_t kMorningAwakeMs = 60u * 1000;
 
     // Pet mode entered, or power-off returned: Active from now on.
@@ -70,7 +76,8 @@ public:
 
 private:
     static bool Drowsy(const PowerConditions& c) {
-        return c.phase_known && (c.phase == DayPhase::Night || c.phase == DayPhase::Nap);
+        return c.low_battery ||
+               (c.phase_known && (c.phase == DayPhase::Night || c.phase == DayPhase::Nap));
     }
     PowerEvent SleepNow(SleepReason reason);
 

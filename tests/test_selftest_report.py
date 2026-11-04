@@ -157,7 +157,10 @@ class SelfTestReportTests(unittest.TestCase):
             armed = False
             for words in steps:
                 armed = armed or words[0] == "alarm"
-                if words[0] == "morning" or words[:2] == ["tap", "pwr"]:
+                # V3-05: a critical battery level on battery (< 8 %) powers off.
+                critical = (words[0] == "battery" and len(words) == 3 and words[2] == "0"
+                            and int(words[1]) < 8)
+                if words[0] == "morning" or words[:2] == ["tap", "pwr"] or critical:
                     self.assertTrue(armed, f"{path.name}: {' '.join(words)} before an alarm step")
 
 

@@ -756,5 +756,94 @@ class DisplayOverlayTest(unittest.TestCase):
             self.assertIn(phase + '\n', scenario)
         self.assertIn('# expect max_partial_ms 2500', scenario)
 
+    def test_v3_low_battery_and_charging_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/battery_policy.h"', patched)
+        self.assertIn('kid_app::BatteryPolicy battery_;', patched)
+        # pet_boot_diag samples every 2 s (PMIC or the self-test value) into
+        # one word; a board without PMIC publishes nothing.
+        read = self._body(patched, 'bool ReadBattery(')
+        self.assertLess(read.index('battery_inject_.load()'), read.index('pmic_->GetBatteryLevel()'))
+        self.assertIn('if (!pmic_) return false;', read)
+        for needle in ('pmic_->IsCharging()', 'pmic_->IsDischarging()'):
+            self.assertIn(needle, read)
+        self.assertNotIn('Write', read)  # PMIC: reads only
+        sample = self._body(patched, 'void SampleBattery(')
+        self.assertIn('kBatterySampleMs', sample)
+        self.assertIn('kid_app::PackBatteryReading(reading)', sample)
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertLess(diag.index('SampleBattery(now);'), diag.index('UpdateStatusBar();'))
+        # pet_input owns the policy: after the inputs and the power timers,
+        # before the sleep flow ticks.
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdatePower(state);'), loop.index('UpdateBattery(state);'))
+        self.assertLess(loop.index('UpdateBattery(state);'), loop.index('sleep_flow_.Tick(NowMs())'))
+        update = self._body(patched, 'void UpdateBattery(')
+        self.assertIn('battery_.Update(reading, now)', update)
+        self.assertIn('PET_BATTERY event=%s state=%s', update)
+        # Reactions only on the awake Pet home screen, never while going to
+        # sleep, napping, in the morning window, talking or reading.
+        allowed = update[update.index('const bool allowed'):update.index('battery_.Reaction(')]
+        for needle in ('!sleep_flow_.Active()', '!sleep_active_.load()', '!napping_.load()',
+                       '!morning_shown_.load()', 'voice_face_.load() == 0',
+                       'state == kDeviceStateIdle', 'PetInputRouter::IsHomeRail(',
+                       'kBatteryReactAfterPetMs', 'battery_scripted_.load()'):
+            self.assertIn(needle, allowed)
+        self.assertIn('kid_app::Animation::Charge', update)
+        self.assertIn('kid_app::Animation::Yawn', update)
+        self.assertIn('RequestHomeAnimation(', update)
+        self.assertNotIn('PostLocal', update)  # UI only, nothing durable
+        self.assertNotIn('last_pet_scene_.store', update)
+        # Critical: through the sleep flow (never straight to the PMIC),
+        # marked so the power-off arms no wake alarm; only in Pet mode.
+        events = self._body(patched, 'void HandleBatteryEvent(')
+        critical = events[events.index('case kid_app::BatteryEvent::Critical:'):]
+        self.assertLess(critical.index('sleep_battery_ = true;'),
+                        critical.index('HandleSleepAction(sleep_flow_.Request(now))'))
+        self.assertIn('if (!sleep_flow_.Active())', critical)
+        self.assertIn('skipped=pet_off', critical)
+        self.assertNotIn('PowerOff', events)
+        # Plugged in: activity, and it cancels a flat-battery shutdown.
+        plugged = events[events.index('case kid_app::BatteryEvent::Plugged:'):
+                         events.index('case kid_app::BatteryEvent::Critical:')]
+        self.assertIn('sleep_battery_ && sleep_flow_.Cancel()', plugged)
+        self.assertIn('HandlePowerEvent(power_.OnActivity(now))', plugged)
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('const bool battery = sleep_battery_;'),
+                        off.index('SecondsUntilWake()'))
+        self.assertIn('if (!wake_s && !battery) wake_s = SecondsUntilWake();', off)
+        self.assertIn('"none_battery"', off)
+        self.assertLess(off.index('pet_service_.Settled()'), off.index('pmic_->PowerOff()'))
+        restore = patched[patched.index('case kid_app::SleepAction::RestoreScene:'):]
+        restore = restore[:restore.index('return;')]
+        self.assertIn('sleep_battery_ = false;', restore)
+        # PowerManager: low battery shortens idle-to-sleep; never an idle
+        # power-off while on USB power.
+        power = self._body(patched, 'void UpdatePower(')
+        self.assertIn('on_battery_.load() && !selftest_seen_.load() &&\n'
+                      '                                   !battery_.External()', power)
+        self.assertIn('conditions.low_battery = battery_.LowPower();', power)
+        # Status band shows the scripted reading too.
+        status = self._body(patched, 'void UpdateStatusBar()')
+        self.assertLess(status.index('pmic_->GetBatteryLevel()'), status.index('battery_inject_.load()'))
+        # Self-test step: a critical level needs an armed alarm (as morning).
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        step = run[run.index('case kid_app::SelfTestOp::Battery:'):]
+        step = step[:step.index('break;')]
+        self.assertLess(step.index('!sleep_alarm_s_.load()'), step.index('battery_inject_.store('))
+        self.assertIn('PET_SELFTEST_ABORT reason=battery', step)
+        self.assertIn('kid_app::SelfTestScript::kBatteryOff', step)
+        self.assertIn('battery_scripted_.store(true)', step)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v3_battery.pettest').read_text(encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        steps = [line.strip() for line in scenario.splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        self.assertLess(steps.index('alarm 60'), steps.index('battery 5 0'))
+        for needle in ('battery 60 1', 'battery 15 0', 'mark begin'):
+            self.assertIn(needle, steps)
+        for expect in ('min:event=plugged', 'min:anim=yawn', 'min:event=critical',
+                       'min:wake=selftest', 'min:battery=1', 'none:PET_SLEEP_POWEROFF_RETURNED'):
+            self.assertIn('# expect ' + expect, scenario)
+
 if __name__ == "__main__":
     unittest.main()

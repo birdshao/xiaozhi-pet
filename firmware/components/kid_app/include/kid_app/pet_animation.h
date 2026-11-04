@@ -12,7 +12,11 @@ namespace kid_app {
 // Morning (V3-04): from a Sunrise home scene, hold the stretch, then the
 // sun is up and TuanTuan waves; it ends on ScenePose::Morning, the picture
 // kept until the child touches the dial or the pet goes back to sleep.
-enum class Animation : uint8_t { None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy, Morning };
+// Charge / Yawn (V3-05): plugged in, TuanTuan eats electricity; on a low
+// battery it yawns and shows the "charge me" bubble for a while.
+enum class Animation : uint8_t {
+    None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy, Morning, Charge, Yawn
+};
 
 struct AnimationFrame {
     ScenePose pose;
