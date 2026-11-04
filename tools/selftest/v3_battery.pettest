@@ -1,0 +1,52 @@
+PETSELFTEST1
+# V3-05 low battery and charging. "battery" steps stand in for the PMIC
+# (status band + battery policy; samples every 2 s, debounced):
+# 1) plugged in: TuanTuan eats electricity; 2) unplugged, then low: a yawn
+# with the "charge me" bubble; 3) critical (< 8 %): safe shutdown through
+# the sleep flow. A flat battery arms no wake alarm, so the "alarm" step
+# brings the board back 60 s after the power-off (self-test wake: no
+# morning, the host restores the board).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:event=plugged 1
+# expect min:anim=eat 1
+# expect min:name=charge 1
+# expect min:event=unplugged 1
+# expect min:event=low 1
+# expect min:anim=yawn 1
+# expect min:name=yawn 1
+# expect min:event=critical 1
+# expect min:PET_BATTERY_SHUTDOWN 1
+# expect min:PET_SLEEP_SHOWN 1
+# expect min:wake=selftest 1
+# expect min:battery=1 1
+# expect min:armed=1 1
+# expect min:woke_by_alarm=1 1
+# expect min:reason=selftest_wake 1
+# expect none:PET_SLEEP_POWEROFF_RETURNED 0
+# expect none:skipped=pet_off 0
+# expect none:PET_SELFTEST_ABORT 0
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+# Baseline: on battery, half full (the USB boot reads "charging").
+battery 60 0
+wait 8000
+mark begin
+# 1) Plugged in: eat electricity.
+battery 60 1
+wait 12000
+# 2) Unplugged, then low: yawn and the "charge me" bubble.
+battery 60 0
+wait 8000
+battery 15 0
+wait 16000
+# 3) Critical: sleep flow, PMIC off; the alarm brings the board back.
+alarm 60
+battery 5 0
+wait 90000
+end

@@ -28,11 +28,14 @@ enum class Emotion : uint8_t {
 // of the three Z letters; Still shows all three (the picture kept while
 // off). Home good-morning picture (V3-04): Sunrise (sun behind a cloud,
 // TuanTuan stretching and yawning), Morning (sun up, TuanTuan waving).
+// Battery (V3-05): Charging ("eating electricity": munching a lightning
+// bolt held up in the left paw), Yawn (low battery: eyes shut, big yawn,
+// a bubble with an almost empty battery: "find a grown-up to charge me").
 // Poses only ever change pixels above the home action rail.
 // Packed in 4 bits (PackScene): at most 16 poses.
 enum class ScenePose : uint8_t {
     Still, Blink, Wave, Hearts1, Hearts2, Zzz1, Zzz2, Giggle, Dizzy1, Dizzy2,
-    Sunrise, Morning
+    Sunrise, Morning, Charging, Yawn
 };
 
 struct SceneModel {

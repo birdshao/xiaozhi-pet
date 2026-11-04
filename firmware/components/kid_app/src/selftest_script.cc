@@ -1,5 +1,6 @@
 #include "kid_app/selftest_script.h"
 
+#include "kid_app/battery_policy.h"
 #include "kid_app/gesture_detector.h"
 #include "kid_app/voice_face.h"
 
@@ -160,6 +161,21 @@ bool SelfTestScript::Parse(const char* text) {
         } else if (std::strcmp(words[0], "voice") == 0) {
             if (n != 2 || !VoicePhase(words[1], &step.ms)) return false;
             step.op = SelfTestOp::Voice;
+        } else if (std::strcmp(words[0], "battery") == 0) {
+            step.op = SelfTestOp::Battery;
+            if (n == 2 && std::strcmp(words[1], "off") == 0) {
+                step.ms = kBatteryOff;
+            } else {
+                uint32_t charging = 0;
+                if (n != 3 || !Number(words[1], &step.ms) || step.ms > 100 ||
+                    !Number(words[2], &charging) || charging > 1)
+                    return false;
+                // Critical on battery ends in a power-off: needs an alarm.
+                if (!charging && step.ms < static_cast<uint32_t>(BatteryPolicy::kCriticalPct) &&
+                    !alarm)
+                    return false;
+                if (charging) step.ms |= kBatteryCharging;
+            }
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
@@ -212,9 +228,11 @@ bool SelfTestScript::ParseSector(const uint8_t* sector, size_t size) {
 uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
-        // Alarm seconds, Volume percent, Gesture and Voice codes are not delays.
+        // Alarm seconds, Volume percent, Gesture, Voice and Battery codes
+        // are not delays.
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
-            steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice)
+            steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice ||
+            steps_[i].op == SelfTestOp::Battery)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

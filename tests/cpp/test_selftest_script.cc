@@ -177,6 +177,32 @@ int main() {
         assert(script.Count() == 0);  // a failed parse never leaves steps
     }
 
+    // battery <pct> <0|1> / battery off (V3-05): PMIC readings for the
+    // status band and the battery policy. Critical on battery powers off,
+    // so it needs an earlier alarm step, like "morning".
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nbattery 60 1\nbattery 15 0\nbattery 100 0\n"
+                            "battery off\nwait 10\nend\n"));
+        assert(script.Count() == 5 && script.TotalMs() == 10);  // settings, not delays
+        for (int i = 0; i < 4; ++i) assert(script.Steps()[i].op == SelfTestOp::Battery);
+        assert(script.Steps()[0].ms == (60 | SelfTestScript::kBatteryCharging));
+        assert(script.Steps()[1].ms == 15 && script.Steps()[2].ms == 100);
+        assert(script.Steps()[3].ms == SelfTestScript::kBatteryOff);
+        assert(script.Parse("PETSELFTEST1\nbattery 8 0\nbattery 3 1\nend\n"));  // not critical
+        assert(!script.Parse("PETSELFTEST1\nbattery 7 0\nend\n"));               // no alarm
+        assert(!script.Parse("PETSELFTEST1\nbattery 5 0\nalarm 60\nend\n"));     // alarm too late
+        assert(script.Parse("PETSELFTEST1\nalarm 60\nbattery 5 0\nwait 90000\nend\n"));
+        assert(script.Steps()[1].ms == 5 && script.TotalMs() == 90000);
+        assert(!script.Parse("PETSELFTEST1\nbattery 101 0\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nbattery 50 2\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nbattery 50\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nbattery on\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nbattery off 1\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nbattery -5 0\nend\n"));
+        assert(script.Count() == 0);
+    }
+
     // Bounded: at most kMaxSteps steps.
     {
         std::string text = "PETSELFTEST1\n";

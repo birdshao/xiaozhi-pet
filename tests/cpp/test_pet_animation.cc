@@ -34,7 +34,8 @@ int main() {
 
     // Every animation ends on the resting picture of its scene.
     for (Animation a : {Animation::Blink, Animation::Greet, Animation::Feed, Animation::SleepIn,
-                        Animation::Giggle, Animation::Dizzy}) {
+                        Animation::Giggle, Animation::Dizzy, Animation::Charge,
+                        Animation::Yawn}) {
         const AnimationFrame* frames = nullptr;
         const uint8_t n = AnimationFrames(a, &frames);
         assert(n >= 2 && n <= 3 && frames[n - 1].pose == ScenePose::Still);
@@ -47,6 +48,33 @@ int main() {
         assert(frames[0].pose == ScenePose::Sunrise && frames[0].hold_ms >= 1000 &&
                frames[1].pose == ScenePose::Morning);
         assert(std::string(AnimationName(Animation::Morning)) == "morning");
+        // V3-05: one long-held battery frame each, then the resting picture.
+        assert(AnimationFrames(Animation::Charge, &frames) == 2);
+        assert(frames[0].pose == ScenePose::Charging && frames[0].hold_ms >= 2000);
+        assert(AnimationFrames(Animation::Yawn, &frames) == 2);
+        assert(frames[0].pose == ScenePose::Yawn && frames[0].hold_ms >= 3000);
+        assert(std::string(AnimationName(Animation::Charge)) == "charge");
+        assert(std::string(AnimationName(Animation::Yawn)) == "yawn");
+    }
+
+    // Battery reactions play on the home scene only (never on the reader
+    // or the sleeping picture) and end back at rest.
+    {
+        PetAnimationDirector d;
+        uint32_t now = 0;
+        d.SceneShown(neutral, now);
+        d.Request(Animation::Yawn, neutral, now);
+        ScenePose poses[4] = {};
+        assert(Play(d, neutral, &now, poses, 4) == 2);
+        assert(poses[0] == ScenePose::Yawn && poses[1] == ScenePose::Still && !d.Active());
+        const SceneModel reader{SceneKind::Reader, Emotion::Neutral, 3, 1};
+        d.Request(Animation::Charge, reader, now);
+        d.SceneShown(reader, now += 100);
+        assert(d.Idle(reader, now += 100, true, false).kind == Kind::None);
+        const SceneModel sleep{SceneKind::Sleep, Emotion::Sleepy, 1, 1};
+        d.Request(Animation::Yawn, sleep, now);
+        d.SceneShown(sleep, now += 100);
+        assert(d.Idle(sleep, now += 100, true, false).kind == Kind::None);
     }
 
     // Morning (V3-04): plays once the Sunrise home scene is on the panel,

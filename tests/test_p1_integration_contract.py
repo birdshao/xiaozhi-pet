@@ -286,7 +286,9 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = self._board()
         player = patched[patched.index('void PromptTaskLoop()'):]
         player = player[:player.index('\n    }\n')]
-        self.assertIn('LoadPromptClip(', player)
+        # V2-08: option names come from the TF pack or the embedded clips.
+        self.assertIn('sound_bank_.LoadOption(request.index, &clip)', player)
+        self.assertIn('kid_app::SoundBank sound_bank_{&kid_app::LoadPromptClip}', patched)
         self.assertIn('BeginLocalStoryPcm(session)', player)
         self.assertIn('TryQueueLocalStoryPcm(session, chunk, n)', player)
         self.assertIn('clip.Copy(offset, chunk, 480)', player)
@@ -300,8 +302,10 @@ class DisplayOverlayTest(unittest.TestCase):
         # a waiting request interrupts the current one.
         self.assertLess(player.index('CancelLocalStoryPcm()'), player.index('BeginLocalStoryPcm('))
         self.assertIn('uxQueueMessagesWaiting(prompt_queue_)', player)
-        for marker in ('PET_PROMPT_PLAY', 'PET_PROMPT_QUEUED', 'PET_PROMPT_INTERRUPTED',
-                       'PET_PROMPT_FAILED'):
+        # PET_PROMPT_* / PET_PHRASE_* outcome lines share one format.
+        self.assertIn('PET_PROMPT_PLAY index=%u', player)
+        self.assertIn('kind = phrase ? "PHRASE" : "PROMPT"', player)
+        for marker in ('PET_%s_QUEUED', 'PET_%s_INTERRUPTED', 'PET_%s_FAILED'):
             self.assertIn(marker, player)
         self.assertIn('xQueueOverwrite(prompt_queue_', patched)
         self.assertIn('"pet_prompt"', patched)
@@ -309,16 +313,88 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('0x50524F4D', player)
         # Same guard as story narration (pet mode, not asleep, idle) before
         # starting and while pushing, so a voice session is never talked over.
-        allowed = patched[patched.index('bool PromptAllowed()'):]
+        allowed = patched[patched.index('bool PromptAllowed('):]
         allowed = allowed[:allowed.index('\n    }\n')]
         for cond in ('pet_mode_.load()', '!sleep_active_.load()', 'kDeviceStateIdle'):
             self.assertIn(cond, allowed)
-        self.assertLess(player.index('PromptAllowed()'), player.index('BeginLocalStoryPcm('))
+        self.assertLess(player.index('PromptAllowed(bedtime)'),
+                        player.index('BeginLocalStoryPcm('))
         push = player[player.index('while (offset < clip.samples)'):]
-        self.assertIn('PromptAllowed()', push)
+        self.assertIn('PromptAllowed(bedtime)', push)
         self.assertIn('stalls > 50', push)
         self.assertIn('reason=state', player)
         self.assertIn('"pet_prompt", 6144', patched)
+
+    def test_v2_sound_pack_loaded_by_the_prompt_task(self):
+        patched = self._board()
+        for header in ('sound_bank.h', 'pet_phrases.h'):
+            self.assertIn(f'#include "kid_app/{header}"', patched)
+        # The SD card is mounted once by the story reader; the prompt task
+        # opens the pack after that attempt, read-only, and only there.
+        init = self._body(patched, 'bool InitializePetRuntime()')
+        self.assertLess(init.index('story_sd_.Initialize('), init.index('sound_sd_.store('))
+        self.assertIn('story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent', init)
+        load = self._body(patched, 'void LoadSoundPack()')
+        self.assertIn('sound_file_.Open("/sdcard/sounds", "default")', load)
+        self.assertIn('sound_pack_.Open(sound_file_)', load)
+        self.assertIn('sound_bank_.UsePack(&sound_pack_)', load)
+        for state in ('"no_sd"', '"absent"', '"invalid"', '"ready"', 'PET_SOUND_PACK'):
+            self.assertIn(state, load)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertLess(player.index('LoadSoundPack()'), player.index('xQueueReceive('))
+        self.assertEqual(patched.count('LoadSoundPack()'), 2)  # definition + player
+        # A TF read error ends the clip instead of spinning.
+        self.assertLess(player.index('if (n == 0) break;'),
+                        player.index('ScalePcm(chunk, n, PromptVolumePct())'))
+        self.assertNotIn('fopen', patched)
+
+    def test_v5_pet_lines_share_the_prompt_path(self):
+        patched = self._board()
+        player = self._body(patched, 'void PromptTaskLoop()')
+        # The line is chosen (Personality, via the planner) before older
+        # audio is cut, so a dropped line never silences a prompt.
+        self.assertLess(player.index('phrase_planner_.Next(context, NowMs())'),
+                        player.index('CancelLocalStoryPcm()'))
+        self.assertIn('PET_PHRASE_SKIPPED', player)
+        self.assertIn('sound_bank_.LoadPhrase(phrase_id, &clip)', player)
+        self.assertIn('PET_PHRASE_PLAY id=%u ctx=%s src=%s', player)
+        self.assertIn('0x50485253u', player)  # own session ids
+        # Same volume path as the option names (self-test volume, quiet
+        # hours); the XiaoZhi codec volume is never touched.
+        self.assertEqual(player.count('ScalePcm('), 1)
+        self.assertNotIn('SetOutputVolume', patched)
+        allowed = self._body(patched, 'bool PromptAllowed(bool bedtime = false)')
+        self.assertIn('(bedtime || !sleep_active_.load())', allowed)
+        self.assertIn('kDeviceStateIdle', allowed)
+        post = self._body(patched, 'void PostPhrase(')
+        for guard in ('!pet_mode_.load()', 'napping_.load()',
+                      'sleep_active_.load() && context != kid_app::PhraseContext::Bedtime'):
+            self.assertIn(guard, post)
+        self.assertIn('PostPrompt(request)', post)
+        self.assertNotIn('LocalStoryPcm', post)
+        # Where the pet speaks.
+        commit = self._body(patched, 'static void PetCommitted(')
+        self.assertGreater(commit.index('PostPhrase(kid_app::PhraseContext::Feed)'),
+                           commit.index('pet_event_mode_.store('))
+        self.assertIn('PostPhrase(kid_app::PhraseContext::Greeting)', commit)
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertIn('if (acted) PostPhrase(kid_app::PhraseContext::Giggle)', gesture)
+        self.assertEqual(gesture.count('PostLocal('), 1)
+        begin = self._body(patched, 'void BeginMorning(')
+        self.assertIn('PostPhrase(kid_app::PhraseContext::MorningRecap)', begin)
+        sleep = patched[patched.index('case kid_app::SleepAction::ShowSleepScene:'):]
+        sleep = sleep[:sleep.index('return;')]
+        self.assertLess(sleep.index('StopPrompt()'),
+                        sleep.index('PostPhrase(kid_app::PhraseContext::Bedtime)'))
+        self.assertLess(sleep.index('CancelLocalStoryPcm()'),
+                        sleep.index('PostPhrase(kid_app::PhraseContext::Bedtime)'))
+        restore = patched[patched.index('case kid_app::SleepAction::RestoreScene:'):]
+        self.assertIn('StopPrompt()', restore[:restore.index('return;')])
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('StopPrompt()'), off.index('pmic_->PowerOff()'))
+        # Lines come from the reviewed table only: no text, no TTS here.
+        self.assertNotIn('PhraseTemplate', patched)
+        self.assertNotIn('.text', player)
 
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()
@@ -758,6 +834,95 @@ class DisplayOverlayTest(unittest.TestCase):
             self.assertIn(phase + '\n', scenario)
         self.assertIn('# expect max_partial_ms 2500', scenario)
 
+    def test_v3_low_battery_and_charging_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/battery_policy.h"', patched)
+        self.assertIn('kid_app::BatteryPolicy battery_;', patched)
+        # pet_boot_diag samples every 2 s (PMIC or the self-test value) into
+        # one word; a board without PMIC publishes nothing.
+        read = self._body(patched, 'bool ReadBattery(')
+        self.assertLess(read.index('battery_inject_.load()'), read.index('pmic_->GetBatteryLevel()'))
+        self.assertIn('if (!pmic_) return false;', read)
+        for needle in ('pmic_->IsCharging()', 'pmic_->IsDischarging()'):
+            self.assertIn(needle, read)
+        self.assertNotIn('Write', read)  # PMIC: reads only
+        sample = self._body(patched, 'void SampleBattery(')
+        self.assertIn('kBatterySampleMs', sample)
+        self.assertIn('kid_app::PackBatteryReading(reading)', sample)
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertLess(diag.index('SampleBattery(now);'), diag.index('UpdateStatusBar();'))
+        # pet_input owns the policy: after the inputs and the power timers,
+        # before the sleep flow ticks.
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdatePower(state);'), loop.index('UpdateBattery(state);'))
+        self.assertLess(loop.index('UpdateBattery(state);'), loop.index('sleep_flow_.Tick(NowMs())'))
+        update = self._body(patched, 'void UpdateBattery(')
+        self.assertIn('battery_.Update(reading, now)', update)
+        self.assertIn('PET_BATTERY event=%s state=%s', update)
+        # Reactions only on the awake Pet home screen, never while going to
+        # sleep, napping, in the morning window, talking or reading.
+        allowed = update[update.index('const bool allowed'):update.index('battery_.Reaction(')]
+        for needle in ('!sleep_flow_.Active()', '!sleep_active_.load()', '!napping_.load()',
+                       '!morning_shown_.load()', 'voice_face_.load() == 0',
+                       'state == kDeviceStateIdle', 'PetInputRouter::IsHomeRail(',
+                       'kBatteryReactAfterPetMs', 'battery_scripted_.load()'):
+            self.assertIn(needle, allowed)
+        self.assertIn('kid_app::Animation::Charge', update)
+        self.assertIn('kid_app::Animation::Yawn', update)
+        self.assertIn('RequestHomeAnimation(', update)
+        self.assertNotIn('PostLocal', update)  # UI only, nothing durable
+        self.assertNotIn('last_pet_scene_.store', update)
+        # Critical: through the sleep flow (never straight to the PMIC),
+        # marked so the power-off arms no wake alarm; only in Pet mode.
+        events = self._body(patched, 'void HandleBatteryEvent(')
+        critical = events[events.index('case kid_app::BatteryEvent::Critical:'):]
+        self.assertLess(critical.index('sleep_battery_ = true;'),
+                        critical.index('HandleSleepAction(sleep_flow_.Request(now))'))
+        self.assertIn('if (!sleep_flow_.Active())', critical)
+        self.assertIn('skipped=pet_off', critical)
+        self.assertNotIn('PowerOff', events)
+        # Plugged in: activity, and it cancels a flat-battery shutdown.
+        plugged = events[events.index('case kid_app::BatteryEvent::Plugged:'):
+                         events.index('case kid_app::BatteryEvent::Critical:')]
+        self.assertIn('sleep_battery_ && sleep_flow_.Cancel()', plugged)
+        self.assertIn('HandlePowerEvent(power_.OnActivity(now))', plugged)
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('const bool battery = sleep_battery_;'),
+                        off.index('SecondsUntilWake()'))
+        self.assertIn('if (!wake_s && !battery) wake_s = SecondsUntilWake();', off)
+        self.assertIn('"none_battery"', off)
+        self.assertLess(off.index('pet_service_.Settled()'), off.index('pmic_->PowerOff()'))
+        restore = patched[patched.index('case kid_app::SleepAction::RestoreScene:'):]
+        restore = restore[:restore.index('return;')]
+        self.assertIn('sleep_battery_ = false;', restore)
+        # PowerManager: low battery shortens idle-to-sleep; never an idle
+        # power-off while on USB power.
+        power = self._body(patched, 'void UpdatePower(')
+        self.assertIn('on_battery_.load() && !selftest_seen_.load() &&\n'
+                      '                                   !battery_.External()', power)
+        self.assertIn('conditions.low_battery = battery_.LowPower();', power)
+        # Status band shows the scripted reading too.
+        status = self._body(patched, 'void UpdateStatusBar()')
+        self.assertLess(status.index('pmic_->GetBatteryLevel()'), status.index('battery_inject_.load()'))
+        # Self-test step: a critical level needs an armed alarm (as morning).
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        step = run[run.index('case kid_app::SelfTestOp::Battery:'):]
+        step = step[:step.index('break;')]
+        self.assertLess(step.index('!sleep_alarm_s_.load()'), step.index('battery_inject_.store('))
+        self.assertIn('PET_SELFTEST_ABORT reason=battery', step)
+        self.assertIn('kid_app::SelfTestScript::kBatteryOff', step)
+        self.assertIn('battery_scripted_.store(true)', step)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v3_battery.pettest').read_text(encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        steps = [line.strip() for line in scenario.splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        self.assertLess(steps.index('alarm 60'), steps.index('battery 5 0'))
+        for needle in ('battery 60 1', 'battery 15 0', 'mark begin'):
+            self.assertIn(needle, steps)
+        for expect in ('min:event=plugged', 'min:anim=yawn', 'min:event=critical',
+                       'min:wake=selftest', 'min:battery=1', 'none:PET_SLEEP_POWEROFF_RETURNED'):
+            self.assertIn('# expect ' + expect, scenario)
+
     def test_v3_parent_menu_wiring(self):
         patched = self._board()
         for header in ('parent_menu.h', 'nvs_parent_settings_store.h'):
@@ -848,6 +1013,20 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('if (count > self->story_scaled_.size()) return false;', push)
         self.assertNotIn('SetOutputVolume', patched)
         self.assertNotIn('nvs_set', patched)
+        # Pet lines (V5-04) share that one scaled path, quiet hours included.
+        self.assertEqual(patched.count('kid_app::ScalePcm(chunk, n, PromptVolumePct())'), 1)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertIn('sound_bank_.LoadPhrase(phrase_id, &clip)', player)
+        self.assertIn('kid_app::ScalePcm(chunk, n, PromptVolumePct())', player)
+        self.assertIn('ParentMenuOpen()', self._body(patched, 'void PostPhrase('))
+        # Battery reactions wait; any sleep (a flat battery included) closes
+        # the menu first, so a critical shutdown always wins.
+        battery = self._body(patched, 'void UpdateBattery(')
+        allowed = battery[battery.index('const bool allowed'):battery.index('battery_.Reaction(')]
+        self.assertIn('!ParentMenuOpen()', allowed)
+        show = patched[patched.index('case kid_app::SleepAction::ShowSleepScene: {'):]
+        self.assertLess(show.index('if (parent_menu_.IsOpen()) CloseParentMenu("sleep");'),
+                        show.index('sleep_active_.store(true);'))
         # Self-test "combo" step: BOOT + dial press on the raw-edge queue.
         run = self._body(patched, 'void MaybeRunSelfTest()')
         combo = run[run.index('case kid_app::SelfTestOp::Combo:'):]

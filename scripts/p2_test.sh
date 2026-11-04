@@ -232,6 +232,40 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_voice_face"
 "$BUILD/test_voice_face"
 
+# V2-08 TF sound pack (KPS1) + built-in fallback, V5-04 pet lines chosen
+# through Personality. Cross-checked against a pack made by the Python tool.
+PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/sound_bank.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/tests/cpp/test_sound_pack.cc" \
+  -o "$BUILD/test_sound_pack"
+"$BUILD/test_sound_pack" "$BUILD/sound-demo/sounds"
+
+# V4-04 KPB2 content packs: grey pages, dial choice questions, like -> memory
+# mapping and KPB1 compatibility, read from the golden packs the tool made.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_content_pack_reader.cc" \
+  -o "$BUILD/test_content_pack_reader"
+"$BUILD/test_content_pack_reader" "$ROOT/tests/fixtures/kpb2"
+
+# V3-05 low battery and charging: debounced plug/unplug, low/critical bands
+# with hysteresis, critical retry, rate-limited eat/yawn reactions.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/battery_policy.cc" \
+  "$ROOT/tests/cpp/test_battery_policy.cc" \
+  -o "$BUILD/test_battery_policy"
+"$BUILD/test_battery_policy"
+
 # V3-06 parent menu: settings validation and codec, volume cap, dial-driven
 # menu (edit/save/long-press/30 s exit), ledger v3 with v2 migration.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

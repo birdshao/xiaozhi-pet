@@ -211,6 +211,54 @@ int main() {
         assert(pm.Tick(start + PM::kMorningAwakeMs, OnBattery()) == PowerEvent::Sleep);
     }
 
+    // V3-05 low battery: nap right after idle and sleep 5 min into the nap,
+    // even in the daytime; on USB power (may_power_off false, e.g. while
+    // charging) it still never powers off.
+    {
+        PowerManager pm;
+        pm.Reset(0);
+        PowerConditions low = OnBattery(DayPhase::Day);
+        low.low_battery = true;
+        assert(pm.Tick(PM::kIdleAfterMs, low) == PowerEvent::EnterIdle);
+        assert(pm.Tick(PM::kIdleAfterMs + 20, low) == PowerEvent::EnterNap);
+        const uint32_t nap = PM::kIdleAfterMs + 20;
+        assert(pm.Tick(nap + PM::kLowBatteryOffAfterNapMs - 1, low) == PowerEvent::None);
+        assert(pm.Tick(nap + PM::kLowBatteryOffAfterNapMs, low) == PowerEvent::Sleep);
+        assert(pm.LastSleepReason() == SleepReason::LowBattery);
+        assert(PM::kLowBatteryOffAfterNapMs < PM::kOffAfterNapMs);
+
+        // Low battery at night: the night reason wins (same timers).
+        pm.Reset(0);
+        PowerConditions low_night = OnBattery(DayPhase::Night);
+        low_night.low_battery = true;
+        assert(pm.Tick(PM::kIdleAfterMs, low_night) == PowerEvent::EnterIdle);
+        assert(pm.Tick(nap, low_night) == PowerEvent::EnterNap);
+        assert(pm.Tick(nap + PM::kNightOffAfterNapMs, low_night) == PowerEvent::Sleep);
+        assert(pm.LastSleepReason() == SleepReason::Night);
+
+        // RTC not set: low battery still shortens the timers.
+        pm.Reset(0);
+        PowerConditions unset = OnBattery();
+        unset.phase_known = false;
+        unset.low_battery = true;
+        assert(pm.Tick(PM::kIdleAfterMs, unset) == PowerEvent::EnterIdle);
+        assert(pm.Tick(nap, unset) == PowerEvent::EnterNap);
+        assert(pm.Tick(nap + PM::kLowBatteryOffAfterNapMs, unset) == PowerEvent::Sleep);
+
+        // Charging: the policy says low only on battery, and the board
+        // never allows an idle power-off on USB power.
+        pm.Reset(0);
+        PowerConditions charging = OnBattery();
+        charging.may_power_off = false;
+        assert(pm.Tick(PM::kIdleAfterMs, charging) == PowerEvent::EnterIdle);
+        assert(pm.Tick(PM::kNapAfterMs, charging) == PowerEvent::EnterNap);
+        uint32_t now = PM::kNapAfterMs;
+        assert(RunUntil(pm, &now, PM::kNapAfterMs + 3 * PM::kOffAfterNapMs, charging) ==
+               PowerEvent::None);
+        assert(pm.State() == PowerState::Nap);
+    }
+
+    assert(std::strcmp(SleepReasonName(SleepReason::LowBattery), "low_battery") == 0);
     assert(std::strcmp(PowerStateName(PowerState::Nap), "nap") == 0);
     assert(std::strcmp(SleepReasonName(SleepReason::Morning), "morning") == 0);
     assert(std::strcmp(SleepReasonName(SleepReason::None), "none") == 0);

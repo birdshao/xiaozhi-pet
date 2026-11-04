@@ -31,11 +31,18 @@ namespace kid_app {
 //                           power-off it leads to always wakes the board again.
 //   voice <phase>           as if XiaoZhi were: listen, think, speak; off hands
 //                           the voice face back to XiaoZhi's real state (V6-01)
+//   battery <pct> <0|1>     PMIC readings from now on (V3-05): level 0..100,
+//                           1 = charging on USB, 0 = on battery; drives the
+//                           status band and the battery policy. A critical
+//                           level on battery (< 8 %) powers off, so it is
+//                           only accepted after an "alarm" step.
+//   battery off             back to the real PMIC readings
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
-    Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Combo
+    Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
+    Combo
 };
 
 struct SelfTestStep {
@@ -43,7 +50,8 @@ struct SelfTestStep {
     InputKey key = InputKey::DialPress;
     uint32_t ms = 0;      // wait/hold/combo ms; seconds for Alarm; percent for Volume;
                           // kid_app::Gesture value for Gesture;
-                          // kid_app::VoiceFace value for Voice (None = off)
+                          // kid_app::VoiceFace value for Voice (None = off);
+                          // Battery: percent | kBatteryCharging, or kBatteryOff
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark only
 };
@@ -54,6 +62,8 @@ public:
     static constexpr uint32_t kTapMs = 80;
     static constexpr uint32_t kDefaultGapMs = 1000;
     static constexpr uint32_t kMaxMs = 600000;
+    static constexpr uint32_t kBatteryCharging = 0x100;
+    static constexpr uint32_t kBatteryOff = 0x200;
 
     // Text must be NUL-terminated. On failure no steps are kept.
     bool Parse(const char* text);

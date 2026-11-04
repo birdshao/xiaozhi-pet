@@ -132,6 +132,20 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertEqual(report["observed"]["prompt_seq"], "2,4")
         self.assertIn("prompt_seq", evaluate(scenario, log.replace("index=4", "index=3"))["failed"])
 
+    def test_phrase_sequence(self):
+        scenario = "PETSELFTEST1\n# expect phrase_seq 211,272\nend\n"
+        log = ("I: PET_PHRASE_PLAY id=999 ctx=greeting src=chime token=1 samples=9\n"
+               "I: PET_SELFTEST_MARK name=begin\n"
+               "I: PET_PROMPT_PLAY index=2 token=1 samples=7000 src=embedded\n"
+               "I: PET_PHRASE_PLAY id=211 ctx=greeting src=chime token=2 samples=9120\n"
+               "I: PET_PHRASE_PLAY id=272 ctx=giggle src=pack token=3 samples=24000\n"
+               "SUMMARY lines=5 panic=0 wdt=0\n")
+        report = evaluate(scenario, log)
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["observed"]["phrase_seq"], "211,272")
+        self.assertEqual(report["observed"]["prompt_seq"], "2")
+        self.assertIn("phrase_seq", evaluate(scenario, log.replace("id=272", "id=271"))["failed"])
+
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)
         self.assertEqual(len(data), 4096)
@@ -157,7 +171,10 @@ class SelfTestReportTests(unittest.TestCase):
             armed = False
             for words in steps:
                 armed = armed or words[0] == "alarm"
-                if words[0] == "morning" or words[:2] == ["tap", "pwr"]:
+                # V3-05: a critical battery level on battery (< 8 %) powers off.
+                critical = (words[0] == "battery" and len(words) == 3 and words[2] == "0"
+                            and int(words[1]) < 8)
+                if words[0] == "morning" or words[:2] == ["tap", "pwr"] or critical:
                     self.assertTrue(armed, f"{path.name}: {' '.join(words)} before an alarm step")
 
 

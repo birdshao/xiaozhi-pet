@@ -473,17 +473,77 @@ void MorningSun(MonoFrame& f, bool risen) {
 }
 
 // Thought cloud: overlapping lobes with one shared outline, three dots inside.
-void ThoughtCloud(MonoFrame& f, int cx, int cy) {
+void ThoughtCloud(MonoFrame& f, int cx, int cy, bool dots = true) {
     static const int kLobes[][3] = {{-34, 6, 19}, {-13, -8, 22}, {13, -10, 21}, {34, 5, 18},
                                     {0, 11, 21}};
     for (const auto& l : kLobes) Disk(f, cx + l[0], cy + l[1], l[2] + 4);
     for (const auto& l : kLobes) Disk(f, cx + l[0], cy + l[1], l[2], false);
-    for (int i = -1; i <= 1; ++i) Disk(f, cx + i * 18, cy + 3, 5);
+    if (dots)
+        for (int i = -1; i <= 1; ++i) Disk(f, cx + i * 18, cy + 3, 5);
+}
+
+// Lightning bolt, h pixels tall around (cx, cy): two slanted triangles (the
+// status band's charging mark, scaled). wide is the width in percent of
+// that mark; negative mirrors it (top tip on the left). level < 16 dithers.
+void Bolt(MonoFrame& f, int cx, int cy, int h, bool ink = true, int level = 16,
+          int wide = 100) {
+    auto k = [h](int d) { return d * h / 32; };
+    auto w = [h, wide](int d) { return d * h * wide / 3200; };
+    FillTriangle(f, cx + w(7), cy - k(16), cx - w(7), cy + k(2), cx + w(4), cy + k(2), ink,
+                 level);
+    FillTriangle(f, cx - w(4), cy - k(3), cx + w(9), cy - k(3), cx - w(5), cy + k(16), ink,
+                 level);
+}
+
+// V3-05 "eating electricity" (ScenePose::Charging): the left arm holds up
+// a chunky outlined bolt like an ice lolly, a bite out of the side facing
+// the mouth, zaps around it. The arm goes behind the head.
+void ChargingArm(MonoFrame& f, int cx, int cy) {
+    Stroke(f, cx - 70, cy + 120, cx - 162, cy + 56, 34);
+    Stroke(f, cx - 70, cy + 120, cx - 162, cy + 56, 20, false);
+}
+
+void ChargingSnack(MonoFrame& f, int cx, int cy) {
+    // In the free space left of the head; its lower tip sits on the paw.
+    const int bx = cx - 192, by = cy - 28, wide = -150;
+    Bolt(f, bx, by, 118, false, 16, wide);  // white rim over the background
+    Bolt(f, bx, by, 100, true, 16, wide);
+    Bolt(f, bx, by + 1, 62, false, 16, wide);
+    Bolt(f, bx, by + 1, 62, true, 5, wide);
+    Disk(f, bx + 6, by - 26, 10, false);  // the bite
+    const int px = cx - 168, py = cy + 52;
+    Blob(f, px, py, 26, 22, 6);
+    for (int dx : {-9, 0, 9}) Stroke(f, px + dx, py - 18, px + dx, py - 9, 4);
+    Sparkle(f, bx + 66, by - 62, 9);  // zaps
+    Sparkle(f, bx - 62, by + 56, 9);
+}
+
+// V3-05 yawn (ScenePose::Yawn): a wide open mouth with a dithered tongue
+// over the "w" lips, and a thought bubble with an almost empty battery.
+void YawnMouth(MonoFrame& f, int cx, int cy) {
+    FillEllipse(f, cx, cy + 58, 20, 26);
+    FillEllipse(f, cx, cy + 72, 12, 8, false);
+    Shade(f, cx, cy + 72, 12, 8, 6);
+}
+
+void BatteryBubble(MonoFrame& f, int cx, int cy) {
+    // Where the thinking cloud goes: below the status band (y >= 40).
+    Ring(f, cx + 128, cy - 50, 7, 7, 4);
+    Ring(f, cx + 148, cy - 72, 10, 10, 4);
+    ThoughtCloud(f, cx + 226, cy - 76, /*dots=*/false);
+    const int bx = cx + 222, by = cy - 74;
+    RoundRectRing(f, bx - 26, by - 12, 48, 26, 5, 4);
+    FillRoundRect(f, bx + 22, by - 5, 5, 12, 1);  // terminal nub
+    FillRoundRect(f, bx - 20, by - 6, 7, 14, 1);  // one last bar
 }
 
 // Sitting pose for the home screen: tail, body, paws, collar bell, head,
 // plus the animation pose overlays (all above the action rail).
 void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
+    // Battery poses bring their own face and no expression ornaments.
+    const bool charging = pose == ScenePose::Charging, yawn = pose == ScenePose::Yawn;
+    if (charging) emotion = Emotion::Happy;
+    if (yawn) emotion = Emotion::Neutral;
     // Tail curling up on the right.
     Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 22);
     Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 10, false);
@@ -507,15 +567,22 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 44);
         Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 30, false);
     }
+    if (charging) ChargingArm(f, cx, cy);
     const bool dizzy = pose == ScenePose::Dizzy1 || pose == ScenePose::Dizzy2;
     Eyes eyes = Eyes::ByEmotion;
-    if (pose == ScenePose::Blink || stretch) eyes = Eyes::Closed;
+    if (pose == ScenePose::Blink || stretch || yawn) eyes = Eyes::Closed;
+    if (charging) eyes = Eyes::Laugh;
     if (pose == ScenePose::Wave) eyes = Eyes::WinkLeft;
     if (pose == ScenePose::Giggle) eyes = Eyes::Laugh;
     if (dizzy) eyes = Eyes::Spiral;
     // Stretching TuanTuan yawns: the round "O" mouth.
     CatHead(f, cx, cy, 100, stretch ? Emotion::Surprised : emotion, eyes);
     if (stretch) StretchPaws(f, cx, cy);
+    if (charging) ChargingSnack(f, cx, cy);
+    if (yawn) {
+        YawnMouth(f, cx, cy);
+        BatteryBubble(f, cx, cy);
+    }
     if (pose == ScenePose::Giggle) {  // wobble lines on both sides of the head
         for (int side : {-1, 1})
             for (int i = 0; i < 2; ++i)
@@ -882,7 +949,9 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     // Background twinkles and a dithered cushion under the pet.
     Sparkle(f, 110, 90, 18);
     Sparkle(f, 160, 150, 9);
-    if (model.emotion != Emotion::Thinking) Sparkle(f, 690, 80, 14);  // under the thought cloud
+    // Not under the thought cloud or the low-battery bubble.
+    if (model.emotion != Emotion::Thinking && model.pose != ScenePose::Yawn)
+        Sparkle(f, 690, 80, 14);
     Sparkle(f, 640, 220, 10);
     Sparkle(f, 96, 280, 8);
     Disk(f, 720, 300, 4);

@@ -6,8 +6,9 @@
 2. ``report`` checks a sanitized serial log against the scenario's
    ``# expect <name> <value>`` comments and prints PASS/FAIL per item.
 
-Supported expectations: home_select / prompt_seq (comma lists of
-PET_HOME_SELECT / PET_PROMPT_PLAY indices, in order), commits (PET_EVENT_COMMITTED count), selftest_done
+Supported expectations: home_select / prompt_seq / phrase_seq (comma lists of
+PET_HOME_SELECT / PET_PROMPT_PLAY indices / PET_PHRASE_PLAY phrase ids, in
+order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
 PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts;
 the once-a-minute status band refresh, ``src=status``, is counted apart as
@@ -75,6 +76,7 @@ def _observe(log: str) -> dict:
     return {
         "home_select": ",".join(re.findall(r"PET_HOME_SELECT index=(\d+)", body)),
         "prompt_seq": ",".join(re.findall(r"PET_PROMPT_PLAY index=(\d+)", body)),
+        "phrase_seq": ",".join(re.findall(r"PET_PHRASE_PLAY id=(\d+)", body)),
         "commits": len(re.findall(r"PET_EVENT_COMMITTED", body)),
         "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
                                "PET_SELFTEST_ABORT" not in log) else 0,
@@ -99,7 +101,7 @@ def evaluate(scenario: str, log: str) -> dict:
     obs = _observe(log)
     checks: dict[str, bool] = {}
     for name, want in exp.items():
-        if name in ("home_select", "prompt_seq"):
+        if name in ("home_select", "prompt_seq", "phrase_seq"):
             checks[name] = obs[name] == want
         elif name in ("commits", "selftest_done"):
             checks[name] = obs[name] == int(want)
@@ -149,7 +151,8 @@ def main() -> int:
         want = report["expected"].get(name, "")
         print(f"{'PASS' if ok else 'FAIL'}  {name:18s} expected={want}")
     obs = report["observed"]
-    print("observed:", json.dumps({k: obs[k] for k in ("home_select", "prompt_seq", "commits",
+    print("observed:", json.dumps({k: obs[k] for k in ("home_select", "prompt_seq",
+                                                        "phrase_seq", "commits",
                                                         "partial_ms", "full_ms",
                                                         "status_refreshes")}))
     print("RESULT:", "PASS" if report["passed"] else "FAIL")

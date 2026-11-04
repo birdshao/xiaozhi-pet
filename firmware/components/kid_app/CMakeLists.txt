@@ -18,6 +18,9 @@ idf_component_register(
          "src/status_bar.cc"
          "src/memory_store.cc" "src/personality.cc"
          "src/voice_face.cc"
+         "src/sound_pack_reader.cc" "src/sound_bank.cc" "src/pet_phrases.cc"
+         "src/content_pack_reader.cc"
+         "src/battery_policy.cc"
          "src/parent_settings.cc" "src/parent_menu.cc" "src/nvs_parent_settings_store.cc"
     INCLUDE_DIRS "include"
     # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see

@@ -5,6 +5,9 @@ on:
     paths:
       - 'firmware/components/kid_app/**'
       - 'tests/cpp/test_pet_controller.cc'
+      - 'tests/cpp/test_sound_pack.cc'
+      - 'tools/sound_pack.py'
+      - 'tools/make_prompt_audio.py'
       - 'scripts/p2_test.sh'
       - '.github/workflows/p2-pet-engine.yml'
   workflow_dispatch:

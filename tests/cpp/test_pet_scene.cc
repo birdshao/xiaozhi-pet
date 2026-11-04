@@ -101,7 +101,8 @@ int main() {
                   kid_app::ScenePose::Hearts1, kid_app::ScenePose::Hearts2,
                   kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
                   kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
-                  kid_app::ScenePose::Morning}) {
+                  kid_app::ScenePose::Morning, kid_app::ScenePose::Charging,
+                  kid_app::ScenePose::Yawn}) {
                 MonoFrame other;
                 SceneComposer::Render(SceneModel{SceneKind::Home, emotion, 1, 2, pose}, other);
                 for (int y = SceneComposer::kRailTop - 2; y < MonoFrame::kHeight; ++y)
@@ -114,7 +115,8 @@ int main() {
              {kid_app::ScenePose::Blink, kid_app::ScenePose::Wave, kid_app::ScenePose::Hearts1,
               kid_app::ScenePose::Hearts2, kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
               kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
-              kid_app::ScenePose::Morning}) {
+              kid_app::ScenePose::Morning, kid_app::ScenePose::Charging,
+              kid_app::ScenePose::Yawn}) {
             MonoFrame other;
             SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, pose}, other);
             assert(other.Data() != still.Data());
@@ -175,6 +177,38 @@ int main() {
             assert(ink(faces[1], 600, 20, 680, 80) && !ink(still, 600, 20, 680, 60));
             assert(ink(faces[2], 200, 160, 240, 240) && ink(faces[2], 560, 160, 600, 240));
             assert(!ink(still, 200, 160, 240, 240));
+        }
+        // V3-05 battery poses: eating electricity (a bolt left of the head,
+        // whatever the expression) and the yawn with its "charge me" bubble
+        // (top right, below the status band).
+        {
+            auto count = [](const MonoFrame& f, int x0, int y0, int x1, int y1) {
+                int n = 0;
+                for (int y = y0; y < y1; ++y)
+                    for (int x = x0; x < x1; ++x) n += f.IsBlack(x, y) ? 1 : 0;
+                return n;
+            };
+            MonoFrame eat, eat_curious, yawn, yawn_thinking;
+            SceneComposer::Render(
+                SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, kid_app::ScenePose::Charging},
+                eat);
+            SceneComposer::Render(
+                SceneModel{SceneKind::Home, Emotion::Curious, 1, 2, kid_app::ScenePose::Charging},
+                eat_curious);
+            SceneComposer::Render(
+                SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, kid_app::ScenePose::Yawn}, yawn);
+            SceneComposer::Render(
+                SceneModel{SceneKind::Home, Emotion::Thinking, 1, 2, kid_app::ScenePose::Yawn},
+                yawn_thinking);
+            assert(eat.Data() != yawn.Data());
+            // The pose decides the face: no "?" or thought dots on top.
+            assert(eat.Data() == eat_curious.Data() && yawn.Data() == yawn_thinking.Data());
+            assert(count(eat, 170, 80, 240, 170) > 1200 && count(still, 170, 80, 240, 170) < 100);
+            assert(count(yawn, 596, 70, 650, 100) > 400 && count(still, 596, 70, 650, 100) < 50);
+            assert(count(yawn, 390, 196, 410, 218) > 350 && count(still, 390, 196, 410, 218) < 150);
+            // The bubble keeps the thinking cloud's place: below the band.
+            for (int y = 0; y < 44; ++y)
+                for (int x = 560; x < 700; ++x) assert(!yawn.IsBlack(x, y));
         }
         // Falling asleep: Zzz1 < Zzz2 < Still (all three letters).
         MonoFrame z1, z2, z3;
@@ -268,7 +302,7 @@ int main() {
             for (ScenePose pose : {ScenePose::Still, ScenePose::Blink, ScenePose::Wave,
                                    ScenePose::Hearts1, ScenePose::Hearts2, ScenePose::Giggle,
                                    ScenePose::Dizzy1, ScenePose::Dizzy2, ScenePose::Sunrise,
-                                   ScenePose::Morning}) {
+                                   ScenePose::Morning, ScenePose::Charging, ScenePose::Yawn}) {
                 MonoFrame f;
                 SceneComposer::Render(home(StatusBar{}, emotion, pose), f);
                 for (int y = 0; y < SceneComposer::kStatusBottom; ++y)
@@ -366,7 +400,7 @@ int main() {
                                     Emotion::Thinking, Emotion::Speaking}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
-                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Morning);
+                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Yawn);
                              ++pose) {
                             const SceneModel in{kind, emotion, page, sel,
                                                 static_cast<kid_app::ScenePose>(pose)};
