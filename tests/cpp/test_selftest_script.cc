@@ -213,5 +213,18 @@ int main() {
         assert(!script.Parse((text + "tap up\nend\n").c_str()));
     }
 
+    // book <id>: V4-05 trials read a test book instead of the demo book.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nbook reader_test\npet\nend\n"));
+        assert(script.Count() == 2 && script.Steps()[0].op == SelfTestOp::Book);
+        assert(std::strcmp(script.Steps()[0].name, "reader_test") == 0);
+        assert(script.TotalMs() == 0);
+        assert(!script.Parse("PETSELFTEST1\nbook\nend\n"));                      // no id
+        assert(!script.Parse("PETSELFTEST1\nbook a b\nend\n"));                  // two ids
+        assert(!script.Parse("PETSELFTEST1\nbook ../secret\nend\n"));            // no paths
+        assert(!script.Parse("PETSELFTEST1\nbook book_id_far_too_long\nend\n")); // > 15
+    }
+
     std::cout << "PASS: self-test script parser (ops, keys, bounds, sector, rejection)\n";
 }

@@ -229,7 +229,8 @@ class DisplayOverlayTest(unittest.TestCase):
             body = patched[patched.index(fn):]
             body = body[:body.index('\n    }\n')]
             self.assertIn('self->sleep_active_.load()', body)
-        self.assertIn('if (okay && !sleep_active_.load()) story_pcm_.RequestPage(', patched)
+        play = patched[patched.index('void PlayBookClip('):]
+        self.assertIn('if (sleep_active_.load()) return;', play[:play.index('\n    }\n')])
         # Leaving Pet mode aborts the flow; it never powers off from XiaoZhi.
         loop = patched[patched.index('void InputTaskLoop()'):]
         loop = loop[:loop.index('\n    }\n')]
@@ -600,7 +601,9 @@ class DisplayOverlayTest(unittest.TestCase):
         fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
         fast = fast[:fast.index('\n}\n')]
         self.assertLess(fast.index('EPD_SendData(0x80)'), fast.index('EPD_SendCommand(0x24)'))
-        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 2)
+        # Full border on every full 1-bit picture: pet scene, story page and
+        # the V4-05 book page.
+        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 3)
 
     def test_round3_hardware_diag_stays_read_only(self):
         patched = self._board()

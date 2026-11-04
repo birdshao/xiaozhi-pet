@@ -179,6 +179,9 @@ bool SelfTestScript::Parse(const char* text) {
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
+        } else if (std::strcmp(words[0], "book") == 0) {
+            if (n != 2 || !MarkName(words[1], step.name)) return false;
+            step.op = SelfTestOp::Book;
         } else if (std::strcmp(words[0], "pet") == 0) {
             if (n != 1) return false;
             step.op = SelfTestOp::TogglePet;
