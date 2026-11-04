@@ -28,7 +28,8 @@ bool WaveshareStorySd::Initialize(const char* book_id) {
     if (!mounted_) {
         esp_vfs_fat_sdmmc_mount_config_t config{};
         config.format_if_mount_failed = false;
-        config.max_files = 3;
+        // Book + narration + sound pack (V2-08) + game pack (V4-06).
+        config.max_files = 4;
         config.allocation_unit_size = 16 * 1024;
         sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         host.max_freq_khz = SDMMC_FREQ_DEFAULT; // conservative 20 MHz

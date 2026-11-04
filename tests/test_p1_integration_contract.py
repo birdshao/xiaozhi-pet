@@ -48,7 +48,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = patch_board(original)
         self.assertIn('struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox', patched)
         self.assertIn('GatedSceneMailbox pet_mailbox_', patched)
-        self.assertIn('FreertosPetService pet_service_', patched)
+        self.assertIn('FreertosAtomicPetService pet_service_', patched)
         self.assertIn('FreertosPetDisplayWorker pet_display_worker_', patched)
         self.assertIn('ShowPetScene(scene)', patched)
         self.assertIn('PET_FIRMWARE_BOOT_MARKER phase=board_init', patched)
@@ -229,7 +229,8 @@ class DisplayOverlayTest(unittest.TestCase):
             body = patched[patched.index(fn):]
             body = body[:body.index('\n    }\n')]
             self.assertIn('self->sleep_active_.load()', body)
-        self.assertIn('if (okay && !sleep_active_.load()) story_pcm_.RequestPage(', patched)
+        play = patched[patched.index('void PlayBookClip('):]
+        self.assertIn('if (sleep_active_.load()) return;', play[:play.index('\n    }\n')])
         # Leaving Pet mode aborts the flow; it never powers off from XiaoZhi.
         loop = patched[patched.index('void InputTaskLoop()'):]
         loop = loop[:loop.index('\n    }\n')]
@@ -600,7 +601,9 @@ class DisplayOverlayTest(unittest.TestCase):
         fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]
         fast = fast[:fast.index('\n}\n')]
         self.assertLess(fast.index('EPD_SendData(0x80)'), fast.index('EPD_SendCommand(0x24)'))
-        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 2)
+        # Full border on every full 1-bit picture: pet scene, story page and
+        # the V4-05 book page.
+        self.assertEqual(impl.count('EPD_SendData(0x01);\n            EPD_DisplayPartBaseImage();'), 3)
 
     def test_round3_hardware_diag_stays_read_only(self):
         patched = self._board()
@@ -926,7 +929,7 @@ class DisplayOverlayTest(unittest.TestCase):
 
     def test_v3_parent_menu_wiring(self):
         patched = self._board()
-        for header in ('parent_menu.h', 'nvs_parent_settings_store.h'):
+        for header in ('parent_menu.h', 'freertos_atomic_pet_service.h'):
             self.assertIn(f'#include "kid_app/{header}"', patched)
         # The combo (after the sleep-flow guard) opens the menu; while it is
         # open it takes every input before power, sleep and pet handling.
@@ -935,13 +938,17 @@ class DisplayOverlayTest(unittest.TestCase):
         menu_at = handle.index('if (parent_menu_.IsOpen())')
         self.assertLess(menu_at, handle.index('power_.OnActivity(NowMs())'))
         self.assertLess(menu_at, handle.index('PetInputRouter::'))
-        # Entering, moving and leaving are never pet interactions.
+        # Entering, moving and leaving are never pet interactions; only a
+        # save reaches the ledger (SaveParentSettings, not a pet action).
         for fn in ('void OpenParentMenu()', 'void CloseParentMenu(', 'void HandleParentAction(',
                    'void UpdateParentMenu()', 'void ApplyParentSettings(',
                    'void LoadParentSettings()'):
             body = self._body(patched, fn)
             self.assertNotIn('PostLocal', body, fn)
-            self.assertNotIn('pet_service_', body, fn)
+            self.assertNotIn('PostMemory', body, fn)
+        for fn in ('void OpenParentMenu()', 'void CloseParentMenu(', 'void UpdateParentMenu()',
+                   'void ApplyParentSettings('):
+            self.assertNotIn('pet_service_', self._body(patched, fn), fn)
         opened = self._body(patched, 'void OpenParentMenu()')
         self.assertIn('state != kDeviceStateIdle', opened)
         self.assertIn('parent_ready_.load()', opened)
@@ -959,10 +966,13 @@ class DisplayOverlayTest(unittest.TestCase):
         gate = gate[:gate.index('GatedSceneMailbox pet_mailbox_')]
         self.assertIn('scene.kind != kid_app::SceneKind::Parent) return false;', gate)
         self.assertIn('if (ParentMenuOpen()) return;', self._body(patched, 'void RequestAnimation('))
-        # Saved settings go to NVS first, then apply; a failed write reverts.
+        # Saved settings are committed to the ledger first, then applied; a
+        # failed commit reverts to what the ledger holds.
         action = self._body(patched, 'void HandleParentAction(')
-        self.assertLess(action.index('parent_store_.Save(next)'),
+        self.assertLess(action.index('pet_service_.SaveParentSettings(next, '),
                         action.index('ApplyParentSettings(next, "menu")'))
+        self.assertIn('if (saved != kid_app::CommitResult::Committed) {', action)
+        self.assertIn('const auto kept = pet_service_.ParentNow();', action)
         self.assertIn('parent_menu_.Revert(ParentSettingsNow())', action)
         for marker in ('PET_PARENT_SAVED item=%s', 'PET_PARENT_SAVE_FAILED item=%s',
                        'PET_PARENT_ITEM item=%s'):
@@ -988,9 +998,12 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(boot.index('self->LoadParentSettings();'),
                         boot.index('self->StartSelfTestTask();'))
         load = self._body(patched, 'void LoadParentSettings()')
-        self.assertIn('parent_store_.Load(&loaded)', load)
-        self.assertIn('kid_app::ParentSettings{}', load)
-        self.assertIn('parent_ready_.store(true)', load)
+        self.assertIn('const bool ready = StartPetLedger();', load)
+        self.assertIn('if (!ready) ApplyParentSettings(kid_app::ParentSettings{}, "defaults");',
+                      load)
+        start = self._body(patched, 'bool StartPetLedger(')
+        self.assertLess(start.index('ApplyParentSettings(pet_service_.ParentNow(), "ledger")'),
+                        start.index('parent_ready_.store(true)'))
         # Day plan: every rhythm use goes through the parent settings.
         self.assertIn('kid_app::RhythmScheduler(ParentSettingsNow().schedule)', patched)
         self.assertIn('const auto rhythm = Rhythm();', self._body(patched, 'void UpdateRhythm()'))
@@ -1085,6 +1098,7 @@ class DisplayOverlayTest(unittest.TestCase):
                                  'Scaled(drowsy ? kIdleAfterMs : kNapAfterMs)',
                                  'Scaled(off_after)'),
             'parent_menu.cc': ('Scaled(kIdleExitMs)',),
+            'mini_game.cc': ('Scaled(kIdleExitMs)', 'Scaled(kRepeatPromptMs)'),
             'battery_policy.cc': ('Scaled(kCriticalRetryMs)', 'Scaled(kEatEveryMs)',
                                   'Scaled(kYawnEveryMs)'),
         }
@@ -1096,7 +1110,8 @@ class DisplayOverlayTest(unittest.TestCase):
         # prompt settle times and the wall-clock status band stay real.
         for name in ('sleep_flow.cc', 'status_bar.cc', 'prompt_scheduler.cc', 'voice_face.cc',
                      'refresh_planner.cc', 'pet_refresh_gate.cc', 'pet_phrases.cc',
-                     'freertos_pet_display_worker.cc', 'audio_coordinator.cc'):
+                     'freertos_pet_display_worker.cc', 'audio_coordinator.cc',
+                     'book_reader.cc'):
             self.assertNotIn('SelfTestClock', (src / name).read_text(encoding='utf-8'), name)
         patched = self._board()
         self.assertIn('kid_app::SelfTestClock::Scaled(kBatterySampleMs)', patched)
@@ -1115,6 +1130,127 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('kid_app::SelfTestScript::kIdleSettleMs', step)
         self.assertIn('PET_SELFTEST_IDLE ready=', step)
         self.assertNotIn('ABORT', step)  # not ready: the pet toggle decides
+
+    def test_board_runs_the_atomic_ledger(self):
+        patched = self._board()
+        # One Pet owner: the atomic ledger; the legacy service and the V3-06
+        # board-only settings store are gone from the board.
+        self.assertIn('kid_app::FreertosAtomicPetService pet_service_;', patched)
+        self.assertNotIn('FreertosPetService pet_service_', patched)
+        self.assertNotIn('freertos_pet_service.h', patched)
+        self.assertNotIn('NvsParentSettingsStore', patched)
+        self.assertNotIn('parent_store_', patched)
+        start = self._body(patched, 'bool StartPetLedger(')
+        self.assertIn('std::lock_guard<std::mutex> lock(pet_ledger_mutex_)', start)
+        self.assertLess(start.index('pet_service_.SetDayProvider(&LocalDay, this)'),
+                        start.index('pet_service_.Start('))
+        self.assertIn('StartMode::MigrateLegacyLocal', start)
+        self.assertIn('&PetCommitted, nullptr, this', start)  # no outbound: local only
+        self.assertIn('PET_LEDGER_READY ok=%d migration=%s failure=%s', start)
+        # Pet mode and the boot both go through the same guarded start.
+        init = self._body(patched, 'bool InitializePetRuntime()')
+        self.assertIn('if (!StartPetLedger(&restored)) return false;', init)
+        boot = patched[patched.index('self->RunHardwareDiag();'):]
+        self.assertLess(boot.index('self->LoadParentSettings();'),
+                        boot.index('self->StartSelfTestTask();'))
+        # Commits keep their scene publishing and log marker.
+        committed = self._body(patched, 'static void PetCommitted(')
+        self.assertIn('outcome != kid_app::CommitResult::Committed) return;', committed)
+        self.assertIn('self->pet_mailbox_.Publish(self->WithVoiceFace(scene))', committed)
+        self.assertIn('PET_EVENT_COMMITTED id_class=%s fed=%u', committed)
+        # Power-off waits for the ledger and logs the generation to restore.
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('pet_service_.Settled()'), off.index('pmic_->PowerOff()'))
+        self.assertIn('ledger_gen=%llu', off)
+        self.assertLess(off.index('pet_service_.GenerationNow()'), off.index('pmic_->PowerOff()'))
+        # V5: day for memory counters from the RTC, temperament for pet lines,
+        # memory events only through the ledger.
+        rhythm = self._body(patched, 'void UpdateRhythm()')
+        self.assertIn('local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc)'
+                      ' / 86400) : 0);', rhythm)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertLess(player.index('phrase_planner_.SetTemperament(pet_service_.TemperamentNow())'),
+                        player.index('phrase_planner_.Next(context, NowMs())'))
+        self.assertIn('pet_service_.PostMemory(event)',
+                      self._body(patched, 'bool RecordMemory('))
+        # Every child action still goes through PostLocal on that one service.
+        self.assertGreaterEqual(patched.count('pet_service_.PostLocal('), 5)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v7_ledger_persist.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('# expect ledger_restored 1', scenario)
+        self.assertLess(scenario.index('\nalarm '), scenario.index('\ntap pwr'))
+    def test_v4_mini_game_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/mini_game.h"', patched)
+        self.assertIn('#include "kid_app/game_pack_reader.h"', patched)
+        # The Game rail item starts a game (UI only) after the lock is
+        # released; quiet hours or a low battery fall back to "say hi".
+        rail = self._body(patched, 'kid_app::PetInputDecision HandleHomeRailLocked(')
+        self.assertLess(rail.index('HomeItem::Game && GameStartAllowed()'),
+                        rail.index('PetInputRouter::DecideHome('))
+        allowed = self._body(patched, 'bool GameStartAllowed()')
+        self.assertIn('quiet_hours_.load()', allowed)
+        self.assertIn('battery_.LowPower()', allowed)
+        self.assertIn('!= kDeviceStateIdle ? "voice"', allowed)
+        handle = self._body(patched, 'void HandleInputEvent(')
+        # Sleep and the parent combo still come first; then the game takes the dial.
+        self.assertLess(handle.index('InputKind::SleepRequest && pet_mode_.load()'),
+                        handle.index('HandleGameInput(event.kind)'))
+        self.assertLess(handle.index('OpenParentMenu();'), handle.index('HandleGameInput(event.kind)'))
+        self.assertLess(handle.index('if (game_requested_)'), handle.index('pet_service_.PostLocal('))
+        start = self._body(patched, 'void StartGame()')
+        self.assertIn('kid_app::BuiltinGameRounds()', start)  # works without a TF card
+        self.assertIn('game_seed_.exchange(0)', start)
+        self.assertIn('pet_mailbox_.game_only.store(true)', start)
+        self.assertNotIn('pet_service_', start)  # no Pet action, no NVS
+        # Only Game frames reach the panel while it runs.
+        mailbox = self._body(patched, 'struct GatedSceneMailbox')
+        self.assertIn('game_only.load() && scene.kind != kid_app::SceneKind::Game', mailbox)
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
+        self.assertIn('pet_mailbox_.game_only.store(false)', end)
+        self.assertIn('last_pet_scene_.load()', end)
+        self.assertIn('GameCompletedMemoryEvent(', end)
+        self.assertIn('posted = RecordMemory(memory);', end)  # the #64 ledger path only
+        self.assertNotIn('pet_service_', end)
+        # Every other owner of the screen or the speaker ends the game first.
+        show = patched[patched.index('case kid_app::SleepAction::ShowSleepScene: {'):]
+        self.assertLess(show.index('EndGame("sleep", false)'), show.index('sleep_active_.store(true);'))
+        self.assertLess(self._body(patched, 'void OpenParentMenu()').index('EndGame("parent", false)'),
+                        self._body(patched, 'void OpenParentMenu()').index('parent_menu_.Open('))
+        self.assertIn('EndGame("morning", false)', self._body(patched, 'void BeginMorning('))
+        update = self._body(patched, 'void UpdateGame(DeviceState state)')
+        self.assertIn('EndGame("pet_off")', update)
+        self.assertIn('EndGame("voice")', update)
+        self.assertIn('game_.Tick(NowMs())', update)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdateGame(state)'), loop.index('UpdatePower(state)'))
+        # No pet lines, gestures, battery reactions, animations or naps over a game.
+        self.assertIn('GameActive()', self._body(patched, 'void PostPhrase('))
+        self.assertIn('!GameActive()', self._body(patched, 'void HandleGesture('))
+        self.assertIn('if (GameActive()) return;', self._body(patched, 'void RequestAnimation('))
+        self.assertIn('if (GameActive()) conditions.busy = true;', self._body(patched, 'void UpdatePower('))
+        battery = self._body(patched, 'void UpdateBattery(')
+        self.assertIn('!GameActive()', battery[battery.index('const bool allowed'):])
+        # Game sounds share the one prompt player and its volume rules.
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertIn('kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)', player)
+        self.assertIn('game_clip.Copy(offset, chunk, 480)', player)
+        self.assertIn('0x47414D45u', player)
+        self.assertEqual(patched.count('kid_app::ScalePcm(chunk, n, PromptVolumePct())'), 1)
+        self.assertIn('LoadGamePack();', self._body(patched, 'void LoadSoundPack()'))
+        self.assertIn('game_file_.Open("/sdcard/games", "default", "kpg")',
+                      self._body(patched, 'void LoadGamePack()'))
+        # Self-test "game" step fixes the next seed.
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        self.assertIn('case kid_app::SelfTestOp::Game:', run)
+        self.assertIn('game_seed_.store(step.ms)', run)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v4_mini_game.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('\ngame 4242\n', scenario)
+        self.assertIn('# expect commits 0', scenario)
+        self.assertIn('# expect min:end=completed 1', scenario)
 
 if __name__ == "__main__":
     unittest.main()

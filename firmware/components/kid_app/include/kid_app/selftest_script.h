@@ -48,12 +48,18 @@ namespace kid_app {
 //                           so one scenario runs at any scale
 //   waitidle <timeout_ms>   wait until XiaoZhi is idle (Wi-Fi up, activated)
 //                           for 1 s, at most timeout_ms; then go on anyway
+//   book <id>               V4-05: read /sdcard/books/<id>.kpb ([a-z0-9_], <= 15
+//                           chars) instead of the demo book; only before the
+//                           first "pet" step (the card is read once per boot)
+//   game <seed>             the next mini game (V4-06) uses this seed (1..
+//                           600000) instead of a random one, so a script
+//                           knows its rounds and right answers
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo, TimeScale, WaitIdle, TimerWait
+    Combo, Book, Game, TimeScale, WaitIdle, TimerWait
 };
 
 struct SelfTestStep {
@@ -64,9 +70,10 @@ struct SelfTestStep {
                           // ms for TimerWait (scaled when it runs);
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
-                          // Battery: percent | kBatteryCharging, or kBatteryOff
+                          // Battery: percent | kBatteryCharging, or kBatteryOff;
+                          // Game: the seed
     uint32_t gap_ms = 0;  // pause after releasing the key
-    char name[16] = {};   // Mark only
+    char name[16] = {};   // Mark; Book: book id
 };
 
 class SelfTestScript {

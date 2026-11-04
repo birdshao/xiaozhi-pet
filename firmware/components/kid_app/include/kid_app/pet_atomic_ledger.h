@@ -56,6 +56,23 @@ public:
     // outbox and an unprovisioned remote server with cursor 0. Never auto-run.
     bool ImportLegacyForFreshServer(const PetCheckpoint& checkpoint,
                                     uint64_t legacy_generation);
+    // Board migration (PetLedgerMigration) on a device that has never had a
+    // server: the legacy kid_pet checkpoint and the V3-06 board parent key in
+    // ONE first commit, empty memory and outbox. legacy_generation 0 means no
+    // legacy Pet (checkpoint is then the default one); otherwise the ledger
+    // continues after it, so new local event ids never repeat old ones.
+    // Same precondition as InitializeFresh (Load returned Empty).
+    bool ImportLegacyLocal(const PetCheckpoint& checkpoint,
+                           uint64_t legacy_generation,
+                           const ParentSettings& parent);
+
+    // Local-only device (no server transport yet): when false, committed
+    // child actions are NOT queued as outbound records, so a device that
+    // never syncs can never fill the 16-slot outbox and stop accepting
+    // feeds. The sequence cursor stays where it is for a later server.
+    // Default true (unchanged behaviour). Not persisted: set before use.
+    void SetProjection(bool enabled) { project_ = enabled; }
+    bool Projection() const { return project_; }
 
     // `day` (local civil day number, 0 = unknown) dates today's feed /
     // greeting memory counters committed with the event.
@@ -106,6 +123,7 @@ private:
     int active_slot_ = -1;
     bool initialized_ = false;
     bool storage_empty_ = false;
+    bool project_ = true;
 };
 
 }  // namespace kid_app

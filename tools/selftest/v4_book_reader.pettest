@@ -1,0 +1,62 @@
+PETSELFTEST1
+# V4-05 picture-book reader on the KPB2 test book (not child content).
+# Card: /books/reader_test.kpb from
+#   python -m tools.make_reader_test_book --output build/reader-test
+# Page 1 grey (2 s tone) + like question (red / blue / both) + quiz
+# (circle / square); page 2 grey; page 3 1-bit. Counted from "mark begin".
+# expect min:PET_BOOK_OPEN 1
+# expect min:book=reader_test 1
+# expect min:how=grey 4
+# expect min:how=mono 2
+# expect none:mono_after_grey 0
+# expect min:kind=page 6
+# expect min:kind=prompt 2
+# expect min:kind=option 6
+# expect min:result=choice 1
+# expect min:result=wrong 1
+# expect min:like=2:3 1
+# expect min:kind=finished 1
+# expect none:PET_BOOK_DRAW_FAILED 0
+# expect none:PET_BOOK_MEMORY_REJECTED 0
+# expect none:PET_BOOK_FRAMES_FAILED 0
+# expect min:PET_BOOK_HOME 1
+# expect commits 2
+# expect selftest_done 1
+# expect max_partial_ms 3000
+# expect max_full_ms 12000
+volume 15
+book reader_test
+# Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
+wait 20000
+pet
+wait 7000
+# Normalize to home: press opens the preselected Story, hold returns home.
+tap press 9000
+hold press 1500 7000
+mark begin
+# Story: page 1 in 4 grey, narration (2 s), then question 1 (red marked).
+tap press 14000
+# Highlight: blue, both, blue again (each says its name; partial refresh).
+tap down 2500
+tap down 2500
+tap up 2500
+# Blue is a like (favorite_color 3); 3 s later question 2 appears.
+tap press 6000
+# Square is wrong: the circle is marked and named, then the plain grey
+# page comes back (full refresh, no narration).
+tap down 2500
+tap press 11000
+# Read again: page 1 narration restarts, no question this time.
+tap press 4000
+# Page 2 (grey), page 3 (1-bit), back to 2, forward to 3.
+tap down 9000
+tap down 8000
+tap up 9000
+tap down 8000
+# The end picture (book finished), back to page 3, then home.
+tap down 7000
+tap up 8000
+hold press 1500 7000
+pet
+wait 5000
+end

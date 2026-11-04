@@ -22,7 +22,9 @@ the once-a-minute status band refresh, ``src=status``, is counted apart as
 status_refreshes because it depends on the wall clock, not the script),
 min:<TEXT> N (TEXT appears at least N times), none:<TEXT> 0 (never appears),
 timescale N (the board ran the test-only time scale N %; 100 = no scaling
-was ever applied; checked on the whole log).
+was ever applied; checked on the whole log),
+ledger_restored (1 = after a sleep power-off the next boot's PET_LEDGER_READY
+restored exactly that power-off's ledger_gen and the last committed fed=).
 Behaviour is counted after the last ``mark begin`` (warm-up excluded).
 Panics, watchdog resets, a PET_SELFTEST_ABORT, or a log without the
 monitor's SUMMARY line always fail.
@@ -156,6 +158,20 @@ def read_log(path: Path) -> str:
 CRASH_TEXT = re.compile(r"Guru Meditation|abort\(\) was called|Task watchdog got triggered")
 
 
+def _ledger_restored(body: str) -> int:
+    """1 when a power-off's durable state is exactly what the next boot loaded:
+    same ledger generation, and the feed count of the last commit before it."""
+    for off in re.finditer(r"PET_SLEEP_POWEROFF [^\n]*ledger_gen=(\d+)", body):
+        gen = int(off.group(1))
+        ready = re.search(r"PET_LEDGER_READY ok=1 [^\n]*? gen=(\d+) fed=(\d+)",
+                          body[off.end():])
+        fed = re.findall(r"PET_EVENT_COMMITTED [^\n]*fed=(\d+)", body[:off.start()])
+        if (gen and ready and fed and int(ready.group(1)) == gen
+                and int(ready.group(2)) == int(fed[-1])):
+            return 1
+    return 0
+
+
 def _observe(log: str) -> dict:
     # Health is judged on the whole log; behaviour only after the last
     # "mark begin" so warm-up/normalization steps are not counted.
@@ -175,6 +191,7 @@ def _observe(log: str) -> dict:
         "prompt_seq": ",".join(re.findall(r"PET_PROMPT_PLAY index=(\d+)", body)),
         "phrase_seq": ",".join(re.findall(r"PET_PHRASE_PLAY id=(\d+)", body)),
         "commits": len(re.findall(r"PET_EVENT_COMMITTED", body)),
+        "ledger_restored": _ledger_restored(body),
         "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
                                "PET_SELFTEST_ABORT" not in log) else 0,
         # Durations include every refresh; counts leave out status-band ones.
@@ -204,7 +221,7 @@ def evaluate(scenario: str, log: str) -> dict:
     for name, want in exp.items():
         if name in ("home_select", "prompt_seq", "phrase_seq"):
             checks[name] = obs[name] == want
-        elif name in ("commits", "selftest_done"):
+        elif name in ("commits", "selftest_done", "ledger_restored"):
             checks[name] = obs[name] == int(want)
         elif name == "max_partial_ms":
             checks[name] = bool(obs["partial_ms"]) and max(obs["partial_ms"]) <= int(want)

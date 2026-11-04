@@ -40,7 +40,9 @@ PetInputDecision PetInputRouter::DecideHome(PetMode mode, HomeItem item) {
     switch (item) {
         case HomeItem::Story: return {true, PetAction::StartStory};
         case HomeItem::Feed: return {true, PetAction::Feed};
-        // Chat (V6) and games (V4) are not built yet: the pet says hi.
+        // Chat (V6) is not built yet: the pet says hi. Game: the board
+        // starts a V4-06 mini game (UI only, no Pet action) and asks here
+        // only when it cannot (quiet hours, low battery): then it says hi.
         case HomeItem::Chat:
         case HomeItem::Game: return {true, PetAction::Pickup};
         case HomeItem::Sleep: return {};  // board-owned sleep flow (V2-09)

@@ -48,6 +48,15 @@ def patch_display_h(text: str) -> str:
     bool ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page);\n    void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
+    text = once(text, "    void ExitPetPreview();\n", """    // V4-05 picture book (48,000 B frames, MonoFrame layout; the caller
+    // reads the card before): 1-bit full page, official 4-grey full page
+    // (RAM 0x24/0x26 planes, then the 1-bit fallback as the partial base),
+    // and a 1-bit partial refresh against an explicit previous image.
+    bool ShowBookMono(const uint8_t* mono);
+    bool ShowBookGrey(const uint8_t* ram24, const uint8_t* ram26, const uint8_t* mono);
+    bool ShowBookPartial(const uint8_t* next, const uint8_t* previous);
+    void ExitPetPreview();
+""", "display header book")
     return text
 
 
@@ -164,6 +173,86 @@ bool CustomEpdDisplay::ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t 
     return okay;
 }
 
+bool CustomEpdDisplay::ShowBookMono(const uint8_t* mono) {
+    bool okay = false;
+    if (mono && lvgl_port_lock(5000)) {
+        if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
+            memcpy(buffer, mono, kid_app::MonoFrame::kSize);
+            pet_preview_enabled_ = true;
+            EPD_SendCommand(0x3C);  // border waveform as in EPD_Init (full)
+            EPD_SendData(0x01);
+            EPD_DisplayPartBaseImage();
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowBookGrey(const uint8_t* ram24, const uint8_t* ram26,
+                                    const uint8_t* mono) {
+    bool okay = false;
+    if (ram24 && ram26 && mono && lvgl_port_lock(5000)) {
+        const int n = static_cast<int>(kid_app::MonoFrame::kSize);
+        if (buffer && epd_spi_data.buffer_len >= n) {
+            pet_preview_enabled_ = true;
+            // Waveshare's official EPD_3IN97_Init_4GRAY / Display_4Gray: the
+            // EPD_Init registers, a fixed temperature (0x1A = 0x5A) that
+            // selects the panel's 4-grey waveform, both RAM planes, then
+            // 0x22 = 0xD7 (refresh without reloading the sensor value).
+            EPD_Init();
+            EPD_SendCommand(0x1A);
+            EPD_SendData(0x5A);
+            EPD_SendCommand(0x24);
+            writeBytes(ram24, n);
+            EPD_SendCommand(0x26);
+            writeBytes(ram26, n);
+            EPD_SendCommand(0x22);
+            EPD_SendData(0xD7);
+            EPD_SendCommand(0x20);
+            read_busy();
+            // Back to the 1-bit baseline without a refresh: registers and
+            // sensor temperature as after boot, both RAMs = the page's 1-bit
+            // fallback, so the next partial (question cards) diffs against it.
+            EPD_Init();
+            memcpy(buffer, mono, n);
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, n);
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, n);
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowBookPartial(const uint8_t* next, const uint8_t* previous) {
+    bool okay = false;
+    if (next && previous && lvgl_port_lock(5000)) {
+        const int n = static_cast<int>(kid_app::MonoFrame::kSize);
+        if (buffer && epd_spi_data.buffer_len >= n) {
+            memcpy(buffer, next, n);
+            pet_preview_enabled_ = true;
+            // As ShowPetSceneFast, but RAM 0x26 gets the caller's previous
+            // image: pixels that differ from the new one are driven (the
+            // question cards over a grey page), all others are left alone.
+            EPD_SendCommand(0x3C);  // border waveform: hold during partial
+            EPD_SendData(0x80);
+            EPD_SendCommand(0x26);
+            writeBytes(previous, n);
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, n);
+            EPD_TurnOnDisplayPart();
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, n);
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    return okay;
+}
+
 void CustomEpdDisplay::ExitPetPreview() {
     if (!lvgl_port_lock(5000)) return;
     pet_preview_enabled_ = false;
@@ -197,15 +286,20 @@ BOARD_WORKER = r'''
     // panel. Pet commits, voice faces and power pictures still update
     // last_pet_scene_ and come back when the menu closes. Opening and
     // closing flip the gate under scene_state_mutex_, like every publish.
+    // V4-06: the same for a mini game (game_only, only Game frames).
     struct GatedSceneMailbox : kid_app::FreertosPetSceneMailbox {
         std::atomic<bool> parent_only{false};
+        std::atomic<bool> game_only{false};
         bool Publish(const kid_app::SceneModel& scene) {
             if (parent_only.load() && scene.kind != kid_app::SceneKind::Parent) return false;
+            if (game_only.load() && scene.kind != kid_app::SceneKind::Game) return false;
             return kid_app::FreertosPetSceneMailbox::Publish(scene);
         }
     };
     GatedSceneMailbox pet_mailbox_;
-    kid_app::FreertosPetService pet_service_;
+    // The one owner of pet state, V5 memory and V3-06 parent settings: the
+    // atomic ledger (kid_pet_sync), see StartPetLedger().
+    kid_app::FreertosAtomicPetService pet_service_;
     // 500 ms pacing: full refreshes are only triggered by scene changes or
     // the planner's ghosting limit; highlights use partial refreshes.
     kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 500};
@@ -227,6 +321,7 @@ BOARD_WORKER = r'''
 
     void RequestAnimation(kid_app::Animation animation, const kid_app::SceneModel& target) {
         if (ParentMenuOpen()) return;  // V3-06: nothing plays over the parent menu
+        if (GameActive()) return;      // V4-06: nor over a mini game
         SceneStateLock lock(anim_mutex_);
         anim_director_.Request(animation, target, NowMs());
     }
@@ -297,19 +392,24 @@ BOARD_WORKER = r'''
                                                              : status_shown_;
         bool okay = false;
         const uint32_t epd_started_ms = NowMs();
+        kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
+        // V4-05: anything else on the panel (or Pet mode left) means the
+        // next book frame starts with a full page again.
+        if (scene.kind != kid_app::SceneKind::Reader || planner_reset_.load())
+            book_panel_valid_ = false;
         if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready()) {
-            okay = display_->ShowStoryPage(*story_sd_.Reader(), scene.book_page);
-            // Only speak after EPD shows a validated book page;
-            // invalid/out-of-range pages must cancel prior narration.
-            if (story_pcm_.Ready()) {
-                if (okay && !sleep_active_.load()) story_pcm_.RequestPage(scene.book_page);
-                else story_pcm_.Stop();
-            }
+            // V4-05: grey / 1-bit page and the question cards from the card.
+            // Only speak after EPD shows a validated book page: book_shown_
+            // tells the reader on pet_input (BookReader::OnShown), which
+            // starts the narration; the end picture, a page outside the
+            // book or a failure falls back to the placeholder, quietly.
+            okay = DrawBookLocked(scene, &mode);
+            if (okay) book_shown_.store(PackPetScene(scene));
+            else if (story_pcm_.Ready()) story_pcm_.Stop();
         }
         // Missing SD or a page outside a reviewed book falls back to
         // the pre-existing monochrome reader placeholder.
         if (planner_reset_.exchange(false)) refresh_planner_.ForceFull();
-        kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
         if (!okay) {
             mode = refresh_planner_.Plan(scene);
             if (mode == kid_app::RefreshMode::Full) scene.status = NewestStatus(scene.kind);
@@ -403,11 +503,11 @@ BOARD_WORKER = r'''
     }
 
     static void PetCommitted(const kid_app::PetEvent& event,
-                              kid_app::PumpResult outcome,
+                              kid_app::CommitResult outcome,
                               const kid_app::PetEffects& effects,
                               const kid_app::PetSnapshot& snapshot, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
-        if (!self || outcome != kid_app::PumpResult::Committed) return;
+        if (!self || outcome != kid_app::CommitResult::Committed) return;
         // Suspend the old page immediately when a new page/scene is
         // committed. The new page starts only after the slow EPD refresh.
         if (self->story_pcm_.Ready() &&
@@ -421,6 +521,8 @@ BOARD_WORKER = r'''
             SceneStateLock lock(self->scene_state_mutex_);
             auto scene = kid_app::PetScenePresenter::Present(snapshot);
             scene.home_selection = self->home_selection_.load();
+            // V4-05: the open book owns the reader picture (page, question).
+            if (scene.kind == kid_app::SceneKind::Reader) scene = self->BookSceneLocked();
             self->last_pet_scene_.store(PackPetScene(scene));
             if (effects.repaint && !self->sleep_active_.load())
                 self->pet_mailbox_.Publish(self->WithVoiceFace(scene));
@@ -442,8 +544,67 @@ BOARD_WORKER = r'''
             self->PostPhrase(kid_app::PhraseContext::Feed);
         else if (event.action == kid_app::PetAction::Pickup)
             self->PostPhrase(kid_app::PhraseContext::Greeting);
-        ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s",
-                 (event.id & kid_app::kLocalEventBit) ? "local" : "external");
+        ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s fed=%u",
+                 (event.id & kid_app::kLocalEventBit) ? "local" : "external",
+                 static_cast<unsigned>(snapshot.interaction_count));
+    }
+
+    // ---- Atomic Pet ledger on the board ----
+    // Started once, by pet_boot_diag (the parent settings are needed before
+    // Pet mode: rhythm, alarm) or by the first Pet-mode toggle, whichever
+    // comes first. MigrateLegacyLocal: the one-time verified migration from
+    // the old kid_pet checkpoint and kid_parent/settings (both only read,
+    // kept as rollback copy), then no outbox (no server on this board yet).
+    // A refused start erases nothing; the next toggle tries again.
+    std::mutex pet_ledger_mutex_;
+    bool pet_ledger_ready_ = false;                // under pet_ledger_mutex_
+    kid_app::PetSnapshot pet_ledger_restored_{};   // under pet_ledger_mutex_
+    std::atomic<uint32_t> local_day_{0};           // RTC civil day, 0 = unknown
+
+    // Pet worker: the day for today's memory counters (V5-02).
+    static uint32_t LocalDay(void* context) {
+        return static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->local_day_.load();
+    }
+
+    bool StartPetLedger(kid_app::PetSnapshot* restored = nullptr) {
+        std::lock_guard<std::mutex> lock(pet_ledger_mutex_);
+        if (!pet_ledger_ready_) {
+            pet_service_.SetDayProvider(&LocalDay, this);
+            pet_ledger_ready_ = pet_service_.Start(
+                kid_app::FreertosAtomicPetService::StartMode::MigrateLegacyLocal,
+                "tuantuan-board", &PetCommitted, nullptr, this, &pet_ledger_restored_);
+            const auto migration = pet_service_.Migration();
+            const auto& s = pet_ledger_restored_;
+            const auto today = pet_service_.TodayNow();  // small copy: 4 KiB boot stack
+            ESP_LOGI(TAG, "PET_LEDGER_READY ok=%d migration=%s failure=%s flags=0x%02x "
+                     "gen=%llu fed=%u mode=%d mood=%d today=%u feeds=%u temperament=%u",
+                     pet_ledger_ready_ ? 1 : 0,
+                     kid_app::PetLedgerMigration::OutcomeName(migration.outcome),
+                     kid_app::PetLedgerMigration::FailureName(migration.failure),
+                     static_cast<unsigned>(migration.flags),
+                     static_cast<unsigned long long>(pet_service_.GenerationNow()),
+                     static_cast<unsigned>(s.interaction_count), static_cast<int>(s.mode),
+                     static_cast<int>(s.mood), static_cast<unsigned>(today.day),
+                     static_cast<unsigned>(today.feeds),
+                     static_cast<unsigned>(pet_service_.TemperamentNow()));
+            if (pet_ledger_ready_) {
+                // V3-06 settings now live in the ledger (schema v3).
+                ApplyParentSettings(pet_service_.ParentNow(), "ledger");
+                parent_ready_.store(true);
+            }
+        }
+        if (pet_ledger_ready_ && restored) *restored = pet_ledger_restored_;
+        return pet_ledger_ready_;
+    }
+
+    // V5: structured memory from trusted on-device rules only (a like from a
+    // dial choice question, a finished book or game); committed with the pet
+    // state in the ledger, day from the RTC. Never from voice. Any task.
+    bool RecordMemory(const kid_app::MemoryEvent& event) {
+        const bool posted = pet_service_.PostMemory(event);
+        if (!posted)
+            ESP_LOGW(TAG, "PET_MEMORY_REJECTED kind=%u", static_cast<unsigned>(event.kind));
+        return posted;
     }
 
     bool InitializePetRuntime() {
@@ -464,7 +625,7 @@ BOARD_WORKER = r'''
         }
         if (!pet_event_task_ready_) {
             kid_app::PetSnapshot restored{};
-            if (!pet_service_.Start(&PetCommitted, this, &restored)) return false;
+            if (!StartPetLedger(&restored)) return false;
             auto scene = kid_app::PetScenePresenter::Present(restored);
             scene.home_selection = home_selection_.load();
             last_pet_scene_.store(PackPetScene(scene));
@@ -475,13 +636,19 @@ BOARD_WORKER = r'''
             story_sd_attempted_ = true;
             // Default approved demo book only. Never format an SD card.
             // Missing/malformed media cannot prevent pet mode startup.
-            if (!story_sd_.Initialize("forest_friends"))
+            if (!story_sd_.Initialize(story_book_))
                 ESP_LOGW(TAG, "PET_STORY_SD_FALLBACK");
             // V2-08: pet_prompt may now look for the sound pack.
             sound_sd_.store(story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent);
+            // V4-05: what the dial needs, read once here (pet_input never
+            // reads the card); no book = an empty outline (placeholder).
+            if (story_sd_.Ready() &&
+                !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_))
+                ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
+            book_outline_ready_.store(true);
         }
         if (story_sd_.Ready() && !story_pcm_.Ready() &&
-            !story_pcm_.Start("/sdcard/books", "forest_friends",
+            !story_pcm_.Start("/sdcard/books", story_book_,
                               {&StoryAudioBegin, &StoryAudioPush,
                                &StoryAudioCancel}, this))
             ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
@@ -645,9 +812,20 @@ BOARD_WORKER = r'''
             HandleSleepAction(sleep_flow_.Request(NowMs()));
             return;
         }
+        // V4-06: a running mini game takes the dial (long press = home).
+        if (GameActive()) {
+            HandleGameInput(event.kind);
+            return;
+        }
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
+        // V4-05: in the reader the dial drives the open book (UI-only, like
+        // the home rail); only "home" becomes a durable action (StopStory).
+        if (pet_event_mode_.load() == kid_app::PetMode::Story && book_.Active()) {
+            ApplyBookStep(book_.OnInput(event.kind, NowMs()), "input");
+            return;
+        }
         kid_app::PetInputDecision decision{};
         bool begin_sleep = false;
         {
@@ -659,6 +837,11 @@ BOARD_WORKER = r'''
         }
         if (begin_sleep) {
             HandleSleepAction(sleep_flow_.Request(NowMs()));
+            return;
+        }
+        if (game_requested_) {
+            game_requested_ = false;
+            StartGame();
             return;
         }
         // The durable action is queued outside the lock; the pet task
@@ -693,6 +876,12 @@ BOARD_WORKER = r'''
             *begin_sleep = true;  // started after the lock is released
             return {};
         }
+        // V4-06: a mini game (UI only); refused in quiet hours or on a low
+        // battery, where the pet says hi instead (PetInputRouter).
+        if (home_menu_.Selected() == kid_app::HomeItem::Game && GameStartAllowed()) {
+            game_requested_ = true;  // started after the lock is released
+            return {};
+        }
         return kid_app::PetInputRouter::DecideHome(pet_mode, home_menu_.Selected());
     }
 
@@ -713,6 +902,7 @@ BOARD_WORKER = r'''
                 // V3-06: going to sleep (PWR, rail, idle, flat battery) wins
                 // over the parent menu; an unsaved draft is dropped.
                 if (parent_menu_.IsOpen()) CloseParentMenu("sleep");
+                EndGame("sleep", false);  // V4-06: a game too
                 sleep_active_.store(true);
                 prompt_scheduler_.Cancel();
                 StopPrompt();
@@ -772,9 +962,13 @@ BOARD_WORKER = r'''
         // Nothing armed (RTC not set, or a flat battery): PWR wakes the pet.
         if (!wake_s) wake_by = battery ? "none_battery" : "none";
         const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
-        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s battery=%d",
+        // ledger_gen: the last durable commit; the next boot's PET_LEDGER_READY
+        // must restore exactly this generation (self-test ledger_restored).
+        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s battery=%d "
+                 "ledger_gen=%llu",
                  pet_service_.Settled() ? 1 : 0, static_cast<unsigned>(wake_s), alarm ? 1 : 0,
-                 wake_by, battery ? 1 : 0);
+                 wake_by, battery ? 1 : 0,
+                 static_cast<unsigned long long>(pet_service_.GenerationNow()));
         vTaskDelay(pdMS_TO_TICKS(300));
         if (pmic_) pmic_->PowerOff();
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -848,6 +1042,8 @@ BOARD_WORKER = r'''
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
             UpdateParentMenu();
+            UpdateBook();
+            UpdateGame(state);
             UpdatePower(state);
             UpdateBattery(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
@@ -865,10 +1061,239 @@ BOARD_WORKER = r'''
             // reader or while going to sleep).
             prompt_scheduler_.SetEnabled(
                 pet_mode_.load() && !sleep_flow_.Active() && state == kDeviceStateIdle &&
+                !GameActive() &&  // V4-06
                 !ParentMenuOpen() && kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()));
             kid_app::PromptRequest prompt{};
             if (prompt_scheduler_.Tick(NowMs(), &prompt)) PostPrompt(prompt);
         }
+    }
+
+    // ---- V4-05 picture-book reader ----
+    // pet_input owns the BookReader (dial, timers, audio, memory requests);
+    // kid_epd owns the frames and the panel. They meet in two words: the
+    // book scene (page + question overlay, published like the home rail)
+    // and book_shown_ (the view the panel now shows from the card).
+    // Grey pages use the official 4-grey waveform; flip this to show every
+    // page's 1-bit fallback instead (format and reader stay the same).
+    static constexpr bool kBookGreyEnabled = true;
+    char story_book_[16] = "forest_friends";  // self-test "book" may change it
+    kid_app::BookOutline book_outline_;        // written once before ready
+    std::atomic<bool> book_outline_ready_{false};
+    kid_app::BookReader book_;                 // pet_input task only
+    std::atomic<uint32_t> book_scene_{0};      // packed; scene_state_mutex_
+    std::atomic<uint32_t> book_shown_{0};      // kid_epd -> pet_input
+    // kid_epd only (pet_screen_mutex_): page picture, panel picture, next.
+    kid_app::MonoFrame* book_base_ = nullptr;
+    kid_app::MonoFrame* book_panel_frame_ = nullptr;
+    kid_app::MonoFrame* book_next_ = nullptr;
+    kid_app::BookView book_panel_{};
+    bool book_panel_valid_ = false;
+
+    // Caller holds scene_state_mutex_.
+    kid_app::SceneModel BookSceneLocked() const {
+        const uint32_t packed = book_scene_.load();
+        return packed ? UnpackPetScene(packed) : kid_app::BookScene({}, false);
+    }
+
+    void UpdateBook() {
+        const uint32_t now = NowMs();
+        if (pet_event_mode_.load() != kid_app::PetMode::Story) {
+            if (book_.Active()) {
+                book_.Close();
+                SceneStateLock lock(scene_state_mutex_);
+                book_scene_.store(0);
+                ESP_LOGI(TAG, "PET_BOOK_CLOSE");
+            }
+            return;
+        }
+        // Timers wait while asleep, napping, in the parent menu or out of
+        // Pet mode; the picture comes back from last_pet_scene_.
+        if (!pet_mode_.load() || sleep_active_.load() || napping_.load() || ParentMenuOpen())
+            return;
+        if (!book_.Active()) {
+            if (!book_outline_ready_.load()) return;
+            book_.Open(&book_outline_, now);
+            book_shown_.store(0);
+            ESP_LOGI(TAG, "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d",
+                     story_book_, static_cast<unsigned>(book_outline_.pages),
+                     static_cast<unsigned>(book_outline_.GreyPages()),
+                     static_cast<unsigned>(book_outline_.QuestionTotal()),
+                     book_outline_.kpb2 ? 1 : 0);
+            kid_app::BookStep open{};
+            open.publish = true;
+            ApplyBookStep(open, "open");
+        }
+        const uint32_t shown = book_shown_.exchange(0);
+        if (shown) ApplyBookStep(book_.OnShown(kid_app::BookViewOf(UnpackPetScene(shown)), now),
+                                 "shown");
+        ApplyBookStep(book_.Tick(now), "tick");
+    }
+
+    void ApplyBookStep(const kid_app::BookStep& step, const char* why) {
+        PlayBookClip(step.clip);
+        if (step.publish) {
+            SceneStateLock lock(scene_state_mutex_);
+            const auto scene = book_.Scene();
+            const uint32_t packed = PackPetScene(scene);
+            book_scene_.store(packed);
+            last_pet_scene_.store(packed);
+            if (!sleep_active_.load()) pet_mailbox_.Publish(scene);
+            const auto& view = book_.View();
+            ESP_LOGI(TAG, "PET_BOOK_VIEW page=%u q=%u sel=%u marked=%d end=%d why=%s",
+                     static_cast<unsigned>(view.page), static_cast<unsigned>(view.question),
+                     static_cast<unsigned>(view.highlight), view.marked ? 1 : 0,
+                     book_.AtEnd() ? 1 : 0, why);
+        }
+        if (step.answer != kid_app::BookAnswer::None) {
+            static const char* const kResult[] = {"none", "choice", "right", "wrong"};
+            ESP_LOGI(TAG, "PET_BOOK_ANSWER result=%s chosen=%u page=%u q=%u",
+                     kResult[static_cast<int>(step.answer)], static_cast<unsigned>(step.chosen),
+                     static_cast<unsigned>(book_.View().page),
+                     static_cast<unsigned>(book_.View().question));
+        }
+        if (step.memory.kind != kid_app::BookMemoryKind::None) RecordBookMemory(step.memory);
+        if (step.home) {
+            ESP_LOGI(TAG, "PET_BOOK_HOME");
+            if (!pet_service_.PostLocal(kid_app::PetAction::StopStory))
+                ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+        }
+    }
+
+    // pet_input. The story worker plays it through StoryAudioBegin/Push
+    // (Pet mode, awake, XiaoZhi idle, parent volume cap); last wins.
+    void PlayBookClip(const kid_app::BookClip& clip) {
+        if (clip.kind == kid_app::BookClipKind::None || !story_pcm_.Ready()) return;
+        if (clip.kind == kid_app::BookClipKind::Stop) {
+            story_pcm_.Stop();
+            StoryAudioCancel(this);
+            return;
+        }
+        if (sleep_active_.load()) return;
+        const auto kind = clip.kind == kid_app::BookClipKind::Page     ? kid_app::StoryClip::Page
+                          : clip.kind == kid_app::BookClipKind::Prompt ? kid_app::StoryClip::Prompt
+                                                                       : kid_app::StoryClip::Option;
+        static const char* const kKind[] = {"page", "prompt", "option"};
+        story_pcm_.RequestClip(kind, clip.page, clip.question, clip.option);
+        ESP_LOGI(TAG, "PET_BOOK_AUDIO kind=%s page=%u q=%u option=%u",
+                 kKind[static_cast<int>(kind)], static_cast<unsigned>(clip.page),
+                 static_cast<unsigned>(clip.question), static_cast<unsigned>(clip.option));
+    }
+
+    // ADR-012: a book like (dial press on a like option of a like question)
+    // or "book finished" becomes a MemoryEvent only through BookMemoryEvent
+    // (the kid_app choice guard), then goes to the ledger like every other
+    // memory (RecordMemory). Id and day go back to 0: the atomic Pet worker
+    // assigns the next local id (shared replay window) and the RTC day.
+    void RecordBookMemory(const kid_app::BookMemoryRequest& request) {
+        kid_app::MemoryEvent event{};
+        if (!kid_app::BookMemoryEvent(book_outline_, request, kid_app::kLocalEventBit, 0,
+                                      &event)) {
+            ESP_LOGW(TAG, "PET_BOOK_MEMORY_REJECTED kind=%u", static_cast<unsigned>(request.kind));
+            return;
+        }
+        event.id = 0;
+        const bool posted = RecordMemory(event);
+        if (event.kind == kid_app::MemoryEventKind::PreferenceChosen)
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=like like=%u:%u posted=%d",
+                     static_cast<unsigned>(event.slot), static_cast<unsigned>(event.option),
+                     posted ? 1 : 0);
+        else
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=finished book=%u posted=%d",
+                     static_cast<unsigned>(event.option), posted ? 1 : 0);
+    }
+
+    bool AllocBookFrames() {
+        if (book_base_) return true;
+        void* memory[3] = {};
+        for (auto& m : memory) {
+            m = heap_caps_malloc(sizeof(kid_app::MonoFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!m) {
+                for (auto* f : memory) heap_caps_free(f);
+                ESP_LOGE(TAG, "PET_BOOK_FRAMES_FAILED");
+                return false;
+            }
+        }
+        book_base_ = new (memory[0]) kid_app::MonoFrame();
+        book_panel_frame_ = new (memory[1]) kid_app::MonoFrame();
+        book_next_ = new (memory[2]) kid_app::MonoFrame();
+        return true;
+    }
+
+    // kid_epd: 4-grey page. Card reads and plane split happen before the
+    // display lock; one 192 KiB PSRAM block only while drawing.
+    bool ShowBookGreyLocked(kid_app::ContentPackReader& content, uint16_t page) {
+        const size_t grey_bytes = kid_app::ContentPackReader::kGreyBytes;
+        const size_t plane = kid_app::ContentPackReader::kMonoBytes;
+        auto* grey = static_cast<uint8_t*>(
+            heap_caps_malloc(grey_bytes + 2 * plane, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!grey) return false;
+        uint8_t* ram24 = grey + grey_bytes;
+        uint8_t* ram26 = ram24 + plane;
+        const bool okay = content.ReadGrey(page, grey, grey_bytes) &&
+                          kid_app::EpdGreyPlanes(grey, grey_bytes, ram24, ram26) &&
+                          display_->ShowBookGrey(ram24, ram26, book_base_->Data().data());
+        heap_caps_free(grey);
+        return okay;
+    }
+
+    // kid_epd (pet_screen_mutex_). A new page (or a question ending) is a
+    // full refresh: 4-grey when the page has a grey picture, else 1-bit.
+    // Question cards and the dial highlight are 1-bit partial refreshes on
+    // top. False = not a page of this book or a card/panel failure.
+    bool DrawBookLocked(const kid_app::SceneModel& scene, kid_app::RefreshMode* mode) {
+        auto& content = story_sd_.Reader()->Content();
+        const auto view = kid_app::BookViewOf(scene);
+        kid_app::ContentPage page{};
+        if (!content.Page(view.page, &page) || !AllocBookFrames()) {
+            book_panel_valid_ = false;
+            return false;
+        }
+        const uint32_t started_ms = NowMs();
+        const bool same_page = book_panel_valid_ && book_panel_.page == view.page;
+        const char* how = "partial";
+        if (!same_page || (!view.question && book_panel_.question)) {
+            book_panel_valid_ = false;
+            if (!story_sd_.Reader()->ReadFrame(view.page, *book_base_)) return false;
+            bool okay = false;
+            how = "mono";
+            if (page.has_grey && kBookGreyEnabled) {
+                okay = ShowBookGreyLocked(content, view.page);
+                how = okay ? "grey" : "mono_after_grey";
+            }
+            if (!okay) okay = display_->ShowBookMono(book_base_->Data().data());
+            if (!okay) return false;
+            *mode = kid_app::RefreshMode::Full;
+            *book_panel_frame_ = *book_base_;
+            book_panel_ = kid_app::BookView{};
+            book_panel_.page = view.page;
+            book_panel_valid_ = true;
+        } else {
+            *mode = kid_app::RefreshMode::Partial;
+        }
+        if (view.question && view != book_panel_) {
+            *book_next_ = *book_base_;
+            bool okay = kid_app::ComposeBookOverlay(content, view, *book_next_);
+            // A question's first frame drives every card pixel (the page
+            // under the cards may be grey) and clears the previous question's
+            // cards; later frames only change the rings.
+            if (okay && book_panel_.question != view.question)
+                okay = kid_app::ForceBookOverlay(content, view, *book_next_, *book_panel_frame_);
+            okay = okay && display_->ShowBookPartial(book_next_->Data().data(),
+                                                     book_panel_frame_->Data().data());
+            if (!okay) {
+                book_panel_valid_ = false;
+                ESP_LOGW(TAG, "PET_BOOK_DRAW_FAILED page=%u q=%u",
+                         static_cast<unsigned>(view.page), static_cast<unsigned>(view.question));
+                return false;
+            }
+            *book_panel_frame_ = *book_next_;
+        }
+        book_panel_ = view;
+        ESP_LOGI(TAG, "PET_BOOK_DRAW page=%u q=%u sel=%u marked=%d how=%s ms=%u",
+                 static_cast<unsigned>(view.page), static_cast<unsigned>(view.question),
+                 static_cast<unsigned>(view.highlight), view.marked ? 1 : 0, how,
+                 static_cast<unsigned>(NowMs() - started_ms));
+        return true;
     }
 
     // ---- V2-07 option name prompts ----
@@ -912,13 +1337,14 @@ BOARD_WORKER = r'''
                  static_cast<unsigned>(sound_pack_.ClipCount()),
                  static_cast<unsigned>(sound_pack_.Revision()),
                  static_cast<unsigned>(NowMs() - started_ms));
+        LoadGamePack();  // V4-06: same card, same task
     }
 
     // Any task. Never asleep (good night only while falling asleep) or
     // napping; the player re-checks voice / Pet mode before and while it
     // plays. Overwrites a waiting option prompt, like a newer prompt would.
     void PostPhrase(kid_app::PhraseContext context) {
-        if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() ||
+        if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() || GameActive() ||
             (sleep_active_.load() && context != kid_app::PhraseContext::Bedtime))
             return;
         kid_app::PromptRequest request{};
@@ -954,9 +1380,13 @@ BOARD_WORKER = r'''
             // V5-04: pick the pet's line first; one too soon after the last
             // is dropped without cutting what is playing.
             const bool phrase = request.phrase != 0;
+            const bool game = request.game != 0;  // V4-06 mini-game clip
             const auto context =
                 static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
             const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
+            // V5-01: the parent-set temperament from the ledger's memory
+            // (gentle until a parent sets one).
+            if (phrase) phrase_planner_.SetTemperament(pet_service_.TemperamentNow());
             const uint16_t phrase_id = phrase ? phrase_planner_.Next(context, NowMs()) : 0;
             if (phrase && !phrase_id) {
                 ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
@@ -970,16 +1400,30 @@ BOARD_WORKER = r'''
             // Logs: PET_PROMPT_* index=<rail item>, PET_PHRASE_* id=<phrase id>.
             const char* kind = phrase ? "PHRASE" : "PROMPT";
             const char* key = phrase ? "id" : "index";
-            const unsigned what = phrase ? phrase_id : request.index;
+            unsigned what = phrase ? phrase_id : request.index;
+            if (game) {  // V4-06: PET_GAME_* clip=<mini-game clip id>
+                kind = "GAME";
+                key = "clip";
+                what = request.game;
+            }
             kid_app::SoundClip clip;
-            if (phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
-                       : !sound_bank_.LoadOption(request.index, &clip)) {
+            kid_app::GameClip game_clip;
+            if (game     ? !kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)
+                : phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
+                         : !sound_bank_.LoadOption(request.index, &clip)) {
                 ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=clip", kind, key, what);
                 continue;
             }
+            if (game) clip.samples = game_clip.samples;  // streamed by game_clip below
             const uint64_t session =
-                (uint64_t{phrase ? 0x50485253u : 0x50524F4Du} << 32) | request.token;
-            if (phrase)
+                (uint64_t{game ? 0x47414D45u : phrase ? 0x50485253u : 0x50524F4Du} << 32) |
+                request.token;
+            if (game)
+                ESP_LOGI(TAG, "PET_GAME_PLAY clip=%u src=%s token=%u samples=%u", what,
+                         kid_app::GameClipSourceName(game_clip.source),
+                         static_cast<unsigned>(request.token),
+                         static_cast<unsigned>(clip.samples));
+            else if (phrase)
                 ESP_LOGI(TAG, "PET_PHRASE_PLAY id=%u ctx=%s src=%s token=%u samples=%u", what,
                          kid_app::PhraseContextName(context), kid_app::SoundSourceName(clip.source),
                          static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
@@ -1013,7 +1457,8 @@ BOARD_WORKER = r'''
                     interrupted = true;
                     break;
                 }
-                const size_t n = clip.Copy(offset, chunk, 480);
+                const size_t n = game ? game_clip.Copy(offset, chunk, 480)
+                                      : clip.Copy(offset, chunk, 480);
                 if (n == 0) break;  // TF card read failed
                 kid_app::ScalePcm(chunk, n, PromptVolumePct());
                 if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
@@ -1148,6 +1593,7 @@ BOARD_WORKER = r'''
     }
 
     void BeginMorning(uint32_t now) {
+        EndGame("morning", false);  // V4-06
         power_.StartMorning(now);
         napping_.store(false);
         morning_shown_.store(true);
@@ -1191,6 +1637,7 @@ BOARD_WORKER = r'''
         // the menu (it closes itself after 30 s).
         conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active() ||
                           voice_face_.load() != 0 || ParentMenuOpen();
+        if (GameActive()) conditions.busy = true;  // V4-06: so does a game in progress
         conditions.may_power_off = on_battery_.load() && !selftest_seen_.load() &&
                                    !battery_.External();  // V3-05: never while charging
         conditions.low_battery = battery_.LowPower();
@@ -1326,7 +1773,7 @@ BOARD_WORKER = r'''
             !morning_shown_.load() && voice_face_.load() == 0 && state == kDeviceStateIdle &&
             kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
             (!selftest_seen_.load() || battery_scripted_.load()) &&
-            !ParentMenuOpen();  // V3-06: not over the parent menu
+            !ParentMenuOpen() && !GameActive();  // V3-06 / V4-06: not over the menu or a game
         const auto reaction = battery_.Reaction(now, allowed);
         if (reaction == kid_app::BatteryReaction::None) return;
         const bool acted = RequestHomeAnimation(reaction == kid_app::BatteryReaction::Eat
@@ -1490,6 +1937,7 @@ BOARD_WORKER = r'''
         // V3-06: parents can switch motion off; the parent menu ignores it.
         const bool motion_off = !motion_enabled_.load();
         if (pet_mode_.load() && !sleep_active_.load() && !motion_off && !ParentMenuOpen() &&
+            !GameActive() &&  // V4-06: holding TuanTuan while playing is no gesture
             Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
             if (power_save_timer_) power_save_timer_->WakeUp();
             power_poke_.store(true);
@@ -1526,6 +1974,8 @@ BOARD_WORKER = r'''
         const auto rhythm = Rhythm();
         const int phase = ok ? static_cast<int>(rhythm.PhaseAt(rtc)) : -1;
         const bool quiet = ok && rhythm.QuietAt(rtc);
+        // V5-02: today's memory counters roll over on the local civil day.
+        local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc) / 86400) : 0);
         const bool phase_changed = day_phase_.exchange(phase) != phase;
         const bool quiet_changed = quiet_hours_.exchange(quiet) != quiet;
         if (phase_changed || quiet_changed)
@@ -1781,15 +2231,15 @@ BOARD_WORKER = r'''
     // BOOT + dial press held 5 s in Pet mode. pet_input owns parent_menu_.
     // The settings are read by pet_boot_diag (day plan, motion), pet_prompt
     // and the story worker (volume) and pet_input / pet_selftest (next wake
-    // alarm), so readers copy them under parent_mutex_. Saved to NVS key
-    // kid_parent/settings (ParentSettingsCodec, as in ledger v3); XiaoZhi's
+    // alarm), so readers copy them under parent_mutex_. Saved in the atomic
+    // ledger (schema v3, one commit, never a pet interaction); the old
+    // kid_parent/settings key is only read once by the migration. XiaoZhi's
     // own NVS settings are never touched. Opening, moving and leaving the
-    // menu are not pet interactions (nothing reaches pet_service_).
+    // menu post no pet action.
     kid_app::ParentMenu parent_menu_;              // pet_input task only
-    kid_app::NvsParentSettingsStore parent_store_;
     kid_app::ParentSettings parent_settings_;      // guarded by parent_mutex_
     mutable std::mutex parent_mutex_;
-    std::atomic<bool> parent_ready_{false};        // loaded (or defaults)
+    std::atomic<bool> parent_ready_{false};        // the ledger is running
     std::atomic<bool> motion_enabled_{true};
     std::atomic<bool> rhythm_refresh_{false};      // pet_boot_diag re-runs UpdateRhythm
     std::array<int16_t, 480> story_scaled_{};      // story worker only (StoryAudioPush)
@@ -1822,14 +2272,13 @@ BOARD_WORKER = r'''
     }
 
     // pet_boot_diag, once, before the self-test task (and so the morning
-    // flow) starts. Missing or corrupt: the defaults; NVS is left as it is.
+    // flow) starts: starts the ledger (migrating once), which applies the
+    // settings. Ledger refused: the defaults, the menu stays closed until a
+    // later Pet-mode toggle starts it; NVS is left as it is.
     void LoadParentSettings() {
-        kid_app::ParentSettings loaded;
-        const auto result = parent_store_.Load(&loaded);
-        ESP_LOGI(TAG, "PET_PARENT_LOAD result=%s", kid_app::ParentLoadResultName(result));
-        ApplyParentSettings(result == kid_app::NvsParentSettingsStore::LoadResult::Loaded
-                                ? loaded : kid_app::ParentSettings{}, "nvs");
-        parent_ready_.store(true);
+        const bool ready = StartPetLedger();
+        ESP_LOGI(TAG, "PET_PARENT_LOAD result=%s", ready ? "loaded" : "error");
+        if (!ready) ApplyParentSettings(kid_app::ParentSettings{}, "defaults");
     }
 
     // Caller holds scene_state_mutex_.
@@ -1851,6 +2300,7 @@ BOARD_WORKER = r'''
         StopPrompt();
         if (story_pcm_.Ready()) story_pcm_.Stop();
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+        EndGame("parent", false);  // V4-06
         parent_menu_.Open(ParentSettingsNow(), NowMs());
         {
             SceneStateLock lock(scene_state_mutex_);
@@ -1889,10 +2339,14 @@ BOARD_WORKER = r'''
                 break;
             case kid_app::ParentMenuAction::Saved: {
                 const auto next = parent_menu_.Settings();
-                if (!parent_store_.Save(next)) {
-                    // Keep running with what NVS holds; show it again.
+                const auto saved = pet_service_.SaveParentSettings(next, pdMS_TO_TICKS(3000));
+                if (saved != kid_app::CommitResult::Committed) {
+                    // Keep running with what the ledger holds; show it again.
+                    const auto kept = pet_service_.ParentNow();
+                    if (kept != ParentSettingsNow()) ApplyParentSettings(kept, "ledger");
                     parent_menu_.Revert(ParentSettingsNow());
-                    ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=%s", item);
+                    ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=%s result=%d", item,
+                             static_cast<int>(saved));
                     break;
                 }
                 ApplyParentSettings(next, "menu");
@@ -1917,6 +2371,209 @@ BOARD_WORKER = r'''
         }
         HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
         input_hub_.SetAutoRepeat(parent_menu_.Editing());
+    }
+
+    // ---- V4-06 mini games (PRD 7) ----
+    // The Game rail item starts a short game of reviewed rounds: from the
+    // TF pack /sdcard/games/default.kpg when it is valid, else the built-in
+    // set. pet_input owns game_. The game is UI only, like the parent menu:
+    // no Pet action, last_pet_scene_ keeps the home picture and only Game
+    // frames reach the panel while it runs (pet_mailbox_.game_only). It
+    // ends by itself (rounds done, long press, 60 s without input) or for
+    // sleep, a voice session, the parent menu, the morning picture or Pet
+    // mode off. pet_prompt opens the pack right after the sound pack and
+    // plays every game clip (PromptRequest::game) under the same volume
+    // rules (parent cap, quiet ceiling) as the other pet sounds.
+    kid_app::GameSession game_;                // pet_input only
+    std::atomic<bool> game_active_{false};     // read by the other tasks
+    bool game_requested_ = false;              // pet_input: rail press seen
+    uint8_t game_round_logged_ = 0;            // pet_input
+    std::atomic<uint32_t> game_seed_{0};       // self-test "game" step, 0 = random
+    std::atomic<uint32_t> game_tokens_{0};
+    kid_app::SoundPackFilePort game_file_;     // pet_prompt only
+    // Written by pet_prompt before game_pack_state_ says ready; read-only after.
+    kid_app::GamePackReader game_pack_;
+    static constexpr uint8_t kGamePackPending = 0, kGamePackNone = 1, kGamePackReady = 2;
+    std::atomic<uint8_t> game_pack_state_{kGamePackPending};
+
+    bool GameActive() const { return game_active_.load(); }
+    kid_app::GamePackReader* GamePackNow() {
+        return game_pack_state_.load() == kGamePackReady ? &game_pack_ : nullptr;
+    }
+
+    // pet_prompt, once, after the sound pack. Missing or invalid: built-in set.
+    void LoadGamePack() {
+        const uint32_t started_ms = NowMs();
+        const char* state = "no_sd";
+        if (sound_sd_.load() == kSoundSdMounted) {
+            state = "absent";
+            if (game_file_.Open("/sdcard/games", "default", "kpg")) {
+                state = game_pack_.Open(game_file_) ? "ready" : "invalid";
+                if (!game_pack_.Ready()) game_file_.Close();
+            }
+        }
+        game_pack_state_.store(game_pack_.Ready() ? kGamePackReady : kGamePackNone);
+        ESP_LOGI(TAG, "PET_GAME_PACK state=%s rounds=%u clips=%u id=%u rev=%u ms=%u", state,
+                 static_cast<unsigned>(game_pack_.RoundCount()),
+                 static_cast<unsigned>(game_pack_.ClipCount()),
+                 static_cast<unsigned>(game_pack_.ContentId()),
+                 static_cast<unsigned>(game_pack_.Revision()),
+                 static_cast<unsigned>(NowMs() - started_ms));
+    }
+
+    // pet_input. Quiet hours are for sleeping, a low battery for charging:
+    // then the rail's Game item only makes TuanTuan say hi.
+    bool GameStartAllowed() {
+        const char* refused =
+            quiet_hours_.load()   ? "quiet"
+            : battery_.LowPower() ? "battery"
+            : Application::GetInstance().GetDeviceState() != kDeviceStateIdle ? "voice"
+                                                                               : nullptr;
+        if (!refused) return true;
+        ESP_LOGI(TAG, "PET_GAME_REFUSED reason=%s", refused);
+        return false;
+    }
+
+    void PostGameClip(uint16_t clip) {
+        if (!clip || !pet_mode_.load() || sleep_active_.load() || ParentMenuOpen()) return;
+        kid_app::PromptRequest request{};
+        request.game = clip;
+        request.token = game_tokens_.fetch_add(1) + 1;
+        PostPrompt(request);
+    }
+
+    // Caller holds scene_state_mutex_.
+    void PublishGameSceneLocked() {
+        kid_app::SceneModel scene{};
+        scene.kind = kid_app::SceneKind::Game;
+        scene.game = game_.View();
+        pet_mailbox_.Publish(scene);
+    }
+
+    void LogGameRound() {
+        const auto& round = game_.Current();
+        const auto view = game_.View();
+        game_round_logged_ = view.round;
+        ESP_LOGI(TAG, "PET_GAME_ROUND n=%u/%u kind=%s options=%u answer=%u",
+                 static_cast<unsigned>(view.round), static_cast<unsigned>(view.rounds),
+                 kid_app::GameKindName(round.kind), static_cast<unsigned>(round.option_count),
+                 static_cast<unsigned>(round.correct));
+    }
+
+    // pet_input, after the rail press (scene_state_mutex_ released).
+    void StartGame() {
+        kid_app::GamePackReader* pack = GamePackNow();
+        const kid_app::GameRound* pool = pack ? pack->Rounds() : kid_app::BuiltinGameRounds();
+        const size_t count = pack ? pack->RoundCount() : kid_app::BuiltinGameRoundCount();
+        const uint16_t id = pack ? pack->ContentId() : kid_app::kBuiltinGameId;
+        uint32_t seed = game_seed_.exchange(0);
+        if (!seed) seed = esp_random();
+        kid_app::GameOutput out{};
+        if (!game_.Start(pool, count, id, seed, kid_app::GameSession::kDefaultRounds, NowMs(),
+                         &out)) {
+            ESP_LOGW(TAG, "PET_GAME_START_FAILED src=%s", pack ? "pack" : "builtin");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_START src=%s id=%u seed=%u rounds=%u", pack ? "pack" : "builtin",
+                 static_cast<unsigned>(id), static_cast<unsigned>(seed),
+                 static_cast<unsigned>(game_.Result().rounds));
+        LogGameRound();
+        PostGameClip(out.clip);
+    }
+
+    void ApplyGameOutput(const kid_app::GameOutput& out) {
+        PostGameClip(out.clip);
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(game_.Result().end));
+            return;
+        }
+        if (!out.redraw) return;
+        if (game_.View().round != game_round_logged_) LogGameRound();
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    // pet_input: the dial while a game runs. BOOT and PWR keep their own
+    // handlers (talking or sleeping ends the game).
+    void HandleGameInput(kid_app::InputKind kind) {
+        kid_app::GameInput input = kid_app::GameInput::Press;
+        switch (kind) {
+            case kid_app::InputKind::DialUp: input = kid_app::GameInput::Up; break;
+            case kid_app::InputKind::DialDown: input = kid_app::GameInput::Down; break;
+            case kid_app::InputKind::DialPress: input = kid_app::GameInput::Press; break;
+            case kid_app::InputKind::DialLong: input = kid_app::GameInput::Long; break;
+            default: return;
+        }
+        const auto before = game_.View();
+        const auto out = game_.Input(input, NowMs());
+        if (input == kid_app::GameInput::Press && out.redraw) {
+            static const char* const kFeedback[] = {"none", "right", "try_again", "reveal"};
+            ESP_LOGI(TAG, "PET_GAME_ANSWER n=%u pick=%u right=%d feedback=%s correct=%u",
+                     static_cast<unsigned>(before.round), static_cast<unsigned>(before.highlight),
+                     out.right ? 1 : 0, kFeedback[static_cast<uint8_t>(game_.View().feedback) & 3],
+                     static_cast<unsigned>(game_.Result().correct));
+        } else if (out.redraw) {
+            ESP_LOGI(TAG, "PET_GAME_SELECT index=%u", static_cast<unsigned>(game_.View().highlight));
+        }
+        ApplyGameOutput(out);
+    }
+
+    // pet_input, every loop.
+    void UpdateGame(DeviceState state) {
+        if (!game_active_.load()) return;
+        if (!pet_mode_.load()) {
+            EndGame("pet_off");
+            return;
+        }
+        if (state != kDeviceStateIdle) {  // BOOT: TuanTuan listens instead
+            EndGame("voice");
+            return;
+        }
+        ApplyGameOutput(game_.Tick(NowMs()));
+    }
+
+    // pet_input. Back to the pet's own (durable) home picture, as it is now;
+    // publish_home=false when the caller shows its own picture right away
+    // (sleep, parent menu, morning), so the panel skips a needless refresh.
+    void EndGame(const char* reason, bool publish_home = true) {
+        if (!game_active_.load()) return;
+        game_.Interrupt();  // no-op when the game already finished by itself
+        const kid_app::GameResult result = game_.Result();
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(false);
+            pet_mailbox_.game_only.store(false);
+            if (publish_home && pet_mode_.load() && !sleep_active_.load())
+                pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
+        }
+        // ADR-012: only a finished game with a correct dial answer counts for
+        // growth (GAME_COMPLETED, source Device, option = game id), through
+        // the ledger like every other memory (RecordMemory). Id and day go
+        // back to 0: the atomic Pet worker assigns the next local id and the
+        // RTC day.
+        kid_app::MemoryEvent memory{};
+        const bool growth =
+            kid_app::GameCompletedMemoryEvent(result, kid_app::kLocalEventBit, 0, &memory);
+        bool posted = false;
+        if (growth) {
+            memory.id = 0;
+            posted = RecordMemory(memory);
+        }
+        ESP_LOGI(TAG, "PET_GAME_END end=%s reason=%s played=%u/%u correct=%u id=%u growth=%d "
+                 "posted=%d",
+                 kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
+                 static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
+                 static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
     }
 
     // ---- Host-scripted self-test (unattended hardware trials) ----
@@ -2090,6 +2747,17 @@ BOARD_WORKER = r'''
                              static_cast<unsigned>(NowMs() - start));
                     break;
                 }
+                case kid_app::SelfTestOp::Book:
+                    // V4-05: read a test book from the card instead of the
+                    // demo book. The card is opened once, when Pet mode
+                    // first starts; later the step only logs.
+                    if (pet_runtime_ready_.load()) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_BOOK_IGNORED id=%s", step.name);
+                    } else {
+                        std::memcpy(story_book_, step.name, sizeof(story_book_));
+                        ESP_LOGI(TAG, "PET_SELFTEST_BOOK id=%s", story_book_);
+                    }
+                    break;
                 case kid_app::SelfTestOp::Combo:
                     // V3-06 parent entry: BOOT and dial press held together.
                     PostKeyEdge(kid_app::InputKey::Boot, true);
@@ -2098,6 +2766,11 @@ BOARD_WORKER = r'''
                     PostKeyEdge(kid_app::InputKey::DialPress, false);
                     PostKeyEdge(kid_app::InputKey::Boot, false);
                     vTaskDelay(pdMS_TO_TICKS(step.gap_ms));
+                    break;
+                case kid_app::SelfTestOp::Game:
+                    // V4-06: the next mini game plays these rounds.
+                    game_seed_.store(step.ms);
+                    ESP_LOGI(TAG, "PET_SELFTEST_GAME seed=%u", static_cast<unsigned>(step.ms));
                     break;
                 case kid_app::SelfTestOp::Hold:
                     // Same raw-edge queue as the physical buttons.
@@ -2173,7 +2846,7 @@ BOARD_WORKER = r'''
 def patch_board(text: str) -> str:
     text = once(text, "#include <stdio.h>",
         '#include <stdio.h>\n#include <atomic>\n'
-        '#include "kid_app/freertos_pet_service.h"\n'
+        '#include "kid_app/freertos_atomic_pet_service.h"\n'
         '#include "kid_app/freertos_pet_scene_mailbox.h"\n'
         '#include "kid_app/freertos_pet_display_worker.h"\n'
         '#include "kid_app/pet_scene_presenter.h"\n'
@@ -2211,13 +2884,19 @@ def patch_board(text: str) -> str:
         '#include "kid_app/power_manager.h"\n'
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/parent_menu.h"\n'
-        '#include "kid_app/nvs_parent_settings_store.h"\n'
+        '#include "kid_app/mini_game.h"\n'
+        '#include "kid_app/game_pack_reader.h"\n'
+        '#include "kid_app/memory_store.h"\n'
+        '#include "esp_random.h"\n'
         '#include <mutex>\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
         '#include "kid_app/waveshare_story_sd.h"\n'
-        '#include "kid_app/freertos_story_pcm_worker.h"',
+        '#include "kid_app/freertos_story_pcm_worker.h"\n'
+        '#include "kid_app/book_reader.h"\n'
+        '#include "kid_app/memory_store.h"\n'
+        '#include <cstring>',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
@@ -2252,6 +2931,7 @@ def patch_board(text: str) -> str:
         // Long BOOT still toggles Pet mode. All effects pass through NVS.
         boot_button_.OnDoubleClick([this]() {
             if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
+            if (GameActive()) return;  // V4-06: no story or feeding mid-game
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Double);
             if (decision.valid && !pet_service_.PostLocal(decision.action))
@@ -2259,6 +2939,7 @@ def patch_board(text: str) -> str:
         });
         boot_button_.OnMultipleClick([this]() {
             if (!pet_mode_.load() || DialPressHeld() || ParentMenuOpen()) return;
+            if (GameActive()) return;  // V4-06
             const auto decision = kid_app::PetInputRouter::Decide(
                 pet_event_mode_.load(), kid_app::PetClick::Triple);
             if (decision.valid && !pet_service_.PostLocal(decision.action))

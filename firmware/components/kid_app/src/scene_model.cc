@@ -943,6 +943,188 @@ void ParentScene(MonoFrame& f, const ParentView& view) {
     for (uint8_t row = 0; row < kParentItemCount; ++row) ParentRow(f, view, row);
 }
 
+// ---- Mini games (V4-06) ----------------------------------------------------------
+// TuanTuan and the question card above SceneComposer::kGameRailTop, two or
+// three answer cards below it. The dial highlight is a thick frame around
+// one card, so moving it only touches the answer rail; TuanTuan's reaction
+// only touches the question area. Pictures come from the GameArt catalogue
+// (no text, no bitmaps from the card): (cx, cy) is the centre, r the
+// half-size of the square the picture fits in.
+
+constexpr int kGameCardW = 200, kGameCardH = 140, kGameCardY = 322, kGameFrame = 16;
+
+// Dice-style positions in units of r / 100.
+void GameDots(MonoFrame& f, int n, int cx, int cy, int r) {
+    static const int kPos[5][5][2] = {
+        {{0, 0}},
+        {{-45, -45}, {45, 45}},
+        {{-50, -50}, {0, 0}, {50, 50}},
+        {{-45, -45}, {45, -45}, {-45, 45}, {45, 45}},
+        {{-50, -50}, {50, -50}, {0, 0}, {-50, 50}, {50, 50}}};
+    const int dot = std::max(4, r * 23 / 100);
+    for (int i = 0; i < n; ++i)
+        Disk(f, cx + kPos[n - 1][i][0] * r / 100, cy + kPos[n - 1][i][1] * r / 100, dot);
+}
+
+// Building blocks: up to three on the ground, the rest stacked on top.
+void GameBlocks(MonoFrame& f, int n, int cx, int cy, int r) {
+    const int b = r * 50 / 100, gap = std::max(3, r / 12);
+    const int bottom = std::min(n, 3), top = n - bottom;
+    const int rows = top > 0 ? 2 : 1;
+    const int y0 = cy - (rows * b + (rows - 1) * gap) / 2;
+    for (int row = 0; row < rows; ++row) {
+        const int count = row == rows - 1 ? bottom : top;
+        const int width = count * b + (count - 1) * gap;
+        const int y = y0 + row * (b + gap);
+        for (int i = 0; i < count; ++i) FillRect(f, cx - width / 2 + i * (b + gap), y, b, b);
+    }
+}
+
+void GameBall(MonoFrame& f, int cx, int cy, int radius) {
+    const int w = std::max(3, radius / 8);
+    Blob(f, cx, cy, radius, radius, w);
+    Arc(f, cx, cy, radius * 6 / 10, radius * 6 / 10, 200, 340, w);
+    Arc(f, cx, cy, radius * 6 / 10, radius * 6 / 10, 20, 160, w);
+}
+
+void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    const int w = std::max(3, r / 10);
+    auto p = [r](int percent) { return r * percent / 100; };
+    switch (static_cast<GameArt>(art)) {
+        case GameArt::Circle:
+            Disk(f, cx, cy, p(85));
+            break;
+        case GameArt::Square:
+            FillRect(f, cx - p(75), cy - p(75), 2 * p(75), 2 * p(75));
+            break;
+        case GameArt::Triangle:
+            FillTriangle(f, cx, cy - p(85), cx - p(92), cy + p(72), cx + p(92), cy + p(72));
+            break;
+        case GameArt::Star: {
+            const int outer = p(95), inner = p(40), sy = cy + p(8);
+            int ox[5], oy[5], ix[5], iy[5];
+            for (int k = 0; k < 5; ++k) {
+                const double a = (-90 + 72 * k) * kPi / 180.0, b = a + 36 * kPi / 180.0;
+                ox[k] = cx + static_cast<int>(std::lround(outer * std::cos(a)));
+                oy[k] = sy + static_cast<int>(std::lround(outer * std::sin(a)));
+                ix[k] = cx + static_cast<int>(std::lround(inner * std::cos(b)));
+                iy[k] = sy + static_cast<int>(std::lround(inner * std::sin(b)));
+            }
+            for (int k = 0; k < 5; ++k) {
+                FillTriangle(f, cx, sy, ox[k], oy[k], ix[k], iy[k]);
+                FillTriangle(f, cx, sy, ox[k], oy[k], ix[(k + 4) % 5], iy[(k + 4) % 5]);
+            }
+            break;
+        }
+        case GameArt::Heart:
+            Heart(f, cx, cy - p(32), p(76));
+            break;
+        case GameArt::Dots1: case GameArt::Dots2: case GameArt::Dots3:
+        case GameArt::Dots4: case GameArt::Dots5:
+            GameDots(f, art - static_cast<int>(GameArt::Dots1) + 1, cx, cy, r);
+            break;
+        case GameArt::Blocks1: case GameArt::Blocks2: case GameArt::Blocks3:
+        case GameArt::Blocks4: case GameArt::Blocks5:
+            GameBlocks(f, art - static_cast<int>(GameArt::Blocks1) + 1, cx, cy, r);
+            break;
+        case GameArt::BallBig:
+            GameBall(f, cx, cy, p(90));
+            break;
+        case GameArt::BallSmall:
+            GameBall(f, cx, cy + p(45), p(40));
+            break;
+        case GameArt::Cat:
+            CatHead(f, cx, cy + p(18), r * 100 / 165, Emotion::Happy);
+            break;
+        case GameArt::Dog:
+            for (int side : {-1, 1})  // floppy ears behind the head
+                FillEllipse(f, cx + side * p(62), cy + p(10), p(22), p(46));
+            Blob(f, cx, cy + p(8), p(60), p(58), w);
+            for (int side : {-1, 1}) Disk(f, cx + side * p(22), cy - p(6), p(9));
+            FillEllipse(f, cx, cy + p(24), p(15), p(10));
+            for (int side : {-1, 1})
+                Arc(f, cx + side * p(11), cy + p(36), p(11), p(9), 0, 180, std::max(2, w * 2 / 3));
+            break;
+        case GameArt::Bird:
+            for (int side : {-1, 1})
+                Stroke(f, cx - p(10) + side * p(14), cy + p(52), cx - p(10) + side * p(18),
+                       cy + p(88), w);
+            Blob(f, cx - p(10), cy + p(8), p(62), p(50), w);
+            FillTriangle(f, cx + p(44), cy - p(14), cx + p(92), cy - p(2), cx + p(44), cy + p(10));
+            Disk(f, cx + p(20), cy - p(14), p(9));
+            Arc(f, cx - p(22), cy + p(10), p(30), p(20), 0, 180, w);
+            break;
+        case GameArt::Fish:
+            FillTriangle(f, cx + p(40), cy, cx + p(95), cy - p(44), cx + p(95), cy + p(44));
+            Blob(f, cx - p(12), cy, p(62), p(42), w);
+            Disk(f, cx - p(42), cy - p(8), p(9));
+            Arc(f, cx - p(14), cy, p(14), p(26), -70, 70, w);
+            break;
+        case GameArt::Listen:
+            FillRect(f, cx - p(70), cy - p(22), p(28), p(44));
+            FillTriangle(f, cx - p(42), cy - p(22), cx - p(2), cy - p(62), cx - p(2), cy + p(62));
+            FillTriangle(f, cx - p(42), cy - p(22), cx - p(42), cy + p(22), cx - p(2), cy + p(62));
+            for (int k = 1; k <= 3; ++k) Arc(f, cx + p(4), cy, p(22) * k, p(22) * k, -45, 45, w);
+            break;
+        case GameArt::None:
+            break;
+    }
+}
+
+// Left edge of answer card i of n, centred on the panel.
+int GameCardX(uint8_t i, uint8_t n) {
+    const int pitch = n >= 3 ? 260 : 300;
+    const int centre = 400 + (2 * static_cast<int>(i) - (n - 1)) * pitch / 2;
+    return centre - kGameCardW / 2;
+}
+
+void GameScene(MonoFrame& f, const GameView& g) {
+    // TuanTuan watches; a correct answer (and only that) gets hearts.
+    const Emotion emotion = g.feedback == GameFeedback::Right      ? Emotion::Happy
+                            : g.feedback == GameFeedback::TryAgain ? Emotion::Curious
+                                                                   : Emotion::Neutral;
+    const Eyes eyes = g.feedback == GameFeedback::Right    ? Eyes::Laugh
+                      : g.feedback == GameFeedback::Reveal ? Eyes::WinkLeft
+                                                           : Eyes::ByEmotion;
+    CatHead(f, 150, 172, 62, emotion, eyes);
+    if (g.feedback == GameFeedback::Right) {
+        Heart(f, 52, 64, 22);
+        Heart(f, 254, 54, 16);
+        Sparkle(f, 276, 150, 14);
+    } else if (g.feedback == GameFeedback::TryAgain) {
+        QuestionMark(f, 274, 84, 22, 8);
+    } else if (g.feedback == GameFeedback::Reveal) {
+        Sparkle(f, 262, 74, 16);
+        Sparkle(f, 44, 104, 10);
+    }
+    // Question card (clear of the status corner boxes, like every scene).
+    RoundRectRing(f, 336, 26, 292, 252, 28, 6);
+    GameArtIcon(f, g.question_art ? g.question_art : static_cast<uint16_t>(GameArt::Listen),
+                482, 152, 96);
+    // Progress: done rounds filled, the current one ringed with a dot.
+    for (int i = 0; i < g.rounds && i < 5; ++i) {
+        const int x = 720, y = 64 + i * 44;
+        if (i + 1 < g.round) {
+            Disk(f, x, y, 12);
+        } else if (i + 1 == g.round) {
+            Ring(f, x, y, 14, 14, 4);
+            Disk(f, x, y, 5);
+        } else {
+            Ring(f, x, y, 9, 9, 3);
+        }
+    }
+    // Answer rail.
+    const uint8_t n = std::min<uint8_t>(g.option_count, 3);
+    for (uint8_t i = 0; i < n; ++i) {
+        const int x = GameCardX(i, n);
+        RoundRectRing(f, x, kGameCardY, kGameCardW, kGameCardH, 24, 5);
+        GameArtIcon(f, g.options[i], x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
+        if (i == g.highlight)
+            RoundRectRing(f, x - kGameFrame, kGameCardY - kGameFrame, kGameCardW + 2 * kGameFrame,
+                          kGameCardH + 2 * kGameFrame, 24 + kGameFrame, 10);
+    }
+}
+
 // ---- Scenes --------------------------------------------------------------------
 
 void HomeScene(MonoFrame& f, const SceneModel& model) {
@@ -1063,6 +1245,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
         SleepScene(output, model.pose);
     } else if (model.kind == SceneKind::Parent) {
         ParentScene(output, model.parent);
+    } else if (model.kind == SceneKind::Game) {
+        GameScene(output, model.game);
     } else {
         HomeScene(output, model);
     }

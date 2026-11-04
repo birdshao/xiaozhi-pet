@@ -2,9 +2,11 @@
 
 #include "kid_app/story_pack_file_port.h"
 #include "kid_app/story_pack_reader.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -19,6 +21,10 @@ struct StoryPcmHooks {
     void (*cancel)(void* ctx) = nullptr;
 };
 
+// V4-05: besides page narration, a question's prompt or one option's name
+// from the same book (question and option are 0-based).
+enum class StoryClip : uint8_t { Page, Prompt, Option };
+
 class FreertosStoryPcmWorker {
 public:
     bool Start(const char* book_dir, const char* book_id,
@@ -26,11 +32,25 @@ public:
     // Non-blocking last-wins page change. Zero means cancel/stop.
     bool RequestPage(uint16_t page);
     bool Stop() { return RequestPage(0); }
+    // Non-blocking last-wins clip, like RequestPage (page 0 = stop).
+    bool RequestClip(StoryClip clip, uint16_t page, uint8_t question = 0,
+                     uint8_t option = 0);
     bool Ready() const { return task_ != nullptr; }
 
 private:
+    struct Request {
+        uint16_t page = 0;
+        StoryClip clip = StoryClip::Page;
+        uint8_t question = 0;
+        uint8_t option = 0;
+    };
+
     static void TaskEntry(void* ctx);
     void Run();
+    // Length of the clip in bytes (0 = not playable) and its reader.
+    uint32_t ClipBytes(const Request& request, ContentQuestion* question);
+    bool ReadClip(const Request& request, const ContentQuestion& question,
+                  uint32_t offset, void* target, size_t bytes);
 
     StoryPackFilePort file_{};
     StoryPackReader reader_{};

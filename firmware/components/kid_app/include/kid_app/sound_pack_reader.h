@@ -62,7 +62,8 @@ public:
     SoundPackFilePort(const SoundPackFilePort&) = delete;
     SoundPackFilePort& operator=(const SoundPackFilePort&) = delete;
 
-    bool Open(const char* mounted_directory, const char* pack_id);
+    // extension: "kps" (sound pack) or "kpg" (V4-06 game pack).
+    bool Open(const char* mounted_directory, const char* pack_id, const char* extension = "kps");
     void Close();
     uint64_t Size() const override { return size_; }
     bool ReadAt(uint32_t offset, void* out, size_t size) override;

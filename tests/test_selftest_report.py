@@ -147,6 +147,30 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertEqual(report["observed"]["prompt_seq"], "2")
         self.assertIn("phrase_seq", evaluate(scenario, log.replace("id=272", "id=271"))["failed"])
 
+    def test_ledger_restored_across_a_power_off(self):
+        scenario = "PETSELFTEST1\n# expect ledger_restored 1\n# expect commits 1\nend\n"
+        log = ("I: PET_LEDGER_READY ok=1 migration=migrated failure=none flags=0x03 "
+               "gen=7 fed=4 mode=0 mood=0 today=0 feeds=0 temperament=1\n"
+               "I: PET_SELFTEST_MARK name=begin\n"
+               "I: PET_EVENT_COMMITTED id_class=local fed=5\n"
+               "I: PET_SLEEP_POWEROFF settled=1 alarm_s=45 armed=1 wake=selftest battery=0 "
+               "ledger_gen=8\n"
+               "I: PET_FIRMWARE_BOOT_MARKER phase=board_init\n"
+               "I: PET_LEDGER_READY ok=1 migration=already failure=none flags=0x03 "
+               "gen=8 fed=5 mode=1 mood=1 today=20396 feeds=1 temperament=1\n"
+               "SUMMARY lines=6 panic=0 wdt=0\n")
+        report = evaluate(scenario, log)
+        self.assertTrue(report["passed"], report)
+        # A lost commit (older generation or feed count after the boot) fails.
+        for bad in (log.replace("gen=8 fed=5", "gen=7 fed=5"),
+                    log.replace("gen=8 fed=5", "gen=8 fed=4"),
+                    log.replace("ledger_gen=8", "ledger_gen=0"),
+                    log.replace("READY ok=1 migration=already", "READY ok=0 migration=failed")):
+            self.assertIn("ledger_restored", evaluate(scenario, bad)["failed"])
+        # Without a power-off and a later boot there is nothing to compare.
+        head = log[:log.index("I: PET_SLEEP_POWEROFF")] + "SUMMARY lines=3 panic=0 wdt=0\n"
+        self.assertIn("ledger_restored", evaluate(scenario, head)["failed"])
+
     def test_sector_is_padded_with_erased_bytes(self):
         data = sector_bytes(SCENARIO)
         self.assertEqual(len(data), 4096)

@@ -25,6 +25,8 @@ on:
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
       - 'tests/test_p4_story_audio_contract.py'
+      - 'tests/test_v4_book_reader.py'
+      - 'tools/make_reader_test_book.py'
       - 'scripts/p4_audio_queue_patch.py'
       - 'scripts/p0_*'
       - 'version-lock.json'
@@ -65,6 +67,8 @@ jobs:
       - name: Validate voice-exclusive story PCM queue patch before IDF build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
+      - name: V4-05 book reader board contract and self-test scenario
+        run: python3 -m unittest discover -s tests -p 'test_v4_book_reader.py' -v
       - name: Clone pinned upstream and verify board config
         shell: bash
         run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
