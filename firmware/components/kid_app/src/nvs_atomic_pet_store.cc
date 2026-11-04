@@ -9,8 +9,9 @@ constexpr const char* kNamespace = "kid_pet_sync";  // 12 <= NVS max 15 bytes.
 constexpr const char* kKeys[2] = {"joint_a", "joint_b"};
 }
 
-BlobReadStatus NvsAtomicPetStore::Read(unsigned slot, Blob* out) {
-    if (!out || slot>1) return BlobReadStatus::Error;
+BlobReadStatus NvsAtomicPetStore::Read(unsigned slot, Blob* out,
+                                       size_t* length) {
+    if (!out || !length || slot>1) return BlobReadStatus::Error;
     nvs_handle_t nvs;
     const esp_err_t opened=nvs_open(kNamespace,NVS_READONLY,&nvs);
     if (opened==ESP_ERR_NVS_NOT_FOUND) return BlobReadStatus::NotFound;
@@ -25,13 +26,17 @@ BlobReadStatus NvsAtomicPetStore::Read(unsigned slot, Blob* out) {
         nvs_close(nvs);
         return BlobReadStatus::Error;
     }
-    if (len!=out->size()) {
+    // v2 or a v1 blob awaiting migration (read into the prefix).
+    if (len!=out->size() && len!=PetAtomicLedger::kV1Bytes) {
         out->fill(0);  // wrong size -> corrupt; do not erase NVS.
+        *length=out->size();
         nvs_close(nvs);
         return BlobReadStatus::Ok;
     }
+    out->fill(0);
     const esp_err_t read=nvs_get_blob(nvs,kKeys[slot],out->data(),&len);
     nvs_close(nvs);
+    *length=len;
     return read==ESP_OK ? BlobReadStatus::Ok : BlobReadStatus::Error;
 }
 

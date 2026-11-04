@@ -12,11 +12,12 @@ using Bridge = PetDeviceBridge;
 
 class FakeNvs : public Ledger::Store {
 public:
-    BlobReadStatus Read(unsigned slot, Blob* out) override {
+    BlobReadStatus Read(unsigned slot, Blob* out, size_t* length) override {
         if (read_error) return BlobReadStatus::Error;
-        if (slot>1 || !out) return BlobReadStatus::Error;
+        if (slot>1 || !out || !length) return BlobReadStatus::Error;
         if (!present[slot]) return BlobReadStatus::NotFound;
         *out=slots[slot];
+        *length=out->size();
         return BlobReadStatus::Ok;
     }
     bool Write(unsigned slot, const Blob& data) override {
@@ -207,7 +208,8 @@ void TestChildQuietAndTransientRebootNormalization() {
 }
 
 int main() {
-    static_assert(Ledger::kBytes==1480, "Atomic journal format is fixed-size");
+    static_assert(Ledger::kV1Bytes==1480, "Atomic journal v1 format is frozen");
+    static_assert(Ledger::kBytes==1768, "v2 appends the 288 byte memory block");
     TestAtomicFeedCommitCrashAndAck();
     TestCapacityAndNoLostUpdates();
     TestStrictMigrationAndCorruption();

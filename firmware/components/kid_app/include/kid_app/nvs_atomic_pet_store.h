@@ -8,7 +8,7 @@ namespace kid_app {
 // Does not erase or silently migrate legacy 'kid_pet' / 'kid_bridge' keys.
 class NvsAtomicPetStore final : public PetAtomicLedger::Store {
 public:
-    BlobReadStatus Read(unsigned slot, Blob* out) override;
+    BlobReadStatus Read(unsigned slot, Blob* out, size_t* length) override;
     bool Write(unsigned slot, const Blob& blob) override;
 };
 
