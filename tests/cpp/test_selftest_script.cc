@@ -64,6 +64,19 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nalarm\nend\n"));
     }
 
+    // volume <percent>: quiet prompts during unattended trials (RAM only).
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nvolume 15\nwait 100\nend\n"));
+        assert(script.Count() == 2 && script.Steps()[0].op == SelfTestOp::Volume);
+        assert(script.Steps()[0].ms == 15);  // percent for this op
+        assert(script.TotalMs() == 100);     // a setting, not a delay
+        assert(script.Parse("PETSELFTEST1\nvolume 0\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvolume 101\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvolume\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvolume -5\nend\n"));
+    }
+
     // Raw flash sector: text followed by erased 0xFF bytes.
     {
         char sector[4096];

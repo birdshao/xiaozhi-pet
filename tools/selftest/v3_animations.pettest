@@ -12,6 +12,8 @@ PETSELFTEST1
 # expect selftest_done 1
 # expect max_partial_ms 2500
 # expect max_full_ms 5000
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
 wait 20000
 pet
 wait 7000

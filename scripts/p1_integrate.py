@@ -721,6 +721,9 @@ BOARD_WORKER = r'''
     // clip through the existing XiaoZhi AudioService (single I2S owner).
     kid_app::PromptScheduler prompt_scheduler_;
     QueueHandle_t prompt_queue_ = nullptr;
+    // Software prompt volume (%); only the self-test "volume" step lowers
+    // it, for this boot only. The XiaoZhi codec volume/NVS stay untouched.
+    std::atomic<uint8_t> prompt_volume_pct_{100};
     static constexpr uint8_t kPromptStop = 0xFF;
 
     void PostPrompt(const kid_app::PromptRequest& request) {
@@ -782,6 +785,7 @@ BOARD_WORKER = r'''
                     break;
                 }
                 const size_t n = clip.Copy(offset, chunk, 480);
+                kid_app::ScalePcm(chunk, n, prompt_volume_pct_.load());
                 if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
                     offset += n;
                     stalls = 0;
@@ -1114,6 +1118,10 @@ BOARD_WORKER = r'''
                 case kid_app::SelfTestOp::Alarm:
                     sleep_alarm_s_.store(static_cast<uint16_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_ALARM s=%u", static_cast<unsigned>(step.ms));
+                    break;
+                case kid_app::SelfTestOp::Volume:
+                    prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
+                    ESP_LOGI(TAG, "PET_SELFTEST_VOLUME pct=%u", static_cast<unsigned>(step.ms));
                     break;
                 case kid_app::SelfTestOp::Mark:
                     ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);

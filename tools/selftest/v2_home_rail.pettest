@@ -10,6 +10,8 @@ PETSELFTEST1
 # expect partial_refreshes 18
 # expect full_refreshes 3
 # Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
 wait 20000
 pet
 wait 7000

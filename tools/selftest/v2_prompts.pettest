@@ -7,6 +7,8 @@ PETSELFTEST1
 # expect min:PET_PROMPT_QUEUED 4
 # expect none:PET_PROMPT_FAILED 0
 # expect selftest_done 1
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
 wait 20000
 pet
 wait 7000

@@ -19,6 +19,12 @@ size_t WavClip::Copy(size_t offset, int16_t* out, size_t max) const {
     return n;
 }
 
+void ScalePcm(int16_t* samples, size_t count, uint8_t percent) {
+    if (!samples || percent >= 100) return;
+    for (size_t i = 0; i < count; ++i)
+        samples[i] = static_cast<int16_t>(static_cast<int32_t>(samples[i]) * percent / 100);
+}
+
 bool ParseWavClip(const uint8_t* bytes, size_t size, WavClip* clip) {
     if (!clip) return false;
     *clip = WavClip{};
