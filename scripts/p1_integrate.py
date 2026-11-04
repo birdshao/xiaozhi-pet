@@ -415,8 +415,12 @@ BOARD_WORKER = r'''
                     self->RequestAnimation(kid_app::Animation::Greet, scene);
             }
         }
-        // Deliberately do NOT play audio here. AudioCoordinator/AudioPort
-        // will be wired separately; only committed events can emit effects.
+        // V5-04: only committed events speak. Feeding and saying hi get a
+        // short reviewed line, played by the pet_prompt task (never here).
+        if (event.action == kid_app::PetAction::Feed)
+            self->PostPhrase(kid_app::PhraseContext::Feed);
+        else if (event.action == kid_app::PetAction::Pickup)
+            self->PostPhrase(kid_app::PhraseContext::Greeting);
         ESP_LOGI(TAG, "PET_EVENT_COMMITTED id_class=%s",
                  (event.id & kid_app::kLocalEventBit) ? "local" : "external");
     }
@@ -452,6 +456,8 @@ BOARD_WORKER = r'''
             // Missing/malformed media cannot prevent pet mode startup.
             if (!story_sd_.Initialize("forest_friends"))
                 ESP_LOGW(TAG, "PET_STORY_SD_FALLBACK");
+            // V2-08: pet_prompt may now look for the sound pack.
+            sound_sd_.store(story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent);
         }
         if (story_sd_.Ready() && !story_pcm_.Ready() &&
             !story_pcm_.Start("/sdcard/books", "forest_friends",
@@ -682,6 +688,8 @@ BOARD_WORKER = r'''
                 sleep_shown_ms_.store(0);
                 if (story_pcm_.Ready()) story_pcm_.Stop();
                 Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+                // V5-04 good night, after the cancel above so it is not cut.
+                PostPhrase(kid_app::PhraseContext::Bedtime);
                 kid_app::SceneModel scene{};
                 scene.kind = kid_app::SceneKind::Sleep;
                 scene.emotion = kid_app::Emotion::Sleepy;
@@ -699,6 +707,7 @@ BOARD_WORKER = r'''
             }
             case kid_app::SleepAction::RestoreScene: {
                 sleep_active_.store(false);
+                StopPrompt();  // a cancelled sleep cuts the good night
                 SceneStateLock lock(scene_state_mutex_);
                 pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED");
@@ -711,6 +720,7 @@ BOARD_WORKER = r'''
     }
 
     void PowerOffForSleep() {
+        StopPrompt();
         if (story_pcm_.Ready()) story_pcm_.Stop();
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
         // Let any queued Pet event commit to NVS first (bounded wait).
@@ -832,6 +842,51 @@ BOARD_WORKER = r'''
     std::atomic<uint8_t> prompt_volume_pct_{100};
     static constexpr uint8_t kPromptStop = 0xFF;
 
+    // ---- V2-08 sound pack and V5-04 pet lines ----
+    // The same pet_prompt task owns the TF pack (/sdcard/sounds/default.kps,
+    // opened and CRC-checked once SD was tried), the bank that falls back to
+    // the embedded option clips / a chime, and the planner that picks the
+    // pet's reviewed line through Personality. One audio path for all.
+    static constexpr uint8_t kSoundSdPending = 0, kSoundSdAbsent = 1, kSoundSdMounted = 2;
+    std::atomic<uint8_t> sound_sd_{kSoundSdPending};
+    std::atomic<uint32_t> phrase_tokens_{0};
+    kid_app::SoundPackFilePort sound_file_;
+    kid_app::SoundPackReader sound_pack_;
+    kid_app::SoundBank sound_bank_{&kid_app::LoadPromptClip};
+    kid_app::PhrasePlanner phrase_planner_;  // gentle until the parent sets one (V5-06)
+    bool sound_pack_tried_ = false;
+
+    void LoadSoundPack() {
+        sound_pack_tried_ = true;
+        const uint32_t started_ms = NowMs();
+        const char* state = "no_sd";
+        if (sound_sd_.load() == kSoundSdMounted) {
+            state = "absent";
+            if (sound_file_.Open("/sdcard/sounds", "default")) {
+                state = sound_pack_.Open(sound_file_) ? "ready" : "invalid";
+                if (!sound_pack_.Ready()) sound_file_.Close();
+            }
+        }
+        sound_bank_.UsePack(&sound_pack_);
+        ESP_LOGI(TAG, "PET_SOUND_PACK state=%s clips=%u rev=%u ms=%u", state,
+                 static_cast<unsigned>(sound_pack_.ClipCount()),
+                 static_cast<unsigned>(sound_pack_.Revision()),
+                 static_cast<unsigned>(NowMs() - started_ms));
+    }
+
+    // Any task. Never asleep (good night only while falling asleep) or
+    // napping; the player re-checks voice / Pet mode before and while it
+    // plays. Overwrites a waiting option prompt, like a newer prompt would.
+    void PostPhrase(kid_app::PhraseContext context) {
+        if (!pet_mode_.load() || napping_.load() ||
+            (sleep_active_.load() && context != kid_app::PhraseContext::Bedtime))
+            return;
+        kid_app::PromptRequest request{};
+        request.phrase = static_cast<uint8_t>(1 + static_cast<uint8_t>(context));
+        request.token = phrase_tokens_.fetch_add(1) + 1;
+        PostPrompt(request);
+    }
+
     void PostPrompt(const kid_app::PromptRequest& request) {
         if (prompt_queue_) xQueueOverwrite(prompt_queue_, &request);
     }
@@ -841,9 +896,10 @@ BOARD_WORKER = r'''
         PostPrompt(stop);
     }
 
-    // Same guard as story narration (StoryAudioBegin/Push).
-    bool PromptAllowed() {
-        return pet_mode_.load() && !sleep_active_.load() &&
+    // Same guard as story narration (StoryAudioBegin/Push); the good-night
+    // line may also play on the sleep scene.
+    bool PromptAllowed(bool bedtime = false) {
+        return pet_mode_.load() && (bedtime || !sleep_active_.load()) &&
                Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
     }
 
@@ -851,34 +907,61 @@ BOARD_WORKER = r'''
         kid_app::PromptRequest request{};
         int16_t chunk[480];
         for (;;) {
-            if (xQueueReceive(prompt_queue_, &request, portMAX_DELAY) != pdTRUE) continue;
+            if (!sound_pack_tried_ && sound_sd_.load() != kSoundSdPending) LoadSoundPack();
+            if (xQueueReceive(prompt_queue_, &request,
+                              sound_pack_tried_ ? portMAX_DELAY : pdMS_TO_TICKS(500)) != pdTRUE)
+                continue;
+            // V5-04: pick the pet's line first; one too soon after the last
+            // is dropped without cutting what is playing.
+            const bool phrase = request.phrase != 0;
+            const auto context =
+                static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
+            const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
+            const uint16_t phrase_id = phrase ? phrase_planner_.Next(context, NowMs()) : 0;
+            if (phrase && !phrase_id) {
+                ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
+                         kid_app::PhraseContextName(context));
+                continue;
+            }
             auto& audio = Application::GetInstance().GetAudioService();
             // Newest request wins: invalidate audio queued for an older prompt.
             audio.CancelLocalStoryPcm();
             if (request.index == kPromptStop) continue;
-            kid_app::WavClip clip;
-            if (!kid_app::LoadPromptClip(request.index, &clip)) {
-                ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=clip", request.index);
+            // Logs: PET_PROMPT_* index=<rail item>, PET_PHRASE_* id=<phrase id>.
+            const char* kind = phrase ? "PHRASE" : "PROMPT";
+            const char* key = phrase ? "id" : "index";
+            const unsigned what = phrase ? phrase_id : request.index;
+            kid_app::SoundClip clip;
+            if (phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
+                       : !sound_bank_.LoadOption(request.index, &clip)) {
+                ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=clip", kind, key, what);
                 continue;
             }
-            const uint64_t session = (uint64_t{0x50524F4D} << 32) | request.token;
-            ESP_LOGI(TAG, "PET_PROMPT_PLAY index=%u token=%u samples=%u", request.index,
-                     static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
+            const uint64_t session =
+                (uint64_t{phrase ? 0x50485253u : 0x50524F4Du} << 32) | request.token;
+            if (phrase)
+                ESP_LOGI(TAG, "PET_PHRASE_PLAY id=%u ctx=%s src=%s token=%u samples=%u", what,
+                         kid_app::PhraseContextName(context), kid_app::SoundSourceName(clip.source),
+                         static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples));
+            else
+                ESP_LOGI(TAG, "PET_PROMPT_PLAY index=%u token=%u samples=%u src=%s", what,
+                         static_cast<unsigned>(request.token), static_cast<unsigned>(clip.samples),
+                         kid_app::SoundSourceName(clip.source));
             bool started = false, allowed = true;
             for (int i = 0; i < 80 && !started; ++i) {  // older audio drains first
                 if (uxQueueMessagesWaiting(prompt_queue_)) break;
-                allowed = PromptAllowed();
+                allowed = PromptAllowed(bedtime);
                 if (!allowed) break;
                 started = audio.BeginLocalStoryPcm(session);
                 if (!started) vTaskDelay(pdMS_TO_TICKS(10));
             }
             if (!started) {
                 if (!allowed)
-                    ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u reason=state", request.index);
+                    ESP_LOGI(TAG, "PET_%s_INTERRUPTED %s=%u reason=state", kind, key, what);
                 else if (uxQueueMessagesWaiting(prompt_queue_))
-                    ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
+                    ESP_LOGI(TAG, "PET_%s_INTERRUPTED %s=%u", kind, key, what);
                 else
-                    ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=busy", request.index);
+                    ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=busy", kind, key, what);
                 continue;
             }
             const uint32_t started_ms = NowMs();
@@ -891,6 +974,7 @@ BOARD_WORKER = r'''
                     break;
                 }
                 const size_t n = clip.Copy(offset, chunk, 480);
+                if (n == 0) break;  // TF card read failed
                 kid_app::ScalePcm(chunk, n, PromptVolumePct());
                 if (audio.TryQueueLocalStoryPcm(session, chunk, n)) {
                     offset += n;
@@ -899,7 +983,7 @@ BOARD_WORKER = r'''
                 }
                 // Refused: either the 2-frame queue is full (wait) or the
                 // session was cancelled (voice, pet mode off, sleep).
-                if (!PromptAllowed()) {
+                if (!PromptAllowed(bedtime)) {
                     state_lost = true;
                     break;
                 }
@@ -907,13 +991,13 @@ BOARD_WORKER = r'''
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
             if (state_lost)
-                ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u reason=state", request.index);
+                ESP_LOGI(TAG, "PET_%s_INTERRUPTED %s=%u reason=state", kind, key, what);
             else if (interrupted)
-                ESP_LOGI(TAG, "PET_PROMPT_INTERRUPTED index=%u", request.index);
+                ESP_LOGI(TAG, "PET_%s_INTERRUPTED %s=%u", kind, key, what);
             else if (offset < clip.samples)
-                ESP_LOGW(TAG, "PET_PROMPT_FAILED index=%u reason=queue", request.index);
+                ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=queue", kind, key, what);
             else
-                ESP_LOGI(TAG, "PET_PROMPT_QUEUED index=%u ms=%u", request.index,
+                ESP_LOGI(TAG, "PET_%s_QUEUED %s=%u ms=%u", kind, key, what,
                          static_cast<unsigned>(NowMs() - started_ms));
         }
     }
@@ -1035,6 +1119,7 @@ BOARD_WORKER = r'''
             pet_mailbox_.Publish(scene);
             RequestAnimation(kid_app::Animation::Morning, scene);
         }
+        PostPhrase(kid_app::PhraseContext::MorningRecap);  // V5-04 good morning
         ESP_LOGI(TAG, "PET_MORNING_BEGIN awake_s=%u phase=%s",
                  static_cast<unsigned>(kid_app::PowerManager::kMorningAwakeMs / 1000),
                  PhaseName(day_phase_.load()));
@@ -1253,6 +1338,7 @@ BOARD_WORKER = r'''
                     break;
                 case kid_app::Gesture::GentleShake:
                     acted = RequestHomeAnimation(kid_app::Animation::Giggle);
+                    if (acted) PostPhrase(kid_app::PhraseContext::Giggle);
                     break;
                 case kid_app::Gesture::HardShake:  // a gentle reminder, never a reward
                     acted = RequestHomeAnimation(kid_app::Animation::Dizzy);
@@ -1717,6 +1803,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/sleep_flow.h"\n'
         '#include "kid_app/prompt_scheduler.h"\n'
         '#include "kid_app/prompt_clips.h"\n'
+        '#include "kid_app/sound_bank.h"\n'
+        '#include "kid_app/pet_phrases.h"\n'
         '#include "kid_app/status_bar.h"\n'
         '#include <wifi_manager.h>\n'
         '#include "esp_attr.h"\n'

@@ -22,6 +22,8 @@ constexpr PhraseTemplate kPhrases[] = {
     {152, T::Curious, C::StoryInvite, S::Book, 3, "《{book}》后来会怎样呢？再读一遍吧！"},
     {161, T::Curious, C::Bedtime, S::None, 1, "今天学到好多，明天还要一起探索哦，晚安。"},
     {162, T::Curious, C::Bedtime, S::None, 1, "星星为什么会眨眼呢？我们梦里去问问吧。"},
+    {171, T::Curious, C::Giggle, S::None, 1, "咯咯咯，好痒！"},
+    {172, T::Curious, C::Giggle, S::None, 1, "哇，世界在转圈圈！"},
 
     {211, T::Gentle, C::Greeting, S::None, 1, "你来啦，我好想你呀。"},
     {212, T::Gentle, C::Greeting, S::None, 1, "抱抱，今天也要开开心心的。"},
@@ -35,6 +37,8 @@ constexpr PhraseTemplate kPhrases[] = {
     {252, T::Gentle, C::StoryInvite, S::Book, 3, "要不要再听一次《{book}》？"},
     {261, T::Gentle, C::Bedtime, S::None, 1, "该睡觉啦，我陪着你，晚安。"},
     {262, T::Gentle, C::Bedtime, S::None, 1, "闭上眼睛，做个甜甜的梦。"},
+    {271, T::Gentle, C::Giggle, S::None, 1, "嘻嘻，轻轻的，好舒服。"},
+    {272, T::Gentle, C::Giggle, S::None, 1, "呵呵，像坐小船一样。"},
 
     {311, T::Lively, C::Greeting, S::None, 1, "嘿！你来啦！我们玩点什么吧！"},
     {312, T::Lively, C::Greeting, S::None, 1, "哇，我等你好久啦，跳一跳！"},
@@ -48,6 +52,8 @@ constexpr PhraseTemplate kPhrases[] = {
     {352, T::Lively, C::StoryInvite, S::Book, 3, "《{book}》太精彩了，我们再读一遍！"},
     {361, T::Lively, C::Bedtime, S::None, 1, "今天玩得好开心，明天继续，晚安！"},
     {362, T::Lively, C::Bedtime, S::None, 1, "电量用光啦，我们去睡觉吧，晚安！"},
+    {371, T::Lively, C::Giggle, S::None, 1, "哈哈哈，再摇一下！"},
+    {372, T::Lively, C::Giggle, S::None, 1, "咯咯咯，我笑得停不下来啦！"},
 };
 constexpr size_t kPhraseTotal = sizeof(kPhrases) / sizeof(kPhrases[0]);
 

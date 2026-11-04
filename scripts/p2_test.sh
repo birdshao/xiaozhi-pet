@@ -226,6 +226,20 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_voice_face"
 "$BUILD/test_voice_face"
 
+# V2-08 TF sound pack (KPS1) + built-in fallback, V5-04 pet lines chosen
+# through Personality. Cross-checked against a pack made by the Python tool.
+PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/sound_bank.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/tests/cpp/test_sound_pack.cc" \
+  -o "$BUILD/test_sound_pack"
+"$BUILD/test_sound_pack" "$BUILD/sound-demo/sounds"
+
 # V4-04 KPB2 content packs: grey pages, dial choice questions, like -> memory
 # mapping and KPB1 compatibility, read from the golden packs the tool made.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

@@ -20,6 +20,8 @@ public:
     // Read-only app intent. Does not format a card or write any story files.
     bool Initialize(const char* book_id);
     bool Ready() const { return ready_; }
+    // The card itself is mounted at /sdcard (also when no book is on it).
+    bool Mounted() const { return mounted_; }
     StoryPackReader* Reader() { return ready_ ? &reader_ : nullptr; }
 
 private:
