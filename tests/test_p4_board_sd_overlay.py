@@ -34,7 +34,7 @@ class WaveshareSdOverlayTests(unittest.TestCase):
         # (V2: full or partial chosen by the refresh planner).
         fallback = BOARD_WORKER[BOARD_WORKER.index("ShowStoryPage("):]
         fallback = fallback[fallback.index("if (!okay) {"):]
-        self.assertIn(": self->display_->ShowPetScene(scene);", fallback[:400])
+        self.assertIn(": display_->ShowPetScene(scene);", fallback[:400])
         self.assertIn("ShowPetScene",DISPLAY_IMPL)
         self.assertIn("reader.ReadFrame(page, *frame)",DISPLAY_IMPL)
         self.assertIn("EPD_DisplayPartBaseImage()",DISPLAY_IMPL)

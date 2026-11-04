@@ -7,8 +7,8 @@ PETSELFTEST1
 # expect selftest_done 1
 # expect max_partial_ms 2500
 # expect max_full_ms 5000
-# expect partial_refreshes 14
-# expect full_refreshes 4
+# expect partial_refreshes 18
+# expect full_refreshes 3
 # Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
 wait 20000
 pet
@@ -18,7 +18,7 @@ wait 7000
 tap press 7000
 hold press 1500 7000
 mark begin
-# 9 highlight moves: 8 partials, then the planner forces a full refresh.
+# 9 highlight moves, all partial (rail budget 40, cleanup only when idle).
 tap up 2500
 tap down 2500
 tap down 2500
@@ -30,7 +30,7 @@ tap up 2500
 tap up 2500
 tap up 6000
 tap up 6000
-# Feed (index 3): durable Feed, happy face via partial refresh.
+# Feed (index 3): durable Feed, happy face + 3 heart frames (partial).
 tap down 2500
 tap down 2500
 tap down 2500

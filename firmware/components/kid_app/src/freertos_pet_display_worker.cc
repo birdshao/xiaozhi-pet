@@ -11,14 +11,17 @@ constexpr TickType_t kFailureBackoffTicks = pdMS_TO_TICKS(1000);
 constexpr uint32_t kWorkerStackBytes = 8192;
 }  // namespace
 
-bool FreertosPetDisplayWorker::Start(PetRenderCallback renderer, void* context) {
+bool FreertosPetDisplayWorker::Start(PetRenderCallback renderer, void* context,
+                                     PetIdleCallback idle) {
     if (worker_ || !renderer) return false;
     renderer_ = renderer;
+    idle_ = idle;
     context_ = context;
     if (xTaskCreate(&TaskEntry, "kid_epd", kWorkerStackBytes,
                     this, 2, &worker_) != pdPASS) {
         worker_ = nullptr;
         renderer_ = nullptr;
+        idle_ = nullptr;
         context_ = nullptr;
         return false;
     }
@@ -41,7 +44,11 @@ void FreertosPetDisplayWorker::TaskLoop() {
 
         SceneModel requested{};
         const auto now_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
-        if (!gate_.Acquire(now_ms, &requested)) continue;
+        if (!gate_.Acquire(now_ms, &requested)) {
+            if (idle_ && gate_.HasDisplayed() && !gate_.HasPending() && !gate_.Busy())
+                idle_(gate_.LastDisplayed(), context_);
+            continue;
+        }
 
         // This is the ONLY place that may block on a slow ePaper operation.
         // The renderer must take the board's LVGL/EPD lock and must not call

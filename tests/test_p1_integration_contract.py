@@ -157,6 +157,33 @@ class DisplayOverlayTest(unittest.TestCase):
         for marker in ('PET_SLEEP_REQUESTED', 'PET_SLEEP_CANCELLED', 'PET_SLEEP_POWEROFF'):
             self.assertIn(marker, patched)
 
+    def test_animations_and_deferred_cleanup(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/pet_animation.h"', patched)
+        self.assertIn('pet_display_worker_.Start(&PetRender, this, &PetIdle)', patched)
+        # Gate scenes and director frames share one drawing path.
+        render = patched[patched.index('static bool PetRender('):]
+        render = render[:render.index('\n    }\n')]
+        self.assertIn('DrawPetFrameLocked(scene, "gate")', render)
+        idle = patched[patched.index('static void PetIdle('):]
+        idle = idle[:idle.index('\n    }\n')]
+        self.assertIn('DrawPetFrameLocked(step.scene', idle)
+        # Blink/cleanup only on a quiet, awake home screen; cleanup is full.
+        self.assertIn('!self->sleep_active_.load()', idle)
+        self.assertIn('kDeviceStateIdle', idle)
+        self.assertLess(idle.index('refresh_planner_.ForceFull()'),
+                        idle.index('DrawPetFrameLocked(step.scene'))
+        # The director lock is never held while drawing.
+        self.assertLess(idle.index('xSemaphoreTake(self->pet_screen_mutex_'),
+                        idle.index('DrawPetFrameLocked(step.scene'))
+        # Triggers: feed -> hearts, hello -> wave, sleep -> Zzz one by one.
+        self.assertIn('RequestAnimation(kid_app::Animation::Feed, scene)', patched)
+        self.assertIn('RequestAnimation(kid_app::Animation::Greet, scene)', patched)
+        self.assertIn('scene.pose = kid_app::ScenePose::Zzz1', patched)
+        self.assertIn('RequestAnimation(kid_app::Animation::SleepIn, scene)', patched)
+        # The cancel window starts only after the final sleep picture.
+        self.assertIn('scene.pose == kid_app::ScenePose::Still', patched)
+
     def test_v2_sleep_flow_review_fixes(self):
         patched = self._board()
         # Each sleep request is a distinct frame, so the refresh gate never
@@ -167,8 +194,7 @@ class DisplayOverlayTest(unittest.TestCase):
             body = patched[patched.index(fn):]
             body = body[:body.index('\n    }\n')]
             self.assertIn('self->sleep_active_.load()', body)
-        self.assertIn('if (okay && !self->sleep_active_.load()) self->story_pcm_.RequestPage(',
-                      patched)
+        self.assertIn('if (okay && !sleep_active_.load()) story_pcm_.RequestPage(', patched)
         # Leaving Pet mode aborts the flow; it never powers off from XiaoZhi.
         loop = patched[patched.index('void InputTaskLoop()'):]
         loop = loop[:loop.index('\n    }\n')]

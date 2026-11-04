@@ -109,8 +109,8 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_home_menu"
 "$BUILD/test_home_menu"
 
-# V2 ePaper refresh planner: partial for highlights, full for scene/page
-# changes, after failures and every N partials.
+# ePaper refresh planner: partial for highlights, expressions and poses,
+# full for scene/page changes and failures; per-region ghosting budgets.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
   "$ROOT/tests/cpp/test_refresh_planner.cc" \
