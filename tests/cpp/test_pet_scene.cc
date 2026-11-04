@@ -26,6 +26,22 @@ int main() {
     assert(frame.IsBlack(799, 479));
     assert(!frame.IsBlack(-1, 0));
 
+    // Byte-wise spans: exact inclusive ends inside and across bytes, clipping,
+    // repeating masks, and painting white back.
+    {
+        MonoFrame span;
+        span.PaintSpan(3, 20, 5, 0xFF, true);
+        for (int x = 0; x < 30; ++x) assert(span.IsBlack(x, 5) == (x >= 3 && x <= 20));
+        assert(!span.IsBlack(10, 4) && !span.IsBlack(10, 6));
+        span.PaintSpan(-50, 2000, 7, 0xAA, true);  // every other pixel, clipped
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(span.IsBlack(x, 7) == (x % 2 == 0));
+        span.PaintSpan(5, 5, 5, 0xFF, false);
+        assert(!span.IsBlack(5, 5) && span.IsBlack(4, 5) && span.IsBlack(6, 5));
+        span.PaintSpan(9, 2, 9, 0xFF, true);  // empty
+        span.PaintSpan(0, 799, 480, 0xFF, true);  // off-frame row
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(!span.IsBlack(x, 9));
+    }
+
     MonoFrame happy, sleepy, book;
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1}, happy);
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Sleepy, 1}, sleepy);

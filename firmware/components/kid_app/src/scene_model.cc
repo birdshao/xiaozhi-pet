@@ -33,6 +33,22 @@ void MonoFrame::SetPixel(int x, int y, bool black) {
     else pixels_[index] |= mask;
 }
 
+void MonoFrame::PaintSpan(int x0, int x1, int y, uint8_t mask, bool black) {
+    if (y < 0 || y >= kHeight) return;
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, kWidth - 1);
+    if (x0 > x1) return;
+    uint8_t* row = pixels_.data() + y * kStride;
+    const int first = x0 / 8, last = x1 / 8;
+    for (int b = first; b <= last; ++b) {
+        uint8_t m = mask;
+        if (b == first) m = static_cast<uint8_t>(m & (0xFFu >> (x0 % 8)));
+        if (b == last) m = static_cast<uint8_t>(m & (0xFFu << (7 - x1 % 8)));
+        if (black) row[b] = static_cast<uint8_t>(row[b] & ~m);
+        else row[b] = static_cast<uint8_t>(row[b] | m);
+    }
+}
+
 bool MonoFrame::IsBlack(int x, int y) const {
     if (x < 0 || x >= kWidth || y < 0 || y >= kHeight) return false;
     const auto index = static_cast<size_t>(y * kStride + x / 8);
@@ -44,39 +60,64 @@ namespace {
 // ---- 1-bit drawing kit ------------------------------------------------------
 // Every primitive takes an ink colour (true = black) so the same shapes can be
 // drawn white-on-black, e.g. the selected rail card. Grey does not exist on
-// the panel; Shade() fakes it with an ordered 4x4 Bayer dither.
+// the panel; shading fakes it with an ordered 4x4 Bayer dither. Shapes are
+// filled as horizontal spans (MonoFrame::PaintSpan), never pixel by pixel:
+// the frame lives in PSRAM and is re-rendered for every partial refresh.
 
 constexpr int kW = MonoFrame::kWidth, kH = MonoFrame::kHeight;
 constexpr double kPi = 3.14159265358979323846;
+constexpr uint8_t kSolid = 0xFF;
 
 int Clamp(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
 
-bool InEllipse(int x, int y, int cx, int cy, int rx, int ry) {
-    if (rx <= 0 || ry <= 0) return false;
-    const int64_t dx = x - cx, dy = y - cy, rx2 = int64_t{rx} * rx, ry2 = int64_t{ry} * ry;
-    return dx * dx * ry2 + dy * dy * rx2 <= rx2 * ry2;
+// 8-pixel dither mask for row y; level 0 (white) .. 16 (black).
+uint8_t BayerMask(int y, int level) {
+    static const uint8_t kM[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+    uint8_t mask = 0;
+    for (int i = 0; i < 8; ++i)
+        if (kM[y & 3][i & 3] < level) mask = static_cast<uint8_t>(mask | (0x80u >> i));
+    return mask;
+}
+
+// Largest dx with (dx/rx)^2 + (dy/ry)^2 <= 1, or -1 when row dy misses.
+int HalfWidth(int dy, int rx, int ry) {
+    if (rx <= 0 || ry <= 0 || dy < -ry || dy > ry) return -1;
+    const int64_t rx2 = int64_t{rx} * rx, ry2 = int64_t{ry} * ry;
+    const int64_t limit = rx2 * ry2 - int64_t{dy} * dy * rx2;
+    int dx = static_cast<int>(std::sqrt(static_cast<float>(limit) / static_cast<float>(ry2)));
+    while (dx > 0 && int64_t{dx} * dx * ry2 > limit) --dx;
+    while (int64_t{dx + 1} * (dx + 1) * ry2 <= limit) ++dx;
+    return dx;
+}
+
+void Span(MonoFrame& f, int x0, int x1, int y, bool ink, uint8_t mask = kSolid) {
+    f.PaintSpan(x0, x1, y, mask, ink);
 }
 
 void FillEllipse(MonoFrame& f, int cx, int cy, int rx, int ry, bool ink = true) {
-    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
-        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
-            if (InEllipse(x, y, cx, cy, rx, ry)) f.SetPixel(x, y, ink);
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y) {
+        const int hw = HalfWidth(y - cy, rx, ry);
+        if (hw >= 0) Span(f, cx - hw, cx + hw, y, ink);
+    }
 }
 
 // Elliptical band of width w (inner edge = outer shrunk by w).
 void Ring(MonoFrame& f, int cx, int cy, int rx, int ry, int w, bool ink = true) {
-    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
-        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
-            if (InEllipse(x, y, cx, cy, rx, ry) && !InEllipse(x, y, cx, cy, rx - w, ry - w))
-                f.SetPixel(x, y, ink);
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y) {
+        const int outer = HalfWidth(y - cy, rx, ry);
+        if (outer < 0) continue;
+        const int inner = HalfWidth(y - cy, rx - w, ry - w);
+        if (inner < 0) {
+            Span(f, cx - outer, cx + outer, y, ink);
+        } else {
+            Span(f, cx - outer, cx - inner - 1, y, ink);
+            Span(f, cx + inner + 1, cx + outer, y, ink);
+        }
+    }
 }
 
-// Hot path: Stroke() stamps one disk per pixel, so stay in 32-bit math.
 void Disk(MonoFrame& f, int cx, int cy, int r, bool ink = true) {
-    const int r2 = r * r;
-    for (int dy = -r; dy <= r; ++dy)
-        for (int dx = -r; dx <= r; ++dx)
-            if (dx * dx + dy * dy <= r2) f.SetPixel(cx + dx, cy + dy, ink);
+    FillEllipse(f, cx, cy, r, r, ink);
 }
 
 // White body with a black outline: the basic "sticker" shape.
@@ -85,34 +126,31 @@ void Blob(MonoFrame& f, int cx, int cy, int rx, int ry, int w) {
     Ring(f, cx, cy, rx, ry, w);
 }
 
-bool Bayer(int x, int y, int level) {  // level 0 (white) .. 16 (black)
-    static const uint8_t kM[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
-    return kM[y & 3][x & 3] < level;
-}
-
 // Dithered ellipse; only adds ink, white stays white under it.
 void Shade(MonoFrame& f, int cx, int cy, int rx, int ry, int level) {
-    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y)
-        for (int x = Clamp(cx - rx, 0, kW - 1); x <= Clamp(cx + rx, 0, kW - 1); ++x)
-            if (InEllipse(x, y, cx, cy, rx, ry) && Bayer(x, y, level)) f.SetPixel(x, y, true);
+    for (int y = Clamp(cy - ry, 0, kH - 1); y <= Clamp(cy + ry, 0, kH - 1); ++y) {
+        const int hw = HalfWidth(y - cy, rx, ry);
+        if (hw >= 0) Span(f, cx - hw, cx + hw, y, true, BayerMask(y, level));
+    }
 }
 
 void ShadeRect(MonoFrame& f, int x0, int y0, int w, int h, int level) {
     for (int y = Clamp(y0, 0, kH - 1); y < Clamp(y0 + h, 0, kH); ++y)
-        for (int x = Clamp(x0, 0, kW - 1); x < Clamp(x0 + w, 0, kW); ++x)
-            if (Bayer(x, y, level)) f.SetPixel(x, y, true);
+        Span(f, x0, x0 + w - 1, y, true, BayerMask(y, level));
 }
 
-// Round-capped stroke: a disk stamped along a Bresenham line.
+// Round-capped stroke: disks stamped along a Bresenham line. Stamping every
+// r/2 steps instead of every pixel leaves < 0.3 px of scalloping.
 void Stroke(MonoFrame& f, int x0, int y0, int x1, int y1, int w, bool ink = true) {
-    const int r = w / 2;
+    const int r = w / 2, every = std::max(1, r / 2);
     const int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     const int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
-    while (true) {
+    for (int i = 0;; ++i) {
+        const bool last = x0 == x1 && y0 == y1;
         if (r <= 0) f.SetPixel(x0, y0, ink);
-        else Disk(f, x0, y0, r, ink);
-        if (x0 == x1 && y0 == y1) break;
+        else if (last || i % every == 0) Disk(f, x0, y0, r, ink);
+        if (last) break;
         const int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
@@ -122,7 +160,10 @@ void Stroke(MonoFrame& f, int x0, int y0, int x1, int y1, int w, bool ink = true
 // Elliptical arc, degrees clockwise from +x (screen y grows downwards):
 // 0..180 is the lower half, 180..360 the upper half.
 void Arc(MonoFrame& f, int cx, int cy, int rx, int ry, int a0, int a1, int w, bool ink = true) {
-    const int steps = std::max(8, (std::abs(a1 - a0) * std::max(rx, ry)) / 40);
+    // Polyline with segments about a quarter of the stroke width long: short
+    // enough to look round, long enough for Stroke() to skip disk stamps.
+    const int length = std::abs(a1 - a0) * std::max(rx, ry) * 314 / 18000;
+    const int steps = std::max(8, length / std::max(2, w / 4));
     int px = 0, py = 0;
     for (int i = 0; i <= steps; ++i) {
         const double a = (a0 + (a1 - a0) * static_cast<double>(i) / steps) * kPi / 180.0;
@@ -134,44 +175,61 @@ void Arc(MonoFrame& f, int cx, int cy, int rx, int ry, int a0, int a1, int w, bo
     }
 }
 
-// level < 16 dithers the fill (see Bayer) instead of painting it solid.
+// level < 16 dithers the fill (see BayerMask) instead of painting it solid.
 void FillTriangle(MonoFrame& f, int x0, int y0, int x1, int y1, int x2, int y2, bool ink = true,
                   int level = 16) {
-    const int minx = Clamp(std::min({x0, x1, x2}), 0, kW - 1);
-    const int maxx = Clamp(std::max({x0, x1, x2}), 0, kW - 1);
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2};
     const int miny = Clamp(std::min({y0, y1, y2}), 0, kH - 1);
     const int maxy = Clamp(std::max({y0, y1, y2}), 0, kH - 1);
-    auto edge = [](int ax, int ay, int bx, int by, int px, int py) {
-        return int64_t{bx - ax} * (py - ay) - int64_t{by - ay} * (px - ax);
-    };
-    for (int y = miny; y <= maxy; ++y)
-        for (int x = minx; x <= maxx; ++x) {
-            const int64_t a = edge(x0, y0, x1, y1, x, y), b = edge(x1, y1, x2, y2, x, y),
-                          c = edge(x2, y2, x0, y0, x, y);
-            if (((a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0)) &&
-                (level >= 16 || Bayer(x, y, level)))
-                f.SetPixel(x, y, ink);
+    for (int y = miny; y <= maxy; ++y) {
+        float lo = 1e9f, hi = -1e9f;
+        for (int e = 0; e < 3; ++e) {
+            const int ax = xs[e], ay = ys[e], bx = xs[(e + 1) % 3], by = ys[(e + 1) % 3];
+            if (y < std::min(ay, by) || y > std::max(ay, by)) continue;
+            if (ay == by) {
+                lo = std::min(lo, static_cast<float>(std::min(ax, bx)));
+                hi = std::max(hi, static_cast<float>(std::max(ax, bx)));
+                continue;
+            }
+            const float x = ax + static_cast<float>(y - ay) * (bx - ax) / static_cast<float>(by - ay);
+            lo = std::min(lo, x);
+            hi = std::max(hi, x);
         }
+        if (lo > hi) continue;
+        Span(f, static_cast<int>(std::ceil(lo)), static_cast<int>(std::floor(hi)), y, ink,
+             level >= 16 ? kSolid : BayerMask(y, level));
+    }
 }
 
-bool InRoundRect(int px, int py, int x, int y, int w, int h, int r) {
-    if (px < x || py < y || px >= x + w || py >= y + h) return false;
-    const int qx = Clamp(px, x + r, x + w - 1 - r), qy = Clamp(py, y + r, y + h - 1 - r);
-    return (px - qx) * (px - qx) + (py - qy) * (py - qy) <= r * r;
+// Horizontal extent of a rounded rectangle on row py: [*l, *r], or false.
+bool RoundRectRow(int py, int x, int y, int w, int h, int r, int* l, int* rt) {
+    if (w <= 0 || h <= 0 || py < y || py >= y + h) return false;
+    const int qy = Clamp(py, y + r, y + h - 1 - r), d = py - qy;
+    const int hw = d == 0 ? r : HalfWidth(d, r, r);
+    if (hw < 0) return false;
+    *l = x + r - hw;
+    *rt = x + w - 1 - r + hw;
+    return true;
 }
 
 void FillRoundRect(MonoFrame& f, int x, int y, int w, int h, int r, bool ink = true) {
-    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py)
-        for (int px = Clamp(x, 0, kW - 1); px < Clamp(x + w, 0, kW); ++px)
-            if (InRoundRect(px, py, x, y, w, h, r)) f.SetPixel(px, py, ink);
+    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py) {
+        int l = 0, rt = 0;
+        if (RoundRectRow(py, x, y, w, h, r, &l, &rt)) Span(f, l, rt, py, ink);
+    }
 }
 
 void RoundRectRing(MonoFrame& f, int x, int y, int w, int h, int r, int t, bool ink = true) {
-    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py)
-        for (int px = Clamp(x, 0, kW - 1); px < Clamp(x + w, 0, kW); ++px)
-            if (InRoundRect(px, py, x, y, w, h, r) &&
-                !InRoundRect(px, py, x + t, y + t, w - 2 * t, h - 2 * t, std::max(0, r - t)))
-                f.SetPixel(px, py, ink);
+    for (int py = Clamp(y, 0, kH - 1); py < Clamp(y + h, 0, kH); ++py) {
+        int l = 0, rt = 0, il = 0, irt = 0;
+        if (!RoundRectRow(py, x, y, w, h, r, &l, &rt)) continue;
+        if (!RoundRectRow(py, x + t, y + t, w - 2 * t, h - 2 * t, std::max(0, r - t), &il, &irt)) {
+            Span(f, l, rt, py, ink);
+        } else {
+            Span(f, l, il - 1, py, ink);
+            Span(f, irt + 1, rt, py, ink);
+        }
+    }
 }
 
 // Four-point twinkle star.
@@ -292,10 +350,10 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion, bool asle
         Ring(f, cx, cy + s(58), s(12), s(15), mw);
     } else if (emotion == Emotion::Happy) {
         // Open laughing mouth with a dithered tongue.
-        for (int y = cy + s(40); y <= cy + s(70); ++y)
-            for (int x = cx - s(22); x <= cx + s(22); ++x)
-                if (y >= cy + s(42) && InEllipse(x, y, cx, cy + s(42), s(22), s(26)))
-                    f.SetPixel(x, y, true);
+        for (int dy = 0; dy <= s(26); ++dy) {
+            const int hw = HalfWidth(dy, s(22), s(26));
+            Span(f, cx - hw, cx + hw, cy + s(42) + dy, true);
+        }
         FillEllipse(f, cx, cy + s(60), s(12), s(7), false);
         Shade(f, cx, cy + s(60), s(12), s(7), 6);
         Arc(f, cx - s(11), cy + s(36), s(11), s(9), 0, 180, mw);
@@ -455,15 +513,21 @@ void ReaderScene(MonoFrame& f, const SceneModel& model) {
 // curled up asleep on a cushion.
 void SleepScene(MonoFrame& f) {
     // Black sky above a rolling white hill with a stippled horizon.
-    for (int y = 0; y < kH; ++y)
-        for (int x = 0; x < kW; ++x) f.SetPixel(x, y, true);
+    for (int y = 0; y < kH; ++y) Span(f, 0, kW - 1, y, true);
     FillEllipse(f, 400, 660, 720, 350, false);
     for (int i = 0; i < 4; ++i)
-        for (int y = 280; y < kH; ++y)
-            for (int x = 0; x < kW; ++x)
-                if (InEllipse(x, y, 400, 660, 726 + i * 6, 356 + i * 6) &&
-                    !InEllipse(x, y, 400, 660, 720 + i * 6, 350 + i * 6) && !Bayer(x, y, 6 + i * 3))
-                    f.SetPixel(x, y, false);
+        for (int y = 280; y < kH; ++y) {
+            const int outer = HalfWidth(y - 660, 726 + i * 6, 356 + i * 6);
+            if (outer < 0) continue;
+            const int inner = HalfWidth(y - 660, 720 + i * 6, 350 + i * 6);
+            const uint8_t light = static_cast<uint8_t>(~BayerMask(y, 6 + i * 3));
+            if (inner < 0) {
+                Span(f, 400 - outer, 400 + outer, y, false, light);
+            } else {
+                Span(f, 400 - outer, 400 - inner - 1, y, false, light);
+                Span(f, 400 + inner + 1, 400 + outer, y, false, light);
+            }
+        }
 
     // Moon with a halo ring, and stars.
     Disk(f, 676, 88, 46, false);
