@@ -164,3 +164,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_rhythm_scheduler.cc" \
   -o "$BUILD/test_rhythm_scheduler"
 "$BUILD/test_rhythm_scheduler"
+
+# V4-01 gestures from accelerometer windows (V1 round 3 thresholds):
+# pickup, gentle/hard shake, face down/up, cooldowns, disable.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/gesture_detector.cc" \
+  "$ROOT/tests/cpp/test_gesture_detector.cc" \
+  -o "$BUILD/test_gesture_detector"
+"$BUILD/test_gesture_detector"
