@@ -470,7 +470,10 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(status.index('xSemaphoreTake(pet_screen_mutex_'),
                         status.index('DrawPetFrameLocked(displayed, "status", &latest)'))
         self.assertIn('pet_mode_.load() && !sleep_active_.load()', status)
-        self.assertIn('status_schedule_.Drawn(NowMs());  // retry', status)
+        # Only status refreshes (also failed ones) start the one-minute wait.
+        self.assertLess(status.index('xSemaphoreGive(pet_screen_mutex_)'),
+                        status.index('status_schedule_.Drawn(NowMs());'))
+        self.assertEqual(patched.count('status_schedule_.Drawn('), 1)
         # One drawing path: home frames carry the shown status, a status
         # refresh the new one, a full refresh the newest; counted per region.
         draw = patched[patched.index('bool DrawPetFrameLocked('):]

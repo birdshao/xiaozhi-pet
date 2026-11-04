@@ -276,11 +276,7 @@ BOARD_WORKER = r'''
                        : display_->ShowPetScene(scene);
         }
         refresh_planner_.Completed(scene, mode, okay);
-        if (okay && scene.kind == kid_app::SceneKind::Home &&
-            (mode == kid_app::RefreshMode::Full || scene.status != status_shown_)) {
-            status_shown_ = scene.status;
-            status_schedule_.Drawn(NowMs());
-        }
+        if (okay && scene.kind == kid_app::SceneKind::Home) status_shown_ = scene.status;
         // The sleep cancel window starts once the final picture (all three
         // Z letters, ScenePose::Still) is on the panel.
         if (okay && scene.kind == kid_app::SceneKind::Sleep &&
@@ -1262,7 +1258,10 @@ BOARD_WORKER = r'''
         if (pet_mode_.load() && !sleep_active_.load())
             okay = DrawPetFrameLocked(displayed, "status", &latest);
         xSemaphoreGive(pet_screen_mutex_);
-        if (!okay) status_schedule_.Drawn(NowMs());  // retry a minute later
+        // Only status refreshes count (a failed one retries a minute later);
+        // full refreshes pick up new readings without delaying the next one.
+        status_schedule_.Drawn(NowMs());
+        ESP_LOGI(TAG, "PET_STATUS_REFRESH ok=%d", okay ? 1 : 0);
     }
 
     // ---- Host-scripted self-test (unattended hardware trials) ----

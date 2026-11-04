@@ -69,8 +69,9 @@ public:
         if (shown == latest) return false;
         return !drawn_ || static_cast<uint32_t>(now_ms - last_ms_) >= kMinIntervalMs;
     }
-    // The band was drawn (a status refresh, or a full refresh that picked up
-    // the newest values), or a status refresh failed (retry a minute later).
+    // A status refresh ran (a failed one retries a minute later). Full
+    // refreshes that pick up new values on the way do not count, so they
+    // never delay the next clock tick.
     void Drawn(uint32_t now_ms) {
         drawn_ = true;
         last_ms_ = now_ms;
