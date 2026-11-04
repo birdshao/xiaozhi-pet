@@ -64,7 +64,9 @@ public:
     bool PostMemory(const MemoryEvent& event);
     // V3-06 parent menu: commits the settings and waits up to `wait` for the
     // result (never call on the Pet worker). Not retried by the worker: on
-    // StorageError (also a timeout) the caller keeps what ParentNow() says.
+    // StorageError the caller keeps what ParentNow() says. A timed-out save
+    // is abandoned (never committed later), so the result always matches
+    // what the ledger ends up holding.
     CommitResult SaveParentSettings(const ParentSettings& settings, TickType_t wait);
 
     // Called by networking on its own task after receiving a parsed HTTP ACK.
@@ -74,11 +76,12 @@ public:
 
     // True once every posted message has been committed (or rejected) and
     // the inbox is empty. Used before PMIC power-off; best effort, not a lock.
-    bool Settled() const { return settled_.load(); }
+    bool Settled() const { return in_flight_.load() == 0; }
 
     // Copies of the last committed state, safe from any task after Start.
     ParentSettings ParentNow() const;
     MemoryStore MemoryNow() const;
+    MemoryStore::Day TodayNow() const;  // small: for callers on tight stacks
     Temperament TemperamentNow() const {
         return static_cast<Temperament>(temperament_.load());
     }
@@ -103,6 +106,9 @@ private:
 
     bool NoLegacyPetOrOutbox() const;
     bool PrepareLedger();
+    bool Enqueue(const Message& msg);
+    // One message; true = storage failed, keep it at the head and retry.
+    bool Process(const Message& pending, uint32_t* storage_failures);
     void PublishView();
     void NotifyHead();
     uint32_t Day() const { return day_provider_ ? day_provider_(day_context_) : 0; }
@@ -121,6 +127,8 @@ private:
     std::atomic<uint32_t> reply_ticket_{0};
     std::atomic<uint8_t> reply_result_{0};
     uint32_t ticket_ = 0;                    // under save_mutex_
+    SemaphoreHandle_t parent_gate_ = nullptr;  // abandon vs. commit of a save
+    std::atomic<uint32_t> abandoned_ticket_{0};  // timed-out saves up to here
     bool start_ok_ = false;
     PetSnapshot started_snapshot_{};       // copied on the worker before Start returns
     std::atomic<bool> ready_{false};       // Post*/Save/SubmitAck accepted
@@ -129,7 +137,7 @@ private:
     void* context_ = nullptr;
     AtomicPetDayProvider day_provider_ = nullptr;
     void* day_context_ = nullptr;
-    std::atomic<bool> settled_{true};
+    std::atomic<uint32_t> in_flight_{0};    // queued or being processed
     // View copies (view_mutex_, except the temperament atomic).
     ParentSettings parent_view_{};
     MemoryStore memory_view_{};

@@ -82,7 +82,8 @@ bool FreertosAtomicPetService::Start(
     if (!view_mutex_) view_mutex_=xSemaphoreCreateMutex();
     if (!save_mutex_) save_mutex_=xSemaphoreCreateMutex();
     if (!reply_) reply_=xSemaphoreCreateBinary();
-    if (!started_ || !view_mutex_ || !save_mutex_ || !reply_) return false;
+    if (!parent_gate_) parent_gate_=xSemaphoreCreateMutex();
+    if (!started_ || !view_mutex_ || !save_mutex_ || !reply_ || !parent_gate_) return false;
     messages_=xQueueCreate(kInboxCapacity,sizeof(Message));
     if (!messages_) return false;
     mode_=mode;
@@ -178,6 +179,14 @@ MemoryStore FreertosAtomicPetService::MemoryNow() const {
     return copy;
 }
 
+MemoryStore::Day FreertosAtomicPetService::TodayNow() const {
+    if (!view_mutex_) return MemoryStore::Day{};
+    xSemaphoreTake(view_mutex_,portMAX_DELAY);
+    const MemoryStore::Day copy=memory_view_.Today();
+    xSemaphoreGive(view_mutex_);
+    return copy;
+}
+
 uint64_t FreertosAtomicPetService::GenerationNow() const {
     if (!view_mutex_) return 0;
     xSemaphoreTake(view_mutex_,portMAX_DELAY);
@@ -186,14 +195,21 @@ uint64_t FreertosAtomicPetService::GenerationNow() const {
     return copy;
 }
 
+bool FreertosAtomicPetService::Enqueue(const Message& msg) {
+    // Counted before the send: the worker can take the message the moment it
+    // is queued, and Settled() must not read true while it commits.
+    in_flight_.fetch_add(1);
+    if (xQueueSend(messages_,&msg,0)==pdTRUE) return true;
+    in_flight_.fetch_sub(1);
+    return false;
+}
+
 bool FreertosAtomicPetService::PostExternal(const PetEvent& event) {
     if (!ready_.load() || !IsExternalEventId(event.id)) return false;
     Message msg{};
     msg.kind=Kind::External;
     msg.event=event;
-    if (xQueueSend(messages_,&msg,0)!=pdTRUE) return false;
-    settled_.store(false);  // after the send: the worker re-checks the inbox
-    return true;
+    return Enqueue(msg);
 }
 
 bool FreertosAtomicPetService::PostLocal(PetAction action) {
@@ -201,9 +217,7 @@ bool FreertosAtomicPetService::PostLocal(PetAction action) {
     Message msg{};
     msg.kind=Kind::Local;
     msg.event.action=action;
-    if (xQueueSend(messages_,&msg,0)!=pdTRUE) return false;
-    settled_.store(false);
-    return true;
+    return Enqueue(msg);
 }
 
 bool FreertosAtomicPetService::PostMemory(const MemoryEvent& event) {
@@ -211,9 +225,7 @@ bool FreertosAtomicPetService::PostMemory(const MemoryEvent& event) {
     Message msg{};
     msg.kind=Kind::Memory;
     msg.memory=event;
-    if (xQueueSend(messages_,&msg,0)!=pdTRUE) return false;
-    settled_.store(false);
-    return true;
+    return Enqueue(msg);
 }
 
 CommitResult FreertosAtomicPetService::SaveParentSettings(
@@ -226,17 +238,30 @@ CommitResult FreertosAtomicPetService::SaveParentSettings(
     msg.parent=settings;
     msg.ticket=++ticket_;
     if (!msg.ticket) msg.ticket=++ticket_;
-    xSemaphoreTake(reply_,0);  // drop a reply to an earlier, timed-out save
+    xSemaphoreTake(reply_,0);  // drop a reply to an earlier, abandoned save
     CommitResult result=CommitResult::StorageError;
-    if (xQueueSend(messages_,&msg,0)==pdTRUE) {
-        settled_.store(false);
+    if (Enqueue(msg)) {
+        bool answered=false;
         for (;;) {
             const TickType_t spent=xTaskGetTickCount()-begun;
             if (spent>=wait || xSemaphoreTake(reply_,wait-spent)!=pdTRUE) break;
             if (reply_ticket_.load()==msg.ticket) {
                 result=static_cast<CommitResult>(reply_result_.load());
+                answered=true;
                 break;
             }
+        }
+        if (!answered) {
+            // Timed out (e.g. behind a pet event that is retrying storage).
+            // Under the gate the worker either already answered (take that
+            // answer) or will skip this save: what the caller reports is
+            // always what the ledger ends up holding.
+            xSemaphoreTake(parent_gate_,portMAX_DELAY);
+            if (xSemaphoreTake(reply_,0)==pdTRUE && reply_ticket_.load()==msg.ticket)
+                result=static_cast<CommitResult>(reply_result_.load());
+            else
+                abandoned_ticket_.store(msg.ticket);
+            xSemaphoreGive(parent_gate_);
         }
     }
     xSemaphoreGive(save_mutex_);
@@ -263,9 +288,7 @@ bool FreertosAtomicPetService::SubmitAck(
     msg.duplicate=ack.duplicate;
     // No blocking inside network callback; if full, remote should retry the
     // stable event after its own timeout, receiving server DUPLICATE.
-    if (xQueueSend(messages_,&msg,0)!=pdTRUE) return false;
-    settled_.store(false);
-    return true;
+    return Enqueue(msg);
 }
 
 void FreertosAtomicPetService::NotifyHead() {
@@ -293,95 +316,95 @@ void FreertosAtomicPetService::Run() {
     bool has_retry=false;
     uint32_t storage_failures=0;
     for (;;) {
-        if (!has_retry && xQueueReceive(messages_,&pending,kPoll)!=pdTRUE) {
-            // Mark settled, then re-check so a concurrent Post cannot be lost.
-            settled_.store(true);
-            if (uxQueueMessagesWaiting(messages_)>0) settled_.store(false);
-            continue;
-        }
-
-        if (pending.kind==Kind::Ack) {
-            const PetDeviceBridge::ServerAck ack{
-                pending.message_id,pending.seq,pending.version,
-                pending.accepted,pending.duplicate
-            };
-            const auto result=ledger_.Acknowledge(ack,device_id_);
-            if (result==PetAtomicLedger::AckResult::StorageError) {
-                has_retry=true;
-                vTaskDelay(kRetry);
-                continue;
-            }
-            has_retry=false;
-            if (result==PetAtomicLedger::AckResult::Confirmed)
-                NotifyHead(); // now let transport process the next entry
-            // Wrong or rejected receipts leave the head unmodified. Network
-            // worker must retry its original immutable event, not forge ACK.
-            continue;
-        }
-
-        if (pending.kind==Kind::Parent) {
-            // Not retried: the parent menu shows the failure and keeps the
-            // committed settings (a later retry would surprise the parent).
-            const uint64_t id=NextLocalEventId(ledger_.Generation());
-            const CommitResult result=id ? ledger_.SetParentSettings(id,pending.parent)
-                                         : CommitResult::Rejected;
-            has_retry=false;
-            if (result==CommitResult::Committed) PublishView();
-            ESP_LOGI(kTag,"PET_LEDGER_PARENT result=%s",ResultName(result));
-            reply_result_.store(static_cast<uint8_t>(result));
-            reply_ticket_.store(pending.ticket);
-            xSemaphoreGive(reply_);
-            continue;
-        }
-
-        if (pending.kind==Kind::Memory) {
-            MemoryEvent memory=pending.memory;
-            if (!memory.id) memory.id=NextLocalEventId(ledger_.Generation());
-            if (!memory.day) memory.day=Day();
-            const CommitResult result=memory.id ? ledger_.RecordMemory(memory)
-                                                : CommitResult::Rejected;
-            if (result==CommitResult::StorageError) {
-                has_retry=true;  // same id: the generation did not move
-                if (++storage_failures==1 || storage_failures%60==0)
-                    ESP_LOGW(kTag,"Atomic Pet memory persist blocked; retry later");
-                vTaskDelay(kRetry);
-                continue;
-            }
-            has_retry=false;
-            storage_failures=0;
-            if (result==CommitResult::Committed) PublishView();
-            ESP_LOGI(kTag,"PET_MEMORY_COMMIT kind=%u src=%u result=%s",
-                     static_cast<unsigned>(memory.kind),static_cast<unsigned>(memory.source),
-                     ResultName(result));
-            continue;
-        }
-
-        PetEvent event=pending.event;
-        if (pending.kind==Kind::Local) {
-            event.id=NextLocalEventId(ledger_.Generation());
-            if (!event.id) {
-                ESP_LOGE(kTag,"Local Pet event ID exhausted");
-                has_retry=false;
-                continue;
-            }
-        }
-
-        PetEffects effects{};
-        const bool was_empty=ledger_.PendingCount()==0;
-        const CommitResult result=ledger_.ApplyDurably(event,&effects,Day());
-        if (result==CommitResult::StorageError) {
-            has_retry=true;
-            if (++storage_failures==1 || storage_failures%60==0)
-                ESP_LOGW(kTag,"Atomic Pet persist blocked; retry later");
+        if (!has_retry && xQueueReceive(messages_,&pending,kPoll)!=pdTRUE) continue;
+        // On a storage failure the message stays at the head; no later
+        // message is processed until it commits.
+        has_retry=Process(pending,&storage_failures);
+        if (has_retry) {
             vTaskDelay(kRetry);
             continue;
         }
-        has_retry=false;
         storage_failures=0;
-        if (result==CommitResult::Committed) PublishView();
-        if (committed_) committed_(event,result,effects,ledger_.Snapshot(),context_);
-        if (result==CommitResult::Committed && was_empty) NotifyHead();
+        in_flight_.fetch_sub(1);  // done: committed, duplicate or rejected
     }
+}
+
+bool FreertosAtomicPetService::Process(const Message& pending, uint32_t* storage_failures) {
+    if (pending.kind==Kind::Ack) {
+        const PetDeviceBridge::ServerAck ack{
+            pending.message_id,pending.seq,pending.version,
+            pending.accepted,pending.duplicate
+        };
+        const auto result=ledger_.Acknowledge(ack,device_id_);
+        if (result==PetAtomicLedger::AckResult::StorageError) return true;
+        if (result==PetAtomicLedger::AckResult::Confirmed)
+            NotifyHead(); // now let transport process the next entry
+        // Wrong or rejected receipts leave the head unmodified. Network
+        // worker must retry its original immutable event, not forge ACK.
+        return false;
+    }
+
+    if (pending.kind==Kind::Parent) {
+        // Not retried: the parent menu shows the failure and keeps the
+        // committed settings (a later retry would surprise the parent).
+        xSemaphoreTake(parent_gate_,portMAX_DELAY);
+        if (pending.ticket<=abandoned_ticket_.load()) {
+            xSemaphoreGive(parent_gate_);
+            ESP_LOGW(kTag,"PET_LEDGER_PARENT result=abandoned");
+            return false;
+        }
+        const uint64_t id=NextLocalEventId(ledger_.Generation());
+        const CommitResult result=id ? ledger_.SetParentSettings(id,pending.parent)
+                                     : CommitResult::Rejected;
+        if (result==CommitResult::Committed) PublishView();
+        reply_result_.store(static_cast<uint8_t>(result));
+        reply_ticket_.store(pending.ticket);
+        xSemaphoreGive(reply_);
+        xSemaphoreGive(parent_gate_);
+        ESP_LOGI(kTag,"PET_LEDGER_PARENT result=%s",ResultName(result));
+        return false;
+    }
+
+    if (pending.kind==Kind::Memory) {
+        MemoryEvent memory=pending.memory;
+        if (!memory.id) memory.id=NextLocalEventId(ledger_.Generation());
+        if (!memory.day) memory.day=Day();
+        const CommitResult result=memory.id ? ledger_.RecordMemory(memory)
+                                            : CommitResult::Rejected;
+        if (result==CommitResult::StorageError) {
+            // Same id on retry: the generation did not move.
+            if (++*storage_failures==1 || *storage_failures%60==0)
+                ESP_LOGW(kTag,"Atomic Pet memory persist blocked; retry later");
+            return true;
+        }
+        if (result==CommitResult::Committed) PublishView();
+        ESP_LOGI(kTag,"PET_MEMORY_COMMIT kind=%u src=%u result=%s",
+                 static_cast<unsigned>(memory.kind),static_cast<unsigned>(memory.source),
+                 ResultName(result));
+        return false;
+    }
+
+    PetEvent event=pending.event;
+    if (pending.kind==Kind::Local) {
+        event.id=NextLocalEventId(ledger_.Generation());
+        if (!event.id) {
+            ESP_LOGE(kTag,"Local Pet event ID exhausted");
+            return false;
+        }
+    }
+
+    PetEffects effects{};
+    const bool was_empty=ledger_.PendingCount()==0;
+    const CommitResult result=ledger_.ApplyDurably(event,&effects,Day());
+    if (result==CommitResult::StorageError) {
+        if (++*storage_failures==1 || *storage_failures%60==0)
+            ESP_LOGW(kTag,"Atomic Pet persist blocked; retry later");
+        return true;
+    }
+    if (result==CommitResult::Committed) PublishView();
+    if (committed_) committed_(event,result,effects,ledger_.Snapshot(),context_);
+    if (result==CommitResult::Committed && was_empty) NotifyHead();
+    return false;
 }
 
 }  // namespace kid_app

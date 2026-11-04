@@ -475,7 +475,7 @@ BOARD_WORKER = r'''
                 "tuantuan-board", &PetCommitted, nullptr, this, &pet_ledger_restored_);
             const auto migration = pet_service_.Migration();
             const auto& s = pet_ledger_restored_;
-            const auto memory = pet_service_.MemoryNow();
+            const auto today = pet_service_.TodayNow();  // small copy: 4 KiB boot stack
             ESP_LOGI(TAG, "PET_LEDGER_READY ok=%d migration=%s failure=%s flags=0x%02x "
                      "gen=%llu fed=%u mode=%d mood=%d today=%u feeds=%u temperament=%u",
                      pet_ledger_ready_ ? 1 : 0,
@@ -484,8 +484,8 @@ BOARD_WORKER = r'''
                      static_cast<unsigned>(migration.flags),
                      static_cast<unsigned long long>(pet_service_.GenerationNow()),
                      static_cast<unsigned>(s.interaction_count), static_cast<int>(s.mode),
-                     static_cast<int>(s.mood), static_cast<unsigned>(memory.Today().day),
-                     static_cast<unsigned>(memory.Today().feeds),
+                     static_cast<int>(s.mood), static_cast<unsigned>(today.day),
+                     static_cast<unsigned>(today.feeds),
                      static_cast<unsigned>(pet_service_.TemperamentNow()));
             if (pet_ledger_ready_) {
                 // V3-06 settings now live in the ledger (schema v3).
