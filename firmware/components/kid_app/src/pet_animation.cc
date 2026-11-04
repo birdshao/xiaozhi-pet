@@ -10,6 +10,9 @@ constexpr AnimationFrame kGreet[] = {{ScenePose::Wave, 400}, {ScenePose::Still, 
 constexpr AnimationFrame kFeed[] = {
     {ScenePose::Hearts1, 200}, {ScenePose::Hearts2, 700}, {ScenePose::Still, 0}};
 constexpr AnimationFrame kSleepIn[] = {{ScenePose::Zzz2, 300}, {ScenePose::Still, 0}};
+constexpr AnimationFrame kGiggle[] = {{ScenePose::Giggle, 600}, {ScenePose::Still, 0}};
+constexpr AnimationFrame kDizzy[] = {
+    {ScenePose::Dizzy1, 200}, {ScenePose::Dizzy2, 500}, {ScenePose::Still, 0}};
 
 template <size_t N>
 uint8_t Use(const AnimationFrame (&table)[N], const AnimationFrame** frames) {
@@ -25,6 +28,8 @@ uint8_t AnimationFrames(Animation animation, const AnimationFrame** frames) {
         case Animation::Greet: return Use(kGreet, frames);
         case Animation::Feed: return Use(kFeed, frames);
         case Animation::SleepIn: return Use(kSleepIn, frames);
+        case Animation::Giggle: return Use(kGiggle, frames);
+        case Animation::Dizzy: return Use(kDizzy, frames);
         case Animation::None: break;
     }
     *frames = nullptr;
@@ -37,6 +42,8 @@ const char* AnimationName(Animation animation) {
         case Animation::Greet: return "greet";
         case Animation::Feed: return "feed";
         case Animation::SleepIn: return "sleep_in";
+        case Animation::Giggle: return "giggle";
+        case Animation::Dizzy: return "dizzy";
         case Animation::None: break;
     }
     return "none";

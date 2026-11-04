@@ -8,7 +8,8 @@ namespace kid_app {
 
 // Short ePaper animations: every frame is one partial refresh (~0.62 s on
 // V1 hardware), so each runs 2-3 frames and ends on the resting picture.
-enum class Animation : uint8_t { None, Blink, Greet, Feed, SleepIn };
+// Giggle: gentle shake. Dizzy: hard shake (a reaction, never a reward).
+enum class Animation : uint8_t { None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy };
 
 struct AnimationFrame {
     ScenePose pose;

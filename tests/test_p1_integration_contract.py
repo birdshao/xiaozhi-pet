@@ -157,6 +157,34 @@ class DisplayOverlayTest(unittest.TestCase):
         for marker in ('PET_SLEEP_REQUESTED', 'PET_SLEEP_CANCELLED', 'PET_SLEEP_POWEROFF'):
             self.assertIn(marker, patched)
 
+    def test_gestures_and_rhythm_wiring(self):
+        patched = self._board()
+        for header in ('gesture_detector.h', 'rhythm_scheduler.h'):
+            self.assertIn(f'#include "kid_app/{header}"', patched)
+        diag = patched[patched.index('void RunDiagLoop()'):]
+        diag = diag[:diag.index('\n    }\n')]
+        # IMU windows feed the detector only while Pet mode is awake.
+        self.assertIn('gesture_detector_.OnWindow(s, now)', diag)
+        self.assertIn('pet_mode_.load() && !sleep_active_.load()', diag)
+        self.assertIn('UpdateRhythm()', diag)
+        gesture = patched[patched.index('void HandleGesture('):]
+        gesture = gesture[:gesture.index('\n    }\n')]
+        self.assertIn('kDeviceStateIdle', gesture)
+        # ADR-011: only pickup is a durable action; shakes are reactions.
+        self.assertIn('PostLocal(kid_app::PetAction::Pickup)', gesture)
+        self.assertEqual(gesture.count('PostLocal('), 1)
+        self.assertIn('kid_app::Animation::Giggle', gesture)
+        self.assertIn('kid_app::Animation::Dizzy', gesture)
+        self.assertIn('face_down_.exchange(false)', gesture)
+        self.assertIn('HandleGesture(static_cast<kid_app::Gesture>(step.ms), "selftest")', patched)
+        # ADR-010: sleep arms the next morning unless a self-test alarm is set.
+        off = patched[patched.index('void PowerOffForSleep()'):]
+        off = off[:off.index('\n    }\n')]
+        self.assertLess(off.index('sleep_alarm_s_.exchange(0)'), off.index('SecondsUntilWake()'))
+        self.assertIn('ArmRtcAlarmIn(wake_s)', off)
+        # Quiet hours lower the prompts.
+        self.assertIn('quiet_hours_.load() ?', patched)
+
     def test_animations_and_deferred_cleanup(self):
         patched = self._board()
         self.assertIn('#include "kid_app/pet_animation.h"', patched)
@@ -257,7 +285,7 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('clip.Copy(offset, chunk, 480)', player)
         # Self-test "volume" scales prompt PCM in RAM, before it is queued;
         # the XiaoZhi codec volume (persisted in NVS) is never changed.
-        self.assertLess(player.index('ScalePcm(chunk, n, prompt_volume_pct_.load())'),
+        self.assertLess(player.index('ScalePcm(chunk, n, PromptVolumePct())'),
                         player.index('TryQueueLocalStoryPcm(session, chunk, n)'))
         self.assertNotIn('SetOutputVolume', patched)
         self.assertIn('case kid_app::SelfTestOp::Volume:', patched)
