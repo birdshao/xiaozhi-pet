@@ -3,12 +3,14 @@
 namespace kid_app {
 
 bool RefreshPlanner::TouchesRail(const SceneModel& a, const SceneModel& b) {
-    return a.home_selection != b.home_selection;
+    return a.home_selection != b.home_selection ||
+           a.game.RailDiffers(b.game);  // game answer cards share the rail budget
 }
 
 bool RefreshPlanner::TouchesPet(const SceneModel& a, const SceneModel& b) {
     return a.emotion != b.emotion || a.pose != b.pose || a.book_page != b.book_page ||
-           a.parent != b.parent;  // parent menu rows share the pet budget
+           a.parent != b.parent ||  // parent menu rows share the pet budget
+           a.game.QuestionDiffers(b.game);  // so does the game question area
 }
 
 bool RefreshPlanner::TouchesStatus(const SceneModel& a, const SceneModel& b) {

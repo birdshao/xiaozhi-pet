@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|parent|parent_edit> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|parent|parent_edit|game|game_right|game_count> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -45,6 +45,24 @@ int main(int argc, char** argv) {
         model.parent.settings.motion_enabled = false;
         model.parent.cursor = mode == "parent" ? 1 : 0;
         model.parent.editing = mode == "parent_edit";
+    }
+    else if (mode == "game" || mode == "game_right" || mode == "game_count") {  // V4-06
+        using kid_app::GameArt;
+        auto id = [](GameArt art) { return static_cast<uint16_t>(art); };
+        model.kind = kid_app::SceneKind::Game;
+        model.game.round = 2;
+        model.game.rounds = 3;
+        model.game.option_count = 3;
+        if (mode == "game_count") {
+            model.game.question_art = id(GameArt::Blocks4);
+            model.game.options = {id(GameArt::Dots2), id(GameArt::Dots4), id(GameArt::Dots5)};
+            model.game.highlight = 0;
+        } else {
+            model.game.question_art = id(GameArt::Listen);
+            model.game.options = {id(GameArt::Cat), id(GameArt::Dog), id(GameArt::Bird)};
+            model.game.highlight = 1;
+        }
+        if (mode == "game_right") model.game.feedback = kid_app::GameFeedback::Right;
     }
     else if (mode == "reader") {
         model.kind = kid_app::SceneKind::Reader;

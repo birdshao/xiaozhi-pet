@@ -8,6 +8,9 @@ on:
       - 'tests/cpp/test_sound_pack.cc'
       - 'tools/sound_pack.py'
       - 'tools/make_prompt_audio.py'
+      - 'tests/cpp/test_mini_game.cc'
+      - 'tests/cpp/test_game_pack_reader.cc'
+      - 'tests/fixtures/kpg1/**'
       - 'scripts/p2_test.sh'
       - '.github/workflows/p2-pet-engine.yml'
   workflow_dispatch:

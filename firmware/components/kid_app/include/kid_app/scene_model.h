@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "kid_app/game_view.h"
 #include "kid_app/parent_menu.h"
 #include "kid_app/status_bar.h"
 
@@ -13,7 +14,8 @@ namespace kid_app {
 class StoryPackReader;
 // Sleep: shown before PMIC power-off and kept by the ePaper while off.
 // Parent: the V3-06 on-device parent menu (draws SceneModel::parent).
-enum class SceneKind : uint8_t { Home, Reader, Sleep, Parent };
+// Game: a V4-06 mini game round (draws SceneModel::game).
+enum class SceneKind : uint8_t { Home, Reader, Sleep, Parent, Game };
 // Listening / Thinking / Speaking: voice-session faces (V6-01, see
 // voice_face.h); like every expression they stay above the action rail.
 // Packed in 4 bits (PackScene): at most 16 emotions.
@@ -52,6 +54,9 @@ struct SceneModel {
     // Parent menu rows (SceneKind::Parent only). Not packed either: the
     // board never keeps a parent scene in its packed pet scene word.
     ParentView parent{};
+    // Mini game round (SceneKind::Game only). Not packed either: the board
+    // keeps the game in its own session, like the parent menu.
+    GameView game{};
 };
 
 // One-word scene snapshot shared between board tasks (atomic<uint32_t>):
@@ -102,6 +107,9 @@ public:
     static bool InStatusBox(int x, int y) {
         return y >= 0 && y < kStatusBottom && (x < kStatusLeftEnd || x >= kStatusRightStart);
     }
+
+    // Game scene (V4-06): question area above, answer cards below.
+    static constexpr int kGameRailTop = 296;
 
     static void Render(const SceneModel& model, MonoFrame& output);
 };

@@ -280,3 +280,25 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/tests/cpp/test_parent_settings.cc" \
   -o "$BUILD/test_parent_settings"
 "$BUILD/test_parent_settings"
+
+# V4-06 mini games: built-in rounds, deterministic sessions, rewards only
+# for correct dial answers, growth memory, tones, game scene and its
+# refresh regions; KPG1 game packs read from the golden pack the tool made.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_refresh_gate.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_mini_game.cc" \
+  -o "$BUILD/test_mini_game"
+"$BUILD/test_mini_game"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/game_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_game_pack_reader.cc" \
+  -o "$BUILD/test_game_pack_reader"
+"$BUILD/test_game_pack_reader" "$ROOT/tests/fixtures/kpg1"

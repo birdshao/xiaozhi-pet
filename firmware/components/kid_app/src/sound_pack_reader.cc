@@ -130,15 +130,17 @@ bool SoundPackReader::ReadPcm(const SoundClipInfo& clip, uint32_t position, void
     return file_->ReadAt(clip.offset + position, target, bytes);
 }
 
-bool SoundPackFilePort::Open(const char* base, const char* pack_id) {
+bool SoundPackFilePort::Open(const char* base, const char* pack_id, const char* extension) {
     Close();
-    if (!base || !ValidPackId(pack_id)) return false;
+    if (!base || !ValidPackId(pack_id) || !extension ||
+        (std::strcmp(extension, "kps") != 0 && std::strcmp(extension, "kpg") != 0))
+        return false;
     const size_t root_len = std::strlen(base);
     if (root_len < 2 || root_len > 150 || base[0] != '/' || std::strstr(base, "..") ||
         std::strchr(base, '\\'))
         return false;
     char full[256]{};
-    const int n = std::snprintf(full, sizeof(full), "%s/%s.kps", base, pack_id);
+    const int n = std::snprintf(full, sizeof(full), "%s/%s.%s", base, pack_id, extension);
     if (n < 1 || static_cast<size_t>(n) >= sizeof(full)) return false;
     FILE* fp = std::fopen(full, "rb");
     if (!fp) return false;
