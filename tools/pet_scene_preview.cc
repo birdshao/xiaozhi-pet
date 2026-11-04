@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|reader|sleep> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|reader|sleep|status> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -17,6 +17,15 @@ int main(int argc, char** argv) {
     else if (mode == "curious") model.emotion = kid_app::Emotion::Curious;
     else if (mode == "surprised") model.emotion = kid_app::Emotion::Surprised;
     else if (mode == "sleep") model.kind = kid_app::SceneKind::Sleep;
+    else if (mode == "status") {  // V2-05 status band with every field shown
+        model.status.hour = 7;
+        model.status.minute = 42;
+        model.status.temp_c = 24;
+        model.status.battery_bars = 3;
+        model.status.charging = true;
+        model.status.quiet = true;
+        model.status.network = kid_app::NetworkState::Online;
+    }
     else if (mode == "reader") {
         model.kind = kid_app::SceneKind::Reader;
         model.emotion = kid_app::Emotion::Happy;

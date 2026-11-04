@@ -65,6 +65,19 @@ int main() {
         const DirectorStep step = d.Idle(moved, now += 100, true, false);
         assert(step.kind == Kind::Frame && step.scene.home_selection == 4 &&
                step.scene.pose == ScenePose::Hearts1 && step.animation == Animation::Feed);
+        // ... and the status band: a new clock value is not a new base, so
+        // it neither cancels the animation nor blocks a pending request.
+        d.FrameShown(now += 620);
+        SceneModel ticked = moved;
+        ticked.status.hour = 7;
+        ticked.status.minute = 43;
+        const DirectorStep next = d.Idle(ticked, now += 300, true, false);
+        assert(next.kind == Kind::Frame && next.scene.pose == ScenePose::Hearts2 &&
+               next.scene.status == ticked.status && d.Active());
+        PetAnimationDirector fresh;
+        fresh.SceneShown(happy, now);
+        fresh.Request(Animation::Greet, happy, now);
+        assert(fresh.Idle(ticked, now += 100, true, false).scene.pose == ScenePose::Wave);
     }
 
     // Shake reactions play on the home screen: giggle, then dizzy.

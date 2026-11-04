@@ -172,3 +172,18 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_gesture_detector.cc" \
   -o "$BUILD/test_gesture_detector"
 "$BUILD/test_gesture_detector"
+
+# V2-05 status bar: packed status word, readings -> shown values with
+# hysteresis, SHTC3 CRC and the once-a-minute status refresh schedule.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/status_bar.cc" \
+  "$ROOT/tests/cpp/test_status_bar.cc" \
+  -o "$BUILD/test_status_bar"
+"$BUILD/test_status_bar"
+
+# Pet animations, idle blink and deferred ghosting cleanup (director).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_animation.cc" \
+  "$ROOT/tests/cpp/test_pet_animation.cc" \
+  -o "$BUILD/test_pet_animation"
+"$BUILD/test_pet_animation"

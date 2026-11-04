@@ -78,5 +78,17 @@ int main() {
     assert(output.pose == ScenePose::Zzz1);
     assert(gate.Complete(true, 35100));
     assert(!gate.Request(zzz));
+
+    // The status band is part of the picture too (V2-05; the board fills
+    // it in on the ePaper task, so published scenes leave it unknown).
+    SceneModel clock = sleepy_feed;
+    clock.status.hour = 7;
+    clock.status.minute = 42;
+    assert(gate.Request(clock));
+    assert(gate.Acquire(41000, &output));
+    assert(output.status == clock.status);
+    assert(gate.Complete(true, 41100));
+    assert(!gate.Request(clock));
+    assert(gate.Request(sleepy_feed));
     std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }

@@ -535,6 +535,87 @@ void ActionRail(MonoFrame& f, uint8_t selection) {
     }
 }
 
+// ---- Status band (V2-05) ---------------------------------------------------------
+// No fonts on the device: numbers are chunky seven-segment digits built from
+// solid rectangles; icons are strokes, disks and rings. Everything stays in
+// the two SceneComposer status boxes, so a status change is a small partial
+// refresh that never touches the pet or the rail.
+
+void FillRect(MonoFrame& f, int x, int y, int w, int h, bool ink = true) {
+    for (int py = std::max(y, 0); py < std::min(y + h, kH); ++py) Span(f, x, x + w - 1, py, ink);
+}
+
+constexpr uint8_t kSegA = 0x40, kSegB = 0x20, kSegC = 0x10, kSegD = 0x08, kSegE = 0x04,
+                  kSegF = 0x02, kSegG = 0x01;  // a top, clockwise, g middle
+constexpr uint8_t kDigitSegments[10] = {0x7E, 0x30, 0x6D, 0x79, 0x33,
+                                        0x5B, 0x5F, 0x70, 0x7F, 0x7B};
+constexpr int kDigitW = 18, kDigitH = 30, kSegT = 5, kStatusY = 5;
+
+void SevenSegment(MonoFrame& f, int x, int y, uint8_t segments, int w = kDigitW) {
+    const int h = kDigitH, t = kSegT, half = h / 2;
+    if (segments & kSegA) FillRect(f, x, y, w, t);
+    if (segments & kSegB) FillRect(f, x + w - t, y, t, half + 1);
+    if (segments & kSegC) FillRect(f, x + w - t, y + half, t, h - half);
+    if (segments & kSegD) FillRect(f, x, y + h - t, w, t);
+    if (segments & kSegE) FillRect(f, x, y + half, t, h - half);
+    if (segments & kSegF) FillRect(f, x, y, t, half + 1);
+    if (segments & kSegG) FillRect(f, x, y + half - t / 2, w, t);
+}
+
+void Digit(MonoFrame& f, int x, int y, int value) {
+    SevenSegment(f, x, y, kDigitSegments[Clamp(value, 0, 9)]);
+}
+
+// Left box: HH:MM, quiet-hours moon, Wi-Fi.
+void StatusLeft(MonoFrame& f, const StatusBar& s) {
+    if (s.hour < 24 && s.minute < 60) {
+        Digit(f, 14, kStatusY, s.hour / 10);
+        Digit(f, 37, kStatusY, s.hour % 10);
+        FillRect(f, 60, kStatusY + 7, kSegT, kSegT);
+        FillRect(f, 60, kStatusY + 18, kSegT, kSegT);
+        Digit(f, 71, kStatusY, s.minute / 10);
+        Digit(f, 94, kStatusY, s.minute % 10);
+    }
+    if (s.quiet) {  // crescent moon
+        Disk(f, 136, 20, 13);
+        Disk(f, 143, 14, 11, false);
+    }
+    if (s.network != NetworkState::Unknown) {
+        const int cx = 190, cy = 32;
+        Disk(f, cx, cy - 2, 3);
+        for (int r : {9, 16, 23}) Arc(f, cx, cy, r, r, 225, 315, 4);
+        if (s.network == NetworkState::Offline) {  // struck through
+            Stroke(f, 172, 8, 208, 34, 9, false);
+            Stroke(f, 172, 8, 208, 34, 4);
+        }
+    }
+}
+
+// Right box: temperature in degC, charging bolt, battery with four bars.
+void StatusRight(MonoFrame& f, const StatusBar& s) {
+    const int temp = s.temp_c;
+    if (s.temp_c != StatusBar::kNoTemp && temp >= -9 && temp <= 99) {
+        if (temp < 0) SevenSegment(f, 638, kStatusY, kSegG);
+        else if (temp >= 10) Digit(f, 638, kStatusY, temp / 10);
+        Digit(f, 661, kStatusY, std::abs(temp) % 10);
+        Ring(f, 690, kStatusY + 5, 5, 5, 2);                               // degree
+        SevenSegment(f, 699, kStatusY, kSegA | kSegD | kSegE | kSegF, 14);  // C
+    }
+    if (s.battery_bars > StatusBar::kBatteryBars) return;
+    RoundRectRing(f, 744, 7, 42, 26, 4, 3);
+    FillRect(f, 786, 14, 4, 12);  // terminal nub
+    for (int i = 0; i < s.battery_bars; ++i) FillRect(f, 749 + i * 9, 12, 7, 16);
+    if (s.charging) {
+        FillTriangle(f, 734, 4, 720, 22, 731, 22);
+        FillTriangle(f, 723, 17, 736, 17, 722, 36);
+    }
+}
+
+void StatusBand(MonoFrame& f, const StatusBar& status) {
+    StatusLeft(f, status);
+    StatusRight(f, status);
+}
+
 // ---- Scenes --------------------------------------------------------------------
 
 void HomeScene(MonoFrame& f, const SceneModel& model) {
@@ -550,6 +631,7 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     Ring(f, 400, 356, 200, 20, 3);
     SittingCat(f, 400, 158, model.emotion, model.pose);
     ActionRail(f, model.home_selection);
+    StatusBand(f, model.status);
 }
 
 void ReaderScene(MonoFrame& f, const SceneModel& model) {

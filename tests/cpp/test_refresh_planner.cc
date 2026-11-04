@@ -95,6 +95,67 @@ int main() {
         assert(!planner.NeedsCleanup());
     }
 
+    // Status band (V2-05): its own counter and a larger default budget (the
+    // clock ticks every minute); status changes count against nothing else.
+    {
+        static_assert(RefreshPlanner::kDefaultStatusSoftPartials >=
+                          RefreshPlanner::kDefaultSoftPartials, "about an hour of clock ticks");
+        static_assert(RefreshPlanner::kDefaultStatusHardPartials >
+                          RefreshPlanner::kDefaultStatusSoftPartials, "hard budget above soft");
+        RefreshPlanner planner(2, 4, 3, 5);
+        SceneModel shown = home_story;
+        planner.Completed(shown, RefreshMode::Full, true);
+        auto tick = [&](uint8_t minute) {
+            SceneModel next = shown;
+            next.status.hour = 7;
+            next.status.minute = minute;
+            assert(planner.Plan(next) == RefreshMode::Partial);
+            planner.Completed(next, RefreshMode::Partial, true);
+            shown = next;
+        };
+        tick(0);
+        tick(1);
+        assert(planner.StatusPartials() == 2 && !planner.NeedsCleanup());
+        tick(2);
+        assert(planner.StatusPartials() == 3 && planner.NeedsCleanup());
+        assert(planner.RailPartials() == 0 && planner.PetPartials() == 0);
+        // Rail and pet changes under an unchanged status leave it alone.
+        SceneModel feed = shown;
+        feed.home_selection = 3;
+        planner.Completed(feed, RefreshMode::Partial, true);
+        assert(planner.StatusPartials() == 3 && planner.RailPartials() == 1);
+        shown = feed;
+        tick(3);
+        tick(4);
+        assert(planner.StatusPartials() == 5);
+        // Hard budget: the next status change is full; the pet's is not.
+        SceneModel next = shown;
+        next.status.minute = 5;
+        assert(planner.Plan(next) == RefreshMode::Full);
+        SceneModel happy = shown;
+        happy.emotion = Emotion::Happy;
+        assert(planner.Plan(happy) == RefreshMode::Partial);
+        planner.Completed(next, RefreshMode::Full, true);
+        assert(planner.StatusPartials() == 0 && planner.RailPartials() == 0);
+        assert(!planner.NeedsCleanup());
+        // A failed refresh starts every region over.
+        shown = next;
+        tick(6);
+        SceneModel failed = shown;
+        failed.status.minute = 7;
+        planner.Completed(failed, RefreshMode::Partial, false);
+        assert(planner.StatusPartials() == 0 && planner.Plan(failed) == RefreshMode::Full);
+        // Default budgets.
+        RefreshPlanner defaults;
+        defaults.Completed(home_story, RefreshMode::Full, true);
+        SceneModel clock = home_story;
+        for (int i = 0; i < RefreshPlanner::kDefaultStatusSoftPartials; ++i) {
+            clock.status.minute = static_cast<uint8_t>(i % 2);
+            defaults.Completed(clock, RefreshMode::Partial, true);
+        }
+        assert(defaults.NeedsCleanup() && defaults.Plan(home_feed) == RefreshMode::Partial);
+    }
+
     // When another owner (XiaoZhi LVGL) drew in between, start over.
     {
         RefreshPlanner planner;
