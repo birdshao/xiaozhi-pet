@@ -140,6 +140,12 @@ void TestReaderRejectsDamage() {
     }
     {
         auto b = good;
+        std::memcpy(b.data(), "KPB2", 4);  // a KPB2 book (or reserved type)
+        Reseal(b);
+        expect_bad(b);
+    }
+    {
+        auto b = good;
         Put16(b, 4, 2);
         Reseal(b);
         expect_bad(b);  // unknown version

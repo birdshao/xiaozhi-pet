@@ -72,6 +72,7 @@ class FormatTests(unittest.TestCase):
         bad(blob[:-2], "header sizes")
         bad(blob + b"\0\0\0\0", "header sizes")
         bad(b"KPB1" + bytes(blob[4:]), "not a KPS1")
+        bad(b"KPB2" + bytes(blob[4:]), "not a KPS1")
 
     def test_encoder_limits(self):
         with self.assertRaisesRegex(ValueError, "1..96"):
@@ -82,6 +83,18 @@ class FormatTests(unittest.TestCase):
             encode({1000: b"\0\0"})
         with self.assertRaisesRegex(ValueError, "bad id"):
             encode({1: b"\0"})
+
+
+class Kpb2CoexistenceTests(unittest.TestCase):
+    def test_sound_packs_and_books_never_open_each_other(self):
+        from tools import kpb2
+        # KPB2 reserved type 2 for sound packs; KPS1 keeps its own magic and
+        # names itself with that reserved type in the manifest.
+        self.assertEqual(kpb2.PACKAGE_TYPES["soundpack"], 2)
+        blob = encode({1: b"\x01\x00" * 300})
+        self.assertNotEqual(blob[:4], b"KPB2")
+        with self.assertRaises(ValueError):
+            kpb2.parse(blob)
 
 
 class CatalogTests(unittest.TestCase):
@@ -147,6 +160,7 @@ class PackTests(unittest.TestCase):
         saved = json.loads(self.out.with_suffix(".manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(saved, manifest)
         self.assertEqual(saved["sd_path"], "/sounds/default.kps")
+        self.assertEqual(saved["package_type"], "soundpack")
         self.assertTrue(saved["reviewed"])
         self.assertFalse(saved["placeholder"])
         self.assertEqual([c["id"] for c in saved["clips"]], [1, 211])

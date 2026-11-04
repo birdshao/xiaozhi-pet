@@ -143,7 +143,7 @@ python -m tools.sound_pack demo --output build/sound-smoke
 - 数据：去掉 RIFF 头的 24 kHz 单声道 little-endian PCM16，每段从 4 字节对齐处开始，中间只有补零，最后一段结束即文件结束。整包 ≤ 8 MiB。
 - 片段 id：`1 + 首页项序号`（1 聊天 … 5 睡觉）是选项名；`100–999` 是 `personality.cc` 话术 id；6–99 留给以后的音效。
 
-为什么不叫 KPB2：KPB2 是绘本格式，正在另一个分支里做；声音包用自己的魔数 `KPS1`、自己的目录 `/sounds/`，只和绘本共用只读文件接口 `StoryPackFile` 与 SD 挂载，互不影响。CRC32 只防随机损坏，不是签名，不防故意篡改。
+为什么不叫 KPB2：KPB2（`docs/V4_KPB2_CONTENT_FORMAT.md`）是绘本格式，给声音包保留了包类型值 `2 soundpack`，但规定“别的包可以用自己的魔数和格式，只有共用 KPB2 外壳才必须用保留类型值”。声音包用自己的魔数 `KPS1`、自己的目录 `/sounds/`，manifest 里的 `package_type` 写 `soundpack`（与保留值同名）；KPB 读取器看到 `KPS1` 魔数会拒绝，KPS1 读取器看到 `KPB1`/`KPB2` 也会拒绝（双方都有测试）。两者只共用只读文件接口 `StoryPackFile` 与 SD 挂载。CRC32 只防随机损坏，不是签名，不防故意篡改。
 
 ## 6. 还没做 / 待真机确认
 

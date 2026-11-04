@@ -241,7 +241,10 @@ def make_pack(clips_dir: Path, output: Path, *, reviewed: bool, revision: int = 
     entries.sort(key=lambda e: e["id"])
     missing = sorted(c.name for c in known.values() if c.id not in pcm)
     manifest = {
-        "format": "KPS1", "version": VERSION, "pack_id": output.stem,
+        # Own magic, so not a KPB2 package; the type name follows the value
+        # KPB2 reserved for sound packs (tools/kpb2.py PACKAGE_TYPES).
+        "format": "KPS1", "version": VERSION, "package_type": "soundpack",
+        "pack_id": output.stem,
         "revision": revision, "bytes": len(blob),
         "sha256": hashlib.sha256(blob).hexdigest(),
         "reviewed": True, "placeholder": placeholder,
