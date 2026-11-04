@@ -172,3 +172,19 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_gesture_detector.cc" \
   -o "$BUILD/test_gesture_detector"
 "$BUILD/test_gesture_detector"
+
+# V3-03 PowerManager (Active/Idle/Nap/Off, night and battery rules) and the
+# V3-04 morning window: back to sleep 60 s after an alarm wake.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/power_manager.cc" \
+  "$ROOT/tests/cpp/test_power_manager.cc" \
+  -o "$BUILD/test_power_manager"
+"$BUILD/test_power_manager"
+
+# Short ePaper animations (incl. the V3-04 good-morning one), idle blink
+# and deferred ghosting cleanup.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_animation.cc" \
+  "$ROOT/tests/cpp/test_pet_animation.cc" \
+  -o "$BUILD/test_pet_animation"
+"$BUILD/test_pet_animation"

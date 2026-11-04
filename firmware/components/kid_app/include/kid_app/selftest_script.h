@@ -23,10 +23,14 @@ namespace kid_app {
 //   volume <percent>        prompt volume 0..100 for the rest of this boot (RAM only)
 //   gesture <name>          as if the IMU detected it: pickup, gentle, hard,
 //                           facedown, faceup (tests the wiring, not the thresholds)
+//   morning                 as after an RTC-alarm power-on (V3-04): Pet mode,
+//                           good-morning picture, back to sleep after 60 s
+//                           without input. Only after an "alarm" step, so the
+//                           power-off it leads to always wakes the board again.
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
-enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture };
+enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning };
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;

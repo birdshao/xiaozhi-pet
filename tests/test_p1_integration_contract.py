@@ -476,5 +476,125 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertNotIn('pdMS_TO_TICKS(1)', diag)
         self.assertIn('measure, sizeof(measure), env, sizeof(env), 40)', diag)
 
+    @staticmethod
+    def _body(text, start):
+        body = text[text.index(start):]
+        return body[:body.index('\n    }\n')]
+
+    def test_v3_power_manager_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/power_manager.h"', patched)
+        self.assertIn('kid_app::PowerManager power_;', patched)
+        # pet_input owns it: inputs first, then the timers, then the sleep flow.
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('HandleInputEvent(event)'), loop.index('UpdatePower(state)'))
+        self.assertLess(loop.index('UpdatePower(state)'), loop.index('sleep_flow_.Tick(NowMs())'))
+        # Every input is activity, before the sleep flow sees it; only a dial
+        # touch that ends a nap / the morning is swallowed.
+        handle = self._body(patched, 'void HandleInputEvent(')
+        self.assertLess(handle.index('power_.OnActivity(NowMs())'),
+                        handle.index('sleep_flow_.OnInput('))
+        self.assertIn('IsDialInput(event.kind)', handle)
+        self.assertIn('power_save_timer_->WakeUp()', handle)
+        # Gestures from pet_boot_diag only poke; pet_input applies it.
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertIn('power_poke_.store(true)', gesture)
+        update = self._body(patched, 'void UpdatePower(')
+        self.assertIn('power_poke_.exchange(false)', update)
+        self.assertIn('state != kDeviceStateIdle || sleep_flow_.Active()', update)
+        # Idle power-off only on battery and never during a scripted trial.
+        self.assertIn('on_battery_.load() && !selftest_seen_.load()', update)
+        self.assertIn('day_phase_.load()', update)
+        self.assertIn('power_.Tick(now, conditions)', update)
+        self.assertIn('power_.Reset(now)', update)
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertIn('on_battery_.store(pmic_ && pmic_->IsDischarging())', diag)
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        self.assertLess(run.index('selftest_seen_.store(true)'), run.index('PET_SELFTEST_START'))
+        # Power-off always goes through the sleep flow (picture, cancel
+        # window, RTC alarm), never straight to the PMIC.
+        events = self._body(patched, 'bool HandlePowerEvent(')
+        self.assertIn('HandleSleepAction(sleep_flow_.Request(NowMs()))', events)
+        self.assertNotIn('PowerOff', events.replace('PET_POWER', ''))
+        for marker in ('PET_POWER state=idle', 'PET_POWER state=nap', 'PET_POWER_SLEEP'):
+            self.assertIn(marker, events)
+        # Drowsy face and morning picture: no idle blink or cleanup.
+        idle = self._body(patched, 'static void PetIdle(')
+        self.assertIn('!self->napping_.load()', idle)
+        self.assertIn('!self->morning_shown_.load()', idle)
+        # The nap face is UI only: never a durable Pet action.
+        nap = self._body(patched, 'void PublishPowerScene(')
+        self.assertIn('kid_app::Emotion::Sleepy', nap)
+        self.assertNotIn('PostLocal', nap)
+
+    def test_v3_xiaozhi_power_save_timer_takeover(self):
+        from scripts.p1_integrate import patch_power_save_timer
+        upstream = ('    void InitializePowerSaveTimer() {\n'
+                    '        power_save_timer_ = new PowerSaveTimer(-1, 100, 300);\n'
+                    '        power_save_timer_->OnShutdownRequest([this]() {\n'
+                    '            GetDisplay()->SetChatMessage("system", "OFF");\n'
+                    '            vTaskDelay(pdMS_TO_TICKS(1000));\n'
+                    '            pmic_->PowerOff();\n'
+                    '        });\n')
+        patched = patch_power_save_timer(upstream)
+        body = patched[patched.index('OnShutdownRequest'):]
+        # In Pet mode the 300 s timer only restarts; outside it is unchanged.
+        self.assertLess(body.index('if (pet_mode_.load())'), body.index('"OFF"'))
+        self.assertLess(body.index('power_save_timer_->WakeUp();\n                return;'),
+                        body.index('pmic_->PowerOff()'))
+        self.assertIn('new PowerSaveTimer(-1, 100, 300)', patched)
+        with self.assertRaises(RuntimeError):
+            patch_power_save_timer('no anchor here')
+        import inspect
+        from scripts import p1_integrate
+        self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
+
+    def test_v3_morning_flow_wiring(self):
+        patched = self._board()
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        alarm = run[run.index('woke_by_alarm_.load() == 1'):run.index('heap_caps_malloc')]
+        # Alarm wake: good morning, unless a self-test alarm woke the board
+        # (the host restores it next: never power off with tomorrow's alarm).
+        self.assertLess(alarm.index('RtcWakeMark() == kSelfTestWakeMark'),
+                        alarm.index('RunMorningWake("alarm")'))
+        self.assertIn('PET_MORNING_SKIPPED reason=selftest_wake', alarm)
+        self.assertIn('MorningFallbackPowerOff()', alarm)
+        # Self-test "morning": the alarm-wake path without a power cycle,
+        # refused unless an alarm is still armed.
+        step = run[run.index('case kid_app::SelfTestOp::Morning:'):]
+        step = step[:step.index('break;')]
+        self.assertLess(step.index('!sleep_alarm_s_.load()'), step.index('RunMorningWake("selftest")'))
+        self.assertIn('PET_SELFTEST_ABORT reason=morning', step)
+        # Every sleep power-off records who wakes the board next.
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('sleep_alarm_s_.exchange(0)'), off.index('WriteRtcWakeMark('))
+        self.assertLess(off.index('WriteRtcWakeMark('), off.index('ArmRtcAlarmIn(wake_s)'))
+        self.assertIn('WriteRtcWakeMark(wake_s ? kSelfTestWakeMark : 0)', off)
+        self.assertIn('kid_app::Pcf85063::kRamByte', patched)
+        # Opening Pet mode for the wake shows the morning picture at once.
+        toggle = self._body(patched, 'void TogglePetRuntime()')
+        self.assertIn('morning_request_.load() || morning_shown_.load()', toggle)
+        self.assertIn('MorningScene()', toggle)
+        self.assertIn('kid_app::Animation::Morning', toggle)
+        scene = self._body(patched, 'kid_app::SceneModel MorningScene()')
+        self.assertIn('kid_app::ScenePose::Sunrise', scene)
+        self.assertIn('scene.kind = kid_app::SceneKind::Home', scene)
+        begin = self._body(patched, 'void BeginMorning(')
+        self.assertIn('power_.StartMorning(now)', begin)
+        self.assertIn('RequestAnimation(kid_app::Animation::Morning, scene)', begin)
+        self.assertIn('PET_MORNING_BEGIN', begin)
+        events = self._body(patched, 'bool HandlePowerEvent(')
+        self.assertIn('PET_MORNING_STAYED', events)
+        wake = self._body(patched, 'bool RunMorningWake(')
+        self.assertLess(wake.index('morning_request_.store(true)'), wake.index('RequestPetModeToggle()'))
+        self.assertIn('PET_MORNING_FALLBACK', wake)
+        # Fallback (Pet mode never opened): sleeping picture, tomorrow's
+        # alarm, then PMIC off; never in the middle of an OTA upgrade.
+        fallback = self._body(patched, 'void MorningFallbackPowerOff()')
+        self.assertLess(fallback.index('kDeviceStateUpgrading'), fallback.index('pmic_->PowerOff()'))
+        self.assertLess(fallback.index('ShowPetScene(scene)'), fallback.index('pmic_->PowerOff()'))
+        self.assertLess(fallback.index('ArmRtcAlarmIn(wake_s)'), fallback.index('pmic_->PowerOff()'))
+        self.assertIn('WriteRtcWakeMark(0)', fallback)
+
 if __name__ == "__main__":
     unittest.main()
