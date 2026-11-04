@@ -36,6 +36,10 @@ public:
     MonoFrame() { Clear(); }
     void Clear();
     void SetPixel(int x, int y, bool black);
+    // Row y, x0..x1 inclusive (clipped): paint the pixels whose bit is set
+    // in the repeating 8-pixel mask (0x80 = x % 8 == 0). Byte-wise, so a
+    // scene costs a few ms on the ESP32-S3 instead of per-pixel PSRAM writes.
+    void PaintSpan(int x0, int x1, int y, uint8_t mask, bool black);
     bool IsBlack(int x, int y) const;
     const std::array<uint8_t, kSize>& Data() const { return pixels_; }
 

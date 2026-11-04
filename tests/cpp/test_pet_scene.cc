@@ -26,6 +26,22 @@ int main() {
     assert(frame.IsBlack(799, 479));
     assert(!frame.IsBlack(-1, 0));
 
+    // Byte-wise spans: exact inclusive ends inside and across bytes, clipping,
+    // repeating masks, and painting white back.
+    {
+        MonoFrame span;
+        span.PaintSpan(3, 20, 5, 0xFF, true);
+        for (int x = 0; x < 30; ++x) assert(span.IsBlack(x, 5) == (x >= 3 && x <= 20));
+        assert(!span.IsBlack(10, 4) && !span.IsBlack(10, 6));
+        span.PaintSpan(-50, 2000, 7, 0xAA, true);  // every other pixel, clipped
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(span.IsBlack(x, 7) == (x % 2 == 0));
+        span.PaintSpan(5, 5, 5, 0xFF, false);
+        assert(!span.IsBlack(5, 5) && span.IsBlack(4, 5) && span.IsBlack(6, 5));
+        span.PaintSpan(9, 2, 9, 0xFF, true);  // empty
+        span.PaintSpan(0, 799, 480, 0xFF, true);  // off-frame row
+        for (int x = 0; x < MonoFrame::kWidth; ++x) assert(!span.IsBlack(x, 9));
+    }
+
     MonoFrame happy, sleepy, book;
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1}, happy);
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Sleepy, 1}, sleepy);
@@ -38,8 +54,8 @@ int main() {
     SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1}, book);
     assert(book.Data() == happy.Data());  // Rendering is deterministic.
 
-    // Home action rail: five 160 px slots on y 380..479; the selected slot
-    // gets a thick frame. Selection changes only touch the rail band.
+    // Home action rail: five 160 px card slots on y 380..479; the selected
+    // card is inverted (solid black). Selection changes only touch the rail.
     {
         static_assert(SceneComposer::kRailTop == 380, "rail band");
         static_assert(SceneComposer::kRailSlotWidth * 5 == MonoFrame::kWidth, "slots");
@@ -51,9 +67,9 @@ int main() {
             for (int x = 0; x < MonoFrame::kWidth; ++x)
                 assert(story.IsBlack(x, y) == feed.IsBlack(x, y));
         }
-        // Selected slot 1 (story): frame edges at x 160+6, y 386.
-        assert(story.IsBlack(166, 430) && !feed.IsBlack(166, 430));
-        assert(feed.IsBlack(486, 430) && !story.IsBlack(486, 430));
+        // Card interiors near the top-left corner: black only when selected.
+        assert(story.IsBlack(180, 400) && !feed.IsBlack(180, 400));
+        assert(feed.IsBlack(500, 400) && !story.IsBlack(500, 400));
         // Every slot shows an icon (some ink near its centre band).
         for (int slot = 0; slot < 5; ++slot) {
             bool ink = false;
@@ -65,7 +81,7 @@ int main() {
         // Out-of-range selection draws no highlight instead of crashing.
         MonoFrame none;
         SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 9}, none);
-        assert(!none.IsBlack(166, 430) && !none.IsBlack(486, 430));
+        assert(!none.IsBlack(180, 400) && !none.IsBlack(500, 400));
         // The pet face stays fully above the rail.
         for (int x = 0; x < MonoFrame::kWidth; ++x)
             assert(!story.IsBlack(x, SceneComposer::kRailTop - 2));
