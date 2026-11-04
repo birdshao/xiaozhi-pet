@@ -289,19 +289,20 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion,
              Eyes eyes = Eyes::ByEmotion, bool halo = false) {
     auto s = [scale](int d) { return d * scale / 100; };
     const int line = std::max(2, s(7));
+    const int perk = emotion == Emotion::Listening ? s(24) : 0;  // ears up, listening
     if (halo) {
         for (int side : {-1, 1})
-            FillTriangle(f, cx + side * s(130), cy - s(4), cx + side * s(106), cy - s(154),
+            FillTriangle(f, cx + side * s(130), cy - s(4), cx + side * s(106), cy - s(154) - perk,
                          cx + side * s(12), cy - s(88), false);
         FillEllipse(f, cx, cy, s(124) + 8, s(100) + 8, false);
     }
 
     // Ears: solid black triangles with a dithered inner ear.
     for (int side : {-1, 1}) {
-        FillTriangle(f, cx + side * s(118), cy - s(10), cx + side * s(100), cy - s(138),
+        FillTriangle(f, cx + side * s(118), cy - s(10), cx + side * s(100), cy - s(138) - perk,
                      cx + side * s(22), cy - s(84));
         const int ix0 = cx + side * s(96), iy0 = cy - s(40), ix1 = cx + side * s(92),
-                  iy1 = cy - s(108), ix2 = cx + side * s(46), iy2 = cy - s(78);
+                  iy1 = cy - s(108) - perk, ix2 = cx + side * s(46), iy2 = cy - s(78);
         FillTriangle(f, ix0, iy0, ix1, iy1, ix2, iy2, false);
         FillTriangle(f, ix0, iy0, ix1, iy1, ix2, iy2, true, 5);
     }
@@ -353,6 +354,15 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion,
                 Ring(f, x, ey, s(22), s(26), std::max(2, s(6)));
                 Disk(f, x, ey, std::max(2, s(9)));
                 break;
+            case Emotion::Listening:  // big eyes glancing towards the raised ear
+                FillEllipse(f, x, ey, s(20), s(24));
+                Disk(f, x + s(8), ey - s(8), std::max(1, s(7)), false);
+                Disk(f, x - s(5), ey + s(9), std::max(1, s(3)), false);
+                break;
+            case Emotion::Thinking:  // open rings, pupils looking up at the cloud
+                Ring(f, x, ey, s(21), s(24), std::max(2, s(6)));
+                Disk(f, x + s(5), ey - s(10), std::max(2, s(10)));
+                break;
             case Emotion::Curious:  // big shiny eyes glancing up
             case Emotion::Neutral:
             default: {
@@ -385,6 +395,17 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion,
         Arc(f, cx + s(11), cy + s(36), s(11), s(9), 0, 180, mw);
     } else if (emotion == Emotion::Curious) {
         Ring(f, cx + s(6), cy + s(54), s(8), s(8), mw);
+    } else if (emotion == Emotion::Speaking) {
+        // Round open mouth with a dithered tongue, under the "w" lips.
+        FillEllipse(f, cx, cy + s(56), s(17), s(16));
+        FillEllipse(f, cx, cy + s(64), s(10), s(6), false);
+        Shade(f, cx, cy + s(64), s(10), s(6), 6);
+        Arc(f, cx - s(11), cy + s(36), s(11), s(9), 0, 180, mw);
+        Arc(f, cx + s(11), cy + s(36), s(11), s(9), 0, 180, mw);
+    } else if (emotion == Emotion::Thinking) {
+        // Small pondering squiggle, a little off to the side.
+        Arc(f, cx - s(2), cy + s(52), s(8), s(5), 180, 360, mw);
+        Arc(f, cx + s(14), cy + s(52), s(8), s(5), 0, 180, mw);
     } else {
         // Classic cat "w" mouth.
         const int r = emotion == Emotion::Sleepy ? s(8) : s(11);
@@ -398,6 +419,15 @@ void Heart(MonoFrame& f, int cx, int cy, int r) {
     Disk(f, cx - r / 2, cy, r / 2 + 2);
     Disk(f, cx + r / 2, cy, r / 2 + 2);
     FillTriangle(f, cx - r - 1, cy + 2, cx + r + 1, cy + 2, cx, cy + r * 4 / 3);
+}
+
+// Thought cloud: overlapping lobes with one shared outline, three dots inside.
+void ThoughtCloud(MonoFrame& f, int cx, int cy) {
+    static const int kLobes[][3] = {{-34, 6, 19}, {-13, -8, 22}, {13, -10, 21}, {34, 5, 18},
+                                    {0, 11, 21}};
+    for (const auto& l : kLobes) Disk(f, cx + l[0], cy + l[1], l[2] + 4);
+    for (const auto& l : kLobes) Disk(f, cx + l[0], cy + l[1], l[2], false);
+    for (int i = -1; i <= 1; ++i) Disk(f, cx + i * 18, cy + 3, 5);
 }
 
 // Sitting pose for the home screen: tail, body, paws, collar bell, head,
@@ -418,6 +448,11 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
     if (wave) {  // arm raised from the body, behind the head
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 34);
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 20, false);
+    }
+    const bool listening = emotion == Emotion::Listening && !wave;
+    if (listening) {  // arm up to the perked ear, behind the head
+        Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 44);
+        Stroke(f, cx + 84, cy + 112, cx + 142, cy - 8, 30, false);
     }
     const bool dizzy = pose == ScenePose::Dizzy1 || pose == ScenePose::Dizzy2;
     Eyes eyes = Eyes::ByEmotion;
@@ -449,6 +484,23 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         for (int dx : {-10, 0, 10}) Stroke(f, px + dx, py - 22, px + dx, py - 12, 4);
         Arc(f, px, py, 48, 48, -70, -20, 5);
         Arc(f, px, py, 62, 62, -66, -24, 5);
+    }
+    if (listening) {  // paw cupped at the ear, sound waves coming in
+        const int px = cx + 146, py = cy - 30;
+        Blob(f, px, py, 30, 34, 6);
+        for (int dy : {-12, 0, 12}) Stroke(f, px + 14, py + dy, px + 24, py + dy, 4);
+        for (int i = 0; i < 3; ++i) Arc(f, px, py, 58 + i * 20, 62 + i * 20, -40, 40, 6);
+    }
+    if (emotion == Emotion::Thinking) {  // bubbles rising to a thought cloud
+        Ring(f, cx + 132, cy - 58, 7, 7, 4);
+        Ring(f, cx + 156, cy - 84, 10, 10, 4);
+        ThoughtCloud(f, cx + 230, cy - 108);
+    }
+    if (emotion == Emotion::Speaking) {  // sound arcs spreading from the mouth
+        for (int r : {166, 190}) {
+            Arc(f, cx, cy + 56, r, r, -20, 20, 7);
+            Arc(f, cx, cy + 56, r, r, 160, 200, 7);
+        }
     }
     if (pose == ScenePose::Hearts1) Heart(f, cx + 150, cy - 64, 16);
     if (pose == ScenePose::Hearts2) {
@@ -541,7 +593,7 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     // Background twinkles and a dithered cushion under the pet.
     Sparkle(f, 110, 90, 18);
     Sparkle(f, 160, 150, 9);
-    Sparkle(f, 690, 80, 14);
+    if (model.emotion != Emotion::Thinking) Sparkle(f, 690, 80, 14);  // under the thought cloud
     Sparkle(f, 640, 220, 10);
     Sparkle(f, 96, 280, 8);
     Disk(f, 720, 300, 4);

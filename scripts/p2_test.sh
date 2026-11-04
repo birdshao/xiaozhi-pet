@@ -172,3 +172,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_gesture_detector.cc" \
   -o "$BUILD/test_gesture_detector"
 "$BUILD/test_gesture_detector"
+
+# V6-01 voice faces: XiaoZhi listening / thinking / speaking -> home face,
+# settled and rate-limited for the ePaper (no refresh storm).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/voice_face.cc" \
+  "$ROOT/tests/cpp/test_voice_face.cc" \
+  -o "$BUILD/test_voice_face"
+"$BUILD/test_voice_face"

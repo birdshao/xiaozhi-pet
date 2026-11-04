@@ -1,0 +1,45 @@
+PETSELFTEST1
+# V6-01 listening / thinking / speaking faces on the pet home screen.
+# A script cannot talk to XiaoZhi, so "voice" steps force the phase the
+# faces follow (the board's UpdateVoiceFace path, settle + dwell included).
+# A real BOOT conversation still needs a person (see the PR test plan).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:face=listening 1
+# expect min:face=thinking 1
+# expect min:face=speaking 1
+# expect min:face=none 1
+# Four face changes = four partials; the fast flips in between never
+# reach the panel.
+# expect partial_refreshes 4
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+voice listen
+wait 3000
+voice think
+wait 3000
+voice speak
+wait 4000
+# Phases flipping faster than the settle time: no refresh storm.
+voice listen
+wait 200
+voice speak
+wait 200
+voice listen
+wait 200
+voice speak
+wait 3000
+voice off
+wait 4000
+pet
+wait 4000
+end
