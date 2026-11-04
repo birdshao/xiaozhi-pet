@@ -22,6 +22,10 @@ struct WavClip {
     size_t Copy(size_t offset, int16_t* out, size_t max) const;
 };
 
+// Software volume for local PCM (0..100 %, larger values clamp to 100).
+// Leaves the XiaoZhi codec volume, which XiaoZhi persists in NVS, alone.
+void ScalePcm(int16_t* samples, size_t count, uint8_t percent);
+
 // Strict RIFF/WAVE parser; on failure clip is left empty.
 bool ParseWavClip(const uint8_t* bytes, size_t size, WavClip* clip);
 

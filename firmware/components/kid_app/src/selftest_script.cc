@@ -109,6 +109,9 @@ bool SelfTestScript::Parse(const char* text) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms < 10 || step.ms > 600)
                 return false;
             step.op = SelfTestOp::Alarm;
+        } else if (std::strcmp(words[0], "volume") == 0) {
+            if (n != 2 || !Number(words[1], &step.ms) || step.ms > 100) return false;
+            step.op = SelfTestOp::Volume;
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
@@ -156,7 +159,8 @@ bool SelfTestScript::ParseSector(const uint8_t* sector, size_t size) {
 uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
-        if (steps_[i].op == SelfTestOp::Alarm) continue;  // seconds, not a delay
+        // Alarm seconds and Volume percent are settings, not delays.
+        if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume) continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }
     return total;

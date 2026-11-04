@@ -255,6 +255,12 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('BeginLocalStoryPcm(session)', player)
         self.assertIn('TryQueueLocalStoryPcm(session, chunk, n)', player)
         self.assertIn('clip.Copy(offset, chunk, 480)', player)
+        # Self-test "volume" scales prompt PCM in RAM, before it is queued;
+        # the XiaoZhi codec volume (persisted in NVS) is never changed.
+        self.assertLess(player.index('ScalePcm(chunk, n, prompt_volume_pct_.load())'),
+                        player.index('TryQueueLocalStoryPcm(session, chunk, n)'))
+        self.assertNotIn('SetOutputVolume', patched)
+        self.assertIn('case kid_app::SelfTestOp::Volume:', patched)
         # Newest request wins: older prompt audio is invalidated first and
         # a waiting request interrupts the current one.
         self.assertLess(player.index('CancelLocalStoryPcm()'), player.index('BeginLocalStoryPcm('))

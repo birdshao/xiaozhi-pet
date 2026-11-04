@@ -114,6 +114,21 @@ int main() {
         assert(prompts.Tick(14350, &req) && req.index == 0 && req.token == 3);
     }
 
+    // Software volume: exact at 100 %, silent at 0, symmetric, clamped.
+    {
+        int16_t pcm[5] = {32767, -32768, 1000, -1000, 1};
+        kid_app::ScalePcm(pcm, 5, 100);
+        assert(pcm[0] == 32767 && pcm[1] == -32768 && pcm[4] == 1);
+        kid_app::ScalePcm(pcm, 5, 250);  // clamps to 100
+        assert(pcm[0] == 32767 && pcm[1] == -32768);
+        kid_app::ScalePcm(pcm, 5, 15);
+        assert(pcm[0] == 4915 && pcm[1] == -4915 && pcm[2] == 150 && pcm[3] == -150 &&
+               pcm[4] == 0);
+        kid_app::ScalePcm(pcm, 5, 0);
+        for (int16_t s : pcm) assert(s == 0);
+        kid_app::ScalePcm(nullptr, 5, 50);  // no crash
+    }
+
     // uint32 wrap-around.
     {
         PromptScheduler prompts;
