@@ -126,6 +126,24 @@ class SelfTestReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sector_bytes("wait 1\nend\n")  # no header
 
+    def test_committed_scenarios_that_power_off_arm_an_alarm_first(self):
+        # An unattended trial that powers off without an RTC alarm leaves
+        # the board off: the host can no longer restore the boot selector.
+        scenarios = sorted((Path(__file__).resolve().parents[1] / "tools/selftest").glob("*.pettest"))
+        self.assertTrue(scenarios)
+        for path in scenarios:
+            text = path.read_text(encoding="ascii")
+            self.assertEqual(len(sector_bytes(text)), 4096, path.name)
+            steps = [line.split() for line in text.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#")]
+            self.assertEqual(steps[0], ["PETSELFTEST1"], path.name)
+            self.assertEqual(steps[-1], ["end"], path.name)
+            armed = False
+            for words in steps:
+                armed = armed or words[0] == "alarm"
+                if words[0] == "morning" or words[:2] == ["tap", "pwr"]:
+                    self.assertTrue(armed, f"{path.name}: {' '.join(words)} before an alarm step")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,11 @@ using Blob = Ledger::Store::Blob;
 constexpr size_t kPetOffset = 28;
 constexpr size_t kQueueOffset = kPetOffset + PetCheckpointCodec::kBytes;
 constexpr size_t kEntryBytes = 24;
+constexpr size_t kMemoryOffset = kQueueOffset +
+                                 kEntryBytes * PetDeviceBridge::kCapacity;
+static_assert(kMemoryOffset + 4 == Ledger::kV1Bytes, "v1 layout is frozen");
+static_assert(kMemoryOffset + MemoryStore::kBytes + 4 == Ledger::kBytes,
+              "v2 appends memory before the CRC");
 constexpr uint64_t kMaxSeq = static_cast<uint64_t>(INT64_MAX);
 
 void Put16(Blob& b, size_t p, uint16_t n) {
@@ -37,14 +42,28 @@ uint64_t Get64(const Blob& b, size_t p) {
     for (size_t i=0;i<8;++i) n |= uint64_t(b[p+i]) << (8*i);
     return n;
 }
-uint32_t Crc32(const Blob& b) {
+// CRC over bytes [0, length-4) of a v1 (prefix) or v2 blob.
+uint32_t Crc32(const Blob& b, size_t length) {
     uint32_t crc=0xFFFFFFFFu;
-    for (size_t i=0;i<b.size()-4;++i) {
+    for (size_t i=0;i<length-4;++i) {
         crc ^= b[i];
         for (unsigned j=0;j<8;++j)
             crc = (crc>>1) ^ ((crc&1u) ? 0xEDB88320u : 0);
     }
     return ~crc;
+}
+size_t LengthOf(uint16_t version) {
+    return version==2 ? Ledger::kBytes : version==1 ? Ledger::kV1Bytes : 0;
+}
+// Same replay window bookkeeping as PetController::Remember.
+bool WasSeen(const PetCheckpoint& c, uint64_t id) {
+    for (size_t i=0;i<c.seen_count;++i) if (c.seen[i]==id) return true;
+    return false;
+}
+void Remember(PetCheckpoint* c, uint64_t id) {
+    c->seen[c->next_slot]=id;
+    c->next_slot=static_cast<uint16_t>((c->next_slot+1)%PetCheckpoint::kSeenCapacity);
+    if (c->seen_count<PetCheckpoint::kSeenCapacity) ++c->seen_count;
 }
 }  // namespace
 
@@ -79,18 +98,22 @@ bool PetAtomicLedger::ValidId(const char* id) {
 
 bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
                              const PetDeviceBridge::State& q,
+                             const MemoryStore& memory, uint16_t version,
                              uint64_t generation, Blob* output) {
-    if (!output || generation==0 || q.count>PetDeviceBridge::kCapacity ||
+    const size_t length=LengthOf(version);
+    if (!output || !length || generation==0 || q.count>PetDeviceBridge::kCapacity ||
         q.next_sequence==0 || q.next_sequence>kMaxSeq ||
         q.next_sequence<=q.count) return false;
+    // v1 has no memory section; only an empty memory can round-trip it.
+    if (version==1 && !(memory==MemoryStore{})) return false;
 
     PetCheckpointCodec::Blob pet_blob{};
     if (!PetCheckpointCodec::Encode(pet,generation,&pet_blob)) return false;
 
     Blob b{};
     b[0]='K'; b[1]='P'; b[2]='A'; b[3]='J';
-    Put16(b,4,1);
-    Put16(b,6,static_cast<uint16_t>(b.size()));
+    Put16(b,4,version);
+    Put16(b,6,static_cast<uint16_t>(length));
     Put64(b,8,generation);
     Put64(b,16,q.next_sequence);
     Put16(b,24,q.count);
@@ -107,19 +130,22 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
         Put64(b,p+8,r.sequence);
         b[p+16]=static_cast<uint8_t>(r.action);
     }
-    Put32(b,b.size()-4,Crc32(b));
+    if (version==2 &&
+        !memory.Encode(b.data()+kMemoryOffset,MemoryStore::kBytes)) return false;
+    Put32(b,length-4,Crc32(b,length));
     *output=b;
     return true;
 }
 
-bool PetAtomicLedger::Decode(const Blob& b, PetCheckpoint* pet,
-                             PetDeviceBridge::State* queue,
+bool PetAtomicLedger::Decode(const Blob& b, size_t length, PetCheckpoint* pet,
+                             PetDeviceBridge::State* queue, MemoryStore* memory,
                              uint64_t* generation) {
-    if (!pet || !queue || !generation ||
+    const uint16_t version=length==kBytes ? 2 : length==kV1Bytes ? 1 : 0;
+    if (!pet || !queue || !memory || !generation || !version ||
         b[0]!='K'||b[1]!='P'||b[2]!='A'||b[3]!='J' ||
-        Get16(b,4)!=1 || Get16(b,6)!=b.size() ||
+        Get16(b,4)!=version || Get16(b,6)!=length ||
         b[26] || b[27] ||
-        Get32(b,b.size()-4)!=Crc32(b)) return false;
+        Get32(b,length-4)!=Crc32(b,length)) return false;
 
     const uint64_t gen=Get64(b,8);
     PetCheckpointCodec::Blob pet_blob{};
@@ -144,10 +170,17 @@ bool PetAtomicLedger::Decode(const Blob& b, PetCheckpoint* pet,
             for (size_t j=0;j<kEntryBytes;++j) if (b[p+j]) return false;
         }
     }
+    // v1 -> v2 migration: a v1 blob carries no memory, so it starts empty.
+    MemoryStore mem{};
+    if (version==2 &&
+        !MemoryStore::Decode(b.data()+kMemoryOffset,MemoryStore::kBytes,&mem))
+        return false;
     Blob check{};
-    if (!Encode(candidate,q,gen,&check) || check!=b) return false;
+    if (!Encode(candidate,q,mem,version,gen,&check)) return false;
+    for (size_t i=0;i<length;++i) if (check[i]!=b[i]) return false;
     *pet=candidate;
     *queue=q;
+    *memory=mem;
     *generation=gen;
     return true;
 }
@@ -159,20 +192,24 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     int best_slot=-1;
     PetCheckpoint best_pet{};
     PetDeviceBridge::State best_queue{};
+    MemoryStore best_memory{};
 
     for (unsigned slot=0;slot<2;++slot) {
         Blob b{};
-        auto result=store_.Read(slot,&b);
+        size_t length=0;
+        auto result=store_.Read(slot,&b,&length);
         if (result==BlobReadStatus::Error) {failed=true;continue;}
         if (result==BlobReadStatus::NotFound) continue;
         PetCheckpoint p{};
         PetDeviceBridge::State q{};
+        MemoryStore m{};
         uint64_t gen=0;
-        if (!Decode(b,&p,&q,&gen)) {corrupt=true;continue;}
+        if (!Decode(b,length,&p,&q,&m,&gen)) {corrupt=true;continue;}
         if (gen>best_gen) {
             best_gen=gen;
             best_pet=p;
             best_queue=q;
+            best_memory=m;
             best_slot=static_cast<int>(slot);
         }
     }
@@ -191,6 +228,7 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     }
     if (!controller_.RestoreCheckpoint(best_pet)) return LoadResult::Corrupt;
     queue_=best_queue;
+    memory_=best_memory;
     generation_=best_gen;
     active_slot_=best_slot;
     initialized_=true;
@@ -198,15 +236,17 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
 }
 
 bool PetAtomicLedger::Commit(const PetCheckpoint& pet,
-                             const PetDeviceBridge::State& queue) {
+                             const PetDeviceBridge::State& queue,
+                             const MemoryStore& memory) {
     if (generation_==std::numeric_limits<uint64_t>::max()) return false;
     Blob next{};
-    if (!Encode(pet,queue,generation_+1,&next)) return false;
+    if (!Encode(pet,queue,memory,2,generation_+1,&next)) return false;
     const unsigned slot=active_slot_==0 ? 1u : 0u;
     if (!store_.Write(slot,next)) return false;
     // Save order: commit single storage blob before acknowledging in memory.
     if (!controller_.RestoreCheckpoint(pet)) return false;  // verified by Encode
     queue_=queue;
+    memory_=memory;
     ++generation_;
     active_slot_=static_cast<int>(slot);
     initialized_=true;
@@ -215,7 +255,8 @@ bool PetAtomicLedger::Commit(const PetCheckpoint& pet,
 
 bool PetAtomicLedger::InitializeFresh() {
     if (!storage_empty_ || initialized_) return false;
-    return Commit(controller_.ExportCheckpoint(),PetDeviceBridge::State{});
+    return Commit(controller_.ExportCheckpoint(),PetDeviceBridge::State{},
+                  MemoryStore{});
 }
 
 bool PetAtomicLedger::ImportLegacyForFreshServer(
@@ -226,7 +267,7 @@ bool PetAtomicLedger::ImportLegacyForFreshServer(
     // Preflight must verify remote cursor==0 and old bridge has no events.
     const uint64_t previous=generation_;
     generation_=legacy_generation;
-    if (!Commit(checkpoint,PetDeviceBridge::State{})) {
+    if (!Commit(checkpoint,PetDeviceBridge::State{},MemoryStore{})) {
         generation_=previous;
         return false;
     }
@@ -234,7 +275,8 @@ bool PetAtomicLedger::ImportLegacyForFreshServer(
 }
 
 CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
-                                           PetEffects* effects) {
+                                           PetEffects* effects,
+                                           uint32_t day) {
     if (!effects) return CommitResult::Rejected;
     *effects=PetEffects{};
     if (!initialized_) return CommitResult::StorageError;
@@ -258,13 +300,31 @@ CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
         }
     }
 
+    // Today's feed / greeting counters ride in the same commit, so a
+    // replayed (Duplicate) event can never count twice.
+    MemoryStore memory=memory_;
+    memory.NotePetAction(event.action,day);
+
     // One physical NVS commit contains both updated controller checkpoint
     // and outbound message. A write failure restores the entire live state.
-    if (!can_commit || !Commit(controller_.ExportCheckpoint(),pending)) {
+    if (!can_commit || !Commit(controller_.ExportCheckpoint(),pending,memory)) {
         if (!controller_.RestoreCheckpoint(before)) return CommitResult::StorageError;
         return CommitResult::StorageError;
     }
     *effects=proposed_effects;
+    return CommitResult::Committed;
+}
+
+CommitResult PetAtomicLedger::RecordMemory(const MemoryEvent& event) {
+    if (!initialized_) return CommitResult::StorageError;
+    if (!event.id) return CommitResult::Rejected;
+    PetCheckpoint pet=controller_.ExportCheckpoint();
+    if (WasSeen(pet,event.id)) return CommitResult::Duplicate;
+    MemoryStore memory=memory_;
+    if (memory.Apply(event)!=MemoryResult::Applied) return CommitResult::Rejected;
+    Remember(&pet,event.id);
+    // Memory events are not projected to the outbox yet (server sync is V5-05).
+    if (!Commit(pet,queue_,memory)) return CommitResult::StorageError;
     return CommitResult::Committed;
 }
 
@@ -289,7 +349,8 @@ PetAtomicLedger::AckResult PetAtomicLedger::Acknowledge(
     PetDeviceBridge::State next=queue_;
     for (size_t i=1;i<next.count;++i) next.pending[i-1]=next.pending[i];
     next.pending[--next.count]={};
-    if (!Commit(controller_.ExportCheckpoint(),next)) return AckResult::StorageError;
+    if (!Commit(controller_.ExportCheckpoint(),next,memory_))
+        return AckResult::StorageError;
     return AckResult::Confirmed;
 }
 

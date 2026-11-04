@@ -320,7 +320,8 @@ BOARD_WORKER = r'''
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || !self->pet_mode_.load()) return;
         // Blink and cleanup only on a quiet, awake Pet home screen.
-        const bool ambient = !self->sleep_active_.load() &&
+        const bool ambient = !self->sleep_active_.load() && !self->napping_.load() &&
+                             !self->morning_shown_.load() &&
                              displayed.kind == kid_app::SceneKind::Home &&
                              Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
         kid_app::DirectorStep step{};
@@ -481,14 +482,19 @@ BOARD_WORKER = r'''
         pet_display_worker_.SetEnabled(true);
         {
             SceneStateLock lock(scene_state_mutex_);
-            const auto scene = UnpackPetScene(last_pet_scene_.load());
+            // V3-04: opened by an alarm wake, it shows the good-morning
+            // picture straight away (pet_input then starts the 60 s window;
+            // it may already have, it sees pet_mode_ before this lock).
+            const bool morning = morning_request_.load() || morning_shown_.load();
+            const auto scene = morning ? MorningScene() : UnpackPetScene(last_pet_scene_.load());
             pet_mailbox_.Publish(scene);
             // TuanTuan waves hello when Pet mode opens on the home screen.
             {
                 SceneStateLock anim_lock(anim_mutex_);
                 anim_director_.Reset(NowMs());
             }
-            RequestAnimation(kid_app::Animation::Greet, scene);
+            RequestAnimation(morning ? kid_app::Animation::Morning : kid_app::Animation::Greet,
+                             scene);
         }
         ESP_LOGI(TAG, "PET_RUNTIME_ON");
     }
@@ -561,6 +567,11 @@ BOARD_WORKER = r'''
         // A child using the dial is activity; do not auto-power-off.
         if (power_save_timer_) power_save_timer_->WakeUp();
         if (event.kind == kid_app::InputKind::SleepRequest) sleep_requests_.fetch_add(1);
+        // V3-03/V3-04: input is activity; the first dial touch in a nap or
+        // in the morning window only wakes TuanTuan (restores the picture).
+        if (pet_mode_.load() && HandlePowerEvent(power_.OnActivity(NowMs())) &&
+            IsDialInput(event.kind))
+            return;
         // Going to sleep: inputs can only cancel it (V2-09).
         if (pet_mode_.load() && sleep_flow_.Active()) {
             HandleSleepAction(sleep_flow_.OnInput(event.kind, NowMs()));
@@ -684,6 +695,9 @@ BOARD_WORKER = r'''
         // a self-test "alarm" step wins so unattended trials come back soon.
         uint32_t wake_s = sleep_alarm_s_.exchange(0);
         const char* wake_by = wake_s ? "selftest" : "rhythm";
+        // V3-04: the next alarm boot skips the morning power-off after a
+        // self-test alarm, so the host can restore the board.
+        WriteRtcWakeMark(wake_s ? kSelfTestWakeMark : 0);
         if (!wake_s) wake_s = SecondsUntilWake();
         if (!wake_s) wake_by = "none";  // RTC not set: PWR wakes the pet
         const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
@@ -717,6 +731,7 @@ BOARD_WORKER = r'''
             input_hub_.Tick(NowMs());
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
+            UpdatePower(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -861,6 +876,180 @@ BOARD_WORKER = r'''
         pwr_button_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::Power, false); });
     }
 
+    // ---- V3-03 PowerManager and V3-04 good morning ----
+    // pet_input owns power_; other tasks only post through the atomics.
+    // While Pet mode is on, XiaoZhi's PowerSaveTimer no longer powers off
+    // (see patch_power_save_timer); PowerManager goes through the sleep flow.
+    kid_app::PowerManager power_;
+    bool power_pet_mode_ = false;               // pet_input: Pet mode last loop
+    std::atomic<bool> power_poke_{false};       // gesture activity
+    std::atomic<bool> morning_request_{false};  // alarm wake / self-test step
+    std::atomic<bool> morning_shown_{false};    // morning window (no ambient)
+    std::atomic<bool> napping_{false};          // drowsy face (no ambient)
+    std::atomic<bool> on_battery_{false};       // PMIC discharging (heartbeat)
+    std::atomic<bool> selftest_seen_{false};    // a script ran this boot
+    // PCF85063 RAM byte, written at every sleep power-off.
+    static constexpr uint8_t kSelfTestWakeMark = 0xA5;
+    static constexpr int kMorningEnterTries = 45;  // x 2 s for Pet mode
+
+    static bool IsDialInput(kid_app::InputKind kind) {
+        return kind == kid_app::InputKind::DialUp || kind == kid_app::InputKind::DialDown ||
+               kind == kid_app::InputKind::DialPress || kind == kid_app::InputKind::DialLong;
+    }
+
+    // Home with the selection kept: Sunrise first, Animation::Morning then
+    // holds the stretch and ends on the sun-up wave.
+    kid_app::SceneModel MorningScene() {
+        auto scene = UnpackPetScene(last_pet_scene_.load());
+        scene.kind = kid_app::SceneKind::Home;
+        scene.emotion = kid_app::Emotion::Happy;
+        scene.pose = kid_app::ScenePose::Sunrise;
+        return scene;
+    }
+
+    // UI only: the durable pet state is not touched.
+    void PublishPowerScene(bool drowsy) {
+        SceneStateLock lock(scene_state_mutex_);
+        if (sleep_active_.load()) return;
+        auto scene = UnpackPetScene(last_pet_scene_.load());
+        if (drowsy) {
+            if (!kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load())) return;
+            scene.emotion = kid_app::Emotion::Sleepy;
+        }
+        pet_mailbox_.Publish(scene);
+    }
+
+    // pet_input only. True when this input ended a nap or the morning
+    // window (the picture is restored, the input is not acted on).
+    bool HandlePowerEvent(kid_app::PowerEvent event) {
+        switch (event) {
+            case kid_app::PowerEvent::None:
+                return false;
+            case kid_app::PowerEvent::EnterIdle:
+                ESP_LOGI(TAG, "PET_POWER state=idle");
+                return false;
+            case kid_app::PowerEvent::EnterNap:
+                napping_.store(true);
+                PublishPowerScene(true);
+                ESP_LOGI(TAG, "PET_POWER state=nap phase=%s", PhaseName(day_phase_.load()));
+                return false;
+            case kid_app::PowerEvent::LeaveNap:
+                napping_.store(false);
+                PublishPowerScene(false);
+                ESP_LOGI(TAG, "PET_POWER state=active reason=wake");
+                return true;
+            case kid_app::PowerEvent::StayAwake:
+                morning_shown_.store(false);
+                PublishPowerScene(false);
+                ESP_LOGI(TAG, "PET_MORNING_STAYED");
+                return true;
+            case kid_app::PowerEvent::Sleep:
+                napping_.store(false);
+                morning_shown_.store(false);
+                ESP_LOGI(TAG, "PET_POWER_SLEEP reason=%s",
+                         kid_app::SleepReasonName(power_.LastSleepReason()));
+                HandleSleepAction(sleep_flow_.Request(NowMs()));
+                return false;
+        }
+        return false;
+    }
+
+    void BeginMorning(uint32_t now) {
+        power_.StartMorning(now);
+        napping_.store(false);
+        morning_shown_.store(true);
+        {
+            // Same picture TogglePetRuntime published if it opened Pet mode
+            // for this wake (the gate skips the repeat).
+            SceneStateLock lock(scene_state_mutex_);
+            const auto scene = MorningScene();
+            pet_mailbox_.Publish(scene);
+            RequestAnimation(kid_app::Animation::Morning, scene);
+        }
+        ESP_LOGI(TAG, "PET_MORNING_BEGIN awake_s=%u phase=%s",
+                 static_cast<unsigned>(kid_app::PowerManager::kMorningAwakeMs / 1000),
+                 PhaseName(day_phase_.load()));
+    }
+
+    // pet_input, every loop after the inputs.
+    void UpdatePower(DeviceState state) {
+        const uint32_t now = NowMs();
+        const bool pet = pet_mode_.load();
+        if (pet != power_pet_mode_) {
+            power_pet_mode_ = pet;
+            power_.Reset(now);
+            napping_.store(false);
+            morning_shown_.store(false);
+            ESP_LOGI(TAG, "PET_POWER state=active reason=%s", pet ? "pet_on" : "pet_off");
+        }
+        if (!pet) return;
+        // Sleep cancelled, or the PMIC did not cut power: awake again.
+        if (power_.State() == kid_app::PowerState::Off && !sleep_flow_.Active()) {
+            power_.Reset(now);
+            ESP_LOGI(TAG, "PET_POWER state=active reason=sleep_ended");
+        }
+        if (morning_request_.exchange(false)) BeginMorning(now);
+        if (power_poke_.exchange(false)) HandlePowerEvent(power_.OnActivity(now));
+        kid_app::PowerConditions conditions;
+        conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active();
+        conditions.may_power_off = on_battery_.load() && !selftest_seen_.load();
+        const int phase = day_phase_.load();
+        conditions.phase_known = phase >= 0;
+        if (conditions.phase_known) conditions.phase = static_cast<kid_app::DayPhase>(phase);
+        HandlePowerEvent(power_.Tick(now, conditions));
+    }
+
+    // As after an RTC-alarm power-on: open Pet mode (XiaoZhi must be idle)
+    // and let pet_input show the morning. Runs on pet_selftest.
+    bool RunMorningWake(const char* source) {
+        ESP_LOGI(TAG, "PET_MORNING_WAKE src=%s pet=%d", source, pet_mode_.load() ? 1 : 0);
+        morning_request_.store(true);
+        for (int attempt = 0; attempt < kMorningEnterTries && !pet_mode_.load(); ++attempt) {
+            RequestPetModeToggle();
+            for (int poll = 0; poll < 20 && !pet_mode_.load(); ++poll)
+                vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (pet_mode_.load()) return true;
+        morning_request_.store(false);
+        ESP_LOGW(TAG, "PET_MORNING_FALLBACK reason=pet_mode state=%d",
+                 static_cast<int>(Application::GetInstance().GetDeviceState()));
+        return false;
+    }
+
+    // Real alarm wake, but Pet mode never opened (e.g. no Wi-Fi): keep the
+    // rhythm anyway. Sleeping picture, tomorrow's alarm, PMIC off.
+    void MorningFallbackPowerOff() {
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateUpgrading) return;
+        if (pet_screen_mutex_ &&
+            xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(30000)) != pdTRUE)
+            return;
+        kid_app::SceneModel scene{};
+        scene.kind = kid_app::SceneKind::Sleep;
+        const bool shown = display_->ShowPetScene(scene);
+        if (pet_screen_mutex_) xSemaphoreGive(pet_screen_mutex_);
+        WriteRtcWakeMark(0);
+        const uint32_t wake_s = SecondsUntilWake();
+        const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
+        ESP_LOGI(TAG, "PET_MORNING_POWEROFF shown=%d alarm_s=%u armed=%d", shown ? 1 : 0,
+                 static_cast<unsigned>(wake_s), alarm ? 1 : 0);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        if (pmic_) pmic_->PowerOff();
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        ESP_LOGW(TAG, "PET_MORNING_POWEROFF_RETURNED");
+        if (alarm) ClearRtcAlarm(false);
+    }
+
+    // -1 when the RTC cannot be read.
+    int RtcWakeMark() {
+        uint8_t reg = kid_app::Pcf85063::kRamByte, value = 0;
+        return DiagI2c(0x51, &reg, 1, &value, 1) ? value : -1;
+    }
+    void WriteRtcWakeMark(uint8_t value) {
+        const uint8_t write[] = {kid_app::Pcf85063::kRamByte, value};
+        if (!DiagI2c(0x51, write, sizeof(write), nullptr, 0))
+            ESP_LOGW(TAG, "PET_RTC_WAKE_MARK refused=i2c_error");
+    }
+
     // V1 read-only hardware acceptance. Probes and reads only: never sets
     // RTC time/alarm, never writes PMIC registers, never stores readings.
     bool DiagI2c(uint8_t address, const uint8_t* tx, size_t tx_len,
@@ -984,6 +1173,7 @@ BOARD_WORKER = r'''
         if (pet_mode_.load() && !sleep_active_.load() &&
             Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
             if (power_save_timer_) power_save_timer_->WakeUp();
+            power_poke_.store(true);
             switch (gesture) {
                 case kid_app::Gesture::Pickup:
                     acted = kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
@@ -1280,6 +1470,12 @@ BOARD_WORKER = r'''
         // A trial that powered off with an alarm must not loop on wake-up.
         if (woke_by_alarm_.load() == 1) {
             ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=alarm_wake");
+            // V3-04: good morning, then back to sleep with tomorrow's alarm.
+            // After a self-test alarm the host restores the board instead.
+            if (RtcWakeMark() == kSelfTestWakeMark)
+                ESP_LOGI(TAG, "PET_MORNING_SKIPPED reason=selftest_wake");
+            else if (!RunMorningWake("alarm"))
+                MorningFallbackPowerOff();
             return;
         }
         auto* sector = static_cast<uint8_t*>(heap_caps_malloc(kSelfTestSectorBytes,
@@ -1295,6 +1491,8 @@ BOARD_WORKER = r'''
             delete script;
             return;
         }
+        // PowerManager never powers off by itself during a trial.
+        selftest_seen_.store(true);
         ESP_LOGI(TAG, "PET_SELFTEST_START steps=%u total_ms=%u",
                  static_cast<unsigned>(script->Count()),
                  static_cast<unsigned>(script->TotalMs()));
@@ -1335,6 +1533,16 @@ BOARD_WORKER = r'''
                     break;
                 case kid_app::SelfTestOp::Gesture:
                     HandleGesture(static_cast<kid_app::Gesture>(step.ms), "selftest");
+                    break;
+                case kid_app::SelfTestOp::Morning:
+                    // The parser wants an earlier alarm step; it must still
+                    // be armed, or the morning power-off would not come back.
+                    if (!sleep_alarm_s_.load() || !RunMorningWake("selftest")) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_ABORT reason=morning step=%u",
+                                 static_cast<unsigned>(i));
+                        delete script;
+                        return;
+                    }
                     break;
                 case kid_app::SelfTestOp::Volume:
                     prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
@@ -1393,6 +1601,7 @@ BOARD_WORKER = r'''
                 last_heartbeat_ms = now;
                 SyncRtcFromSystemTime();
                 UpdateRhythm();
+                on_battery_.store(pmic_ && pmic_->IsDischarging());
                 UpdateStatusBar();
                 ESP_LOGI(TAG, "PET_DIAG_HEARTBEAT up_s=%u pet=%d pwr_edges=%u sleep_req=%u "
                          "batt=%d chg=%d woke_by_alarm=%d rtc_synced=%d epd_n=%u",
@@ -1443,6 +1652,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/motion_stats.h"\n'
         '#include "kid_app/gesture_detector.h"\n'
         '#include "kid_app/rhythm_scheduler.h"\n'
+        '#include "kid_app/power_manager.h"\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
@@ -1525,6 +1735,18 @@ def patch_board(text: str) -> str:
     return text
 
 
+def patch_power_save_timer(text: str) -> str:
+    """V3-03: in Pet mode PowerManager owns power-off (sleeping picture and
+    the RTC alarm for the next wake); XiaoZhi's 300 s timer only restarts."""
+    return once(text, "        power_save_timer_->OnShutdownRequest([this]() {\n",
+        "        power_save_timer_->OnShutdownRequest([this]() {\n"
+        "            if (pet_mode_.load()) {\n"
+        "                power_save_timer_->WakeUp();\n"
+        "                return;\n"
+        "            }\n",
+        "board PowerSaveTimer takeover")
+
+
 def run(source: Path) -> None:
     git_head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if git_head != MANIFEST["firmware"]["commit"]:
@@ -1552,7 +1774,7 @@ def run(source: Path) -> None:
         cmake: patch_main_cmake(cmake.read_text(encoding="utf-8")),
         header: patch_display_h(header.read_text(encoding="utf-8")),
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
-        board: patch_board(board.read_text(encoding="utf-8")),
+        board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
         audio_h: patch_audio_h(audio_h.read_text(encoding="utf-8")),
         audio_cc: patch_audio_cc(audio_cc.read_text(encoding="utf-8")),
         application_cc: patch_application_cc(application_cc.read_text(encoding="utf-8")),

@@ -99,7 +99,8 @@ int main() {
                  {kid_app::ScenePose::Still, kid_app::ScenePose::Blink, kid_app::ScenePose::Wave,
                   kid_app::ScenePose::Hearts1, kid_app::ScenePose::Hearts2,
                   kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
-                  kid_app::ScenePose::Dizzy2}) {
+                  kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
+                  kid_app::ScenePose::Morning}) {
                 MonoFrame other;
                 SceneComposer::Render(SceneModel{SceneKind::Home, emotion, 1, 2, pose}, other);
                 for (int y = SceneComposer::kRailTop - 2; y < MonoFrame::kHeight; ++y)
@@ -111,10 +112,41 @@ int main() {
         for (kid_app::ScenePose pose :
              {kid_app::ScenePose::Blink, kid_app::ScenePose::Wave, kid_app::ScenePose::Hearts1,
               kid_app::ScenePose::Hearts2, kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
-              kid_app::ScenePose::Dizzy2}) {
+              kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
+              kid_app::ScenePose::Morning}) {
             MonoFrame other;
             SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, pose}, other);
             assert(other.Data() != still.Data());
+        }
+        // Good morning (V3-04): a sun in the top-left corner (rising behind
+        // a cloud, then up), the stretch differs from the wave, and the pet
+        // still clears the rail.
+        {
+            MonoFrame sunrise, morning;
+            SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1, 2,
+                                             kid_app::ScenePose::Sunrise}, sunrise);
+            SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Happy, 1, 2,
+                                             kid_app::ScenePose::Morning}, morning);
+            assert(sunrise.Data() != morning.Data());
+            auto ink = [](const MonoFrame& f, int x0, int y0, int x1, int y1) {
+                int n = 0;
+                for (int y = y0; y < y1; ++y)
+                    for (int x = x0; x < x1; ++x) n += f.IsBlack(x, y) ? 1 : 0;
+                return n;
+            };
+            // Sun outline and rays near (132, 140); none on the resting home.
+            assert(ink(morning, 40, 50, 230, 230) > 1500 && ink(sunrise, 40, 50, 230, 230) > 1500);
+            assert(ink(still, 60, 60, 210, 210) < 600);
+            // Rays above the sun: longer once it is up.
+            assert(ink(morning, 60, 50, 210, 92) > ink(sunrise, 60, 50, 210, 92));
+            // The cloud's lower outline only while rising.
+            assert(ink(sunrise, 60, 196, 210, 216) > ink(morning, 60, 196, 210, 216));
+            // Stretching: both paws up beside the head; waving: right paw only.
+            assert(ink(sunrise, 216, 90, 272, 140) > 300 && ink(sunrise, 528, 90, 584, 140) > 300);
+            assert(ink(morning, 216, 90, 272, 140) < 100);
+            for (int x = 0; x < MonoFrame::kWidth; ++x)
+                assert(!sunrise.IsBlack(x, SceneComposer::kRailTop - 2) &&
+                       !morning.IsBlack(x, SceneComposer::kRailTop - 2));
         }
         // Falling asleep: Zzz1 < Zzz2 < Still (all three letters).
         MonoFrame z1, z2, z3;
@@ -206,7 +238,8 @@ int main() {
                                 Emotion::Sleepy, Emotion::Surprised}) {
             for (ScenePose pose : {ScenePose::Still, ScenePose::Blink, ScenePose::Wave,
                                    ScenePose::Hearts1, ScenePose::Hearts2, ScenePose::Giggle,
-                                   ScenePose::Dizzy1, ScenePose::Dizzy2}) {
+                                   ScenePose::Dizzy1, ScenePose::Dizzy2, ScenePose::Sunrise,
+                                   ScenePose::Morning}) {
                 MonoFrame f;
                 SceneComposer::Render(home(StatusBar{}, emotion, pose), f);
                 for (int y = 0; y < SceneComposer::kStatusBottom; ++y)
@@ -303,7 +336,7 @@ int main() {
                                     Emotion::Sleepy, Emotion::Surprised}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
-                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Dizzy2);
+                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Morning);
                              ++pose) {
                             const SceneModel in{kind, emotion, page, sel,
                                                 static_cast<kid_app::ScenePose>(pose)};

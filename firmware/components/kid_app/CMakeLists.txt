@@ -1,6 +1,7 @@
 # Dedicated ESP-IDF component. Firmware side depends only on this component.
 idf_component_register(
     SRCS "src/scene_model.cc" "src/pet_controller.cc" "src/input_hub.cc" "src/home_menu.cc" "src/refresh_planner.cc" "src/pet_animation.cc" "src/selftest_script.cc" "src/sleep_flow.cc" "src/rtc_clock.cc" "src/rhythm_scheduler.cc" "src/motion_stats.cc" "src/gesture_detector.cc" "src/pet_input_router.cc" "src/pet_scene_presenter.cc"
+         "src/power_manager.cc"
          "src/pet_persistence.cc" "src/nvs_pet_blob_store.cc"
          "src/pet_event_executor.cc" "src/freertos_pet_service.cc"
          "src/audio_coordinator.cc" "src/pet_refresh_gate.cc"
@@ -15,6 +16,7 @@ idf_component_register(
          "src/waveshare_story_sd.cc" "src/freertos_story_pcm_worker.cc"
          "src/wav_clip.cc" "src/prompt_scheduler.cc" "src/prompt_clips.cc"
          "src/status_bar.cc"
+         "src/memory_store.cc" "src/personality.cc"
     INCLUDE_DIRS "include"
     # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see
     # tools/make_prompt_audio.py). Symbols: _binary_prompt_<item>_wav_*.
