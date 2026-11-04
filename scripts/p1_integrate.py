@@ -733,7 +733,7 @@ BOARD_WORKER = r'''
                 // V3-06: going to sleep (PWR, rail, idle, flat battery) wins
                 // over the parent menu; an unsaved draft is dropped.
                 if (parent_menu_.IsOpen()) CloseParentMenu("sleep");
-                EndGame("sleep");  // V4-06: a game too
+                EndGame("sleep", false);  // V4-06: a game too
                 sleep_active_.store(true);
                 prompt_scheduler_.Cancel();
                 StopPrompt();
@@ -1188,7 +1188,7 @@ BOARD_WORKER = r'''
     }
 
     void BeginMorning(uint32_t now) {
-        EndGame("morning");  // V4-06
+        EndGame("morning", false);  // V4-06
         power_.StartMorning(now);
         napping_.store(false);
         morning_shown_.store(true);
@@ -1889,7 +1889,7 @@ BOARD_WORKER = r'''
         StopPrompt();
         if (story_pcm_.Ready()) story_pcm_.Stop();
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
-        EndGame("parent");  // V4-06
+        EndGame("parent", false);  // V4-06
         parent_menu_.Open(ParentSettingsNow(), NowMs());
         {
             SceneStateLock lock(scene_state_mutex_);
@@ -2009,9 +2009,11 @@ BOARD_WORKER = r'''
     // pet_input. Quiet hours are for sleeping, a low battery for charging:
     // then the rail's Game item only makes TuanTuan say hi.
     bool GameStartAllowed() {
-        const char* refused = quiet_hours_.load()   ? "quiet"
-                              : battery_.LowPower() ? "battery"
-                                                    : nullptr;
+        const char* refused =
+            quiet_hours_.load()   ? "quiet"
+            : battery_.LowPower() ? "battery"
+            : Application::GetInstance().GetDeviceState() != kDeviceStateIdle ? "voice"
+                                                                               : nullptr;
         if (!refused) return true;
         ESP_LOGI(TAG, "PET_GAME_REFUSED reason=%s", refused);
         return false;
@@ -2125,8 +2127,10 @@ BOARD_WORKER = r'''
         ApplyGameOutput(game_.Tick(NowMs()));
     }
 
-    // pet_input. Back to the pet's own (durable) home picture, as it is now.
-    void EndGame(const char* reason) {
+    // pet_input. Back to the pet's own (durable) home picture, as it is now;
+    // publish_home=false when the caller shows its own picture right away
+    // (sleep, parent menu, morning), so the panel skips a needless refresh.
+    void EndGame(const char* reason, bool publish_home = true) {
         if (!game_active_.load()) return;
         game_.Interrupt();  // no-op when the game already finished by itself
         const kid_app::GameResult result = game_.Result();
@@ -2134,7 +2138,7 @@ BOARD_WORKER = r'''
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(false);
             pet_mailbox_.game_only.store(false);
-            if (pet_mode_.load() && !sleep_active_.load())
+            if (publish_home && pet_mode_.load() && !sleep_active_.load())
                 pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
         }
         // ADR-012: only a finished game with a correct dial answer counts for

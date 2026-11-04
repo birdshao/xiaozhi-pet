@@ -64,7 +64,7 @@
 
 ## 6. 板端接入（`scripts/p1_integrate.py`）
 
-- 首页动作条按下「游戏」：`GameStartAllowed()` 不在安静时段、电量不低时开始游戏；否则日志 `PET_GAME_REFUSED reason=quiet|battery`，团团照旧打招呼（`PetInputRouter` 对 Game 仍返回 Pickup 作为退路）。
+- 首页动作条按下「游戏」：`GameStartAllowed()` 不在安静时段、电量不低时开始游戏；否则日志 `PET_GAME_REFUSED reason=quiet|battery|voice`（voice：XiaoZhi 正在连接或对话），团团照旧打招呼（`PetInputRouter` 对 Game 仍返回 Pickup 作为退路）。
 - 游戏是**纯 UI**：不发任何 Pet 动作、不写 NVS；`last_pet_scene_` 保持首页画面；`GatedSceneMailbox::game_only` 让游戏期间只有 Game 画面上屏（和家长菜单的 `parent_only` 同一机制）。
 - 结束的地方都会 `EndGame()` 先回首页：玩完/长按/超时、睡觉流程（PWR、闲置睡觉、电量耗尽）、家长组合键、早安画面、语音会话（XiaoZhi 不再空闲）、退出 Pet 模式。
 - 游戏期间：不播团团短句、不响应体感手势、不做电量反应和动画、不打盹（PowerManager 视为忙）、首页选项名提示关闭。

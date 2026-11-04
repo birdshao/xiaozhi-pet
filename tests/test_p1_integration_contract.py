@@ -1056,6 +1056,7 @@ class DisplayOverlayTest(unittest.TestCase):
         allowed = self._body(patched, 'bool GameStartAllowed()')
         self.assertIn('quiet_hours_.load()', allowed)
         self.assertIn('battery_.LowPower()', allowed)
+        self.assertIn('!= kDeviceStateIdle ? "voice"', allowed)
         handle = self._body(patched, 'void HandleInputEvent(')
         # Sleep and the parent combo still come first; then the game takes the dial.
         self.assertLess(handle.index('InputKind::SleepRequest && pet_mode_.load()'),
@@ -1070,17 +1071,17 @@ class DisplayOverlayTest(unittest.TestCase):
         # Only Game frames reach the panel while it runs.
         mailbox = self._body(patched, 'struct GatedSceneMailbox')
         self.assertIn('game_only.load() && scene.kind != kid_app::SceneKind::Game', mailbox)
-        end = self._body(patched, 'void EndGame(const char* reason)')
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
         self.assertIn('pet_mailbox_.game_only.store(false)', end)
         self.assertIn('last_pet_scene_.load()', end)
         self.assertIn('GameCompletedMemoryEvent(', end)
         self.assertNotIn('pet_service_', end)
         # Every other owner of the screen or the speaker ends the game first.
         show = patched[patched.index('case kid_app::SleepAction::ShowSleepScene: {'):]
-        self.assertLess(show.index('EndGame("sleep")'), show.index('sleep_active_.store(true);'))
-        self.assertLess(self._body(patched, 'void OpenParentMenu()').index('EndGame("parent")'),
+        self.assertLess(show.index('EndGame("sleep", false)'), show.index('sleep_active_.store(true);'))
+        self.assertLess(self._body(patched, 'void OpenParentMenu()').index('EndGame("parent", false)'),
                         self._body(patched, 'void OpenParentMenu()').index('parent_menu_.Open('))
-        self.assertIn('EndGame("morning")', self._body(patched, 'void BeginMorning('))
+        self.assertIn('EndGame("morning", false)', self._body(patched, 'void BeginMorning('))
         update = self._body(patched, 'void UpdateGame(DeviceState state)')
         self.assertIn('EndGame("pet_off")', update)
         self.assertIn('EndGame("voice")', update)
