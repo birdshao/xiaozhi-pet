@@ -255,7 +255,7 @@ void GameSession::BeginRound(uint32_t now_ms, GameOutput* out) {
     }
     phase_ = Phase::Asking;
     feedback_ = GameFeedback::None;
-    highlight_ = 0;
+    choice_.Reset(current_.option_count);
     tries_ = 0;
     repeated_ = false;
     last_input_ms_ = now_ms;
@@ -287,17 +287,14 @@ GameOutput GameSession::Input(GameInput input, uint32_t now_ms) {
     // TuanTuan is reacting: nothing to answer (and nothing to win).
     if (phase_ != Phase::Asking) return out;
     if (input == GameInput::Up || input == GameInput::Down) {
-        const int next = std::max(0, std::min(current_.option_count - 1,
-                                              highlight_ + (input == GameInput::Up ? -1 : 1)));
-        if (next == highlight_) return out;
-        highlight_ = static_cast<uint8_t>(next);
+        if (!choice_.Move(input == GameInput::Up ? -1 : 1)) return out;
         feedback_ = GameFeedback::None;
         out.redraw = true;
-        out.clip = current_.option_clip[highlight_];
+        out.clip = current_.option_clip[choice_.Index()];
         return out;
     }
     out.redraw = true;
-    if (highlight_ == current_.correct) {
+    if (choice_.Index() == current_.correct) {
         ++result_.correct;
         phase_ = Phase::Right;
         feedback_ = GameFeedback::Right;
@@ -307,7 +304,7 @@ GameOutput GameSession::Input(GameInput input, uint32_t now_ms) {
     } else if (++tries_ >= kMaxTries) {
         phase_ = Phase::Reveal;
         feedback_ = GameFeedback::Reveal;
-        highlight_ = current_.correct;
+        choice_.Reset(current_.option_count, current_.correct);
         phase_until_ms_ = now_ms + kRevealMs;
         out.clip = kGameClipReveal;
     } else {
@@ -342,7 +339,7 @@ GameView GameSession::View() const {
     v.rounds = result_.rounds;
     v.round = static_cast<uint8_t>(std::min<int>(result_.played + 1, result_.rounds));
     v.option_count = current_.option_count;
-    v.highlight = highlight_;
+    v.highlight = choice_.Index();
     v.feedback = feedback_;
     v.question_art = current_.question_art;
     v.options = current_.option_art;

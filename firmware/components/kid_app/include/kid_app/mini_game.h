@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kid_app/game_view.h"
+#include "kid_app/icon_choice.h"
 
 #include <array>
 #include <cstddef>
@@ -131,7 +132,7 @@ private:
     GameResult result_{};
     Phase phase_ = Phase::Idle;
     GameFeedback feedback_ = GameFeedback::None;
-    uint8_t highlight_ = 0;
+    IconChoice choice_;  // the dial highlight, shared with the V4-05 book questions
     uint8_t tries_ = 0;
     bool repeated_ = false;
     uint32_t rng_ = 1;

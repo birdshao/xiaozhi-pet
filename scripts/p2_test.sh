@@ -281,11 +281,44 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   -o "$BUILD/test_parent_settings"
 "$BUILD/test_parent_settings"
 
+# Board switch to the atomic ledger: one-time verified migration from the
+# legacy kid_pet checkpoint and kid_parent/settings (power loss at every
+# step, idempotent, legacy keys never written), local-only (no outbox) mode.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_ledger_migration.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_pet_ledger_migration.cc" \
+  -o "$BUILD/test_pet_ledger_migration"
+"$BUILD/test_pet_ledger_migration"
+
+# V4-05 picture-book reader: dial state machine (pages, narration, read
+# again, questions, end, home), like-write guard, overlay frames and 4-grey
+# planes on the golden packs and on the reader self-test book the tool makes.
+PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reader-test" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/book_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_book_reader.cc" \
+  -o "$BUILD/test_book_reader"
+"$BUILD/test_book_reader" "$ROOT/tests/fixtures/kpb2" "$BUILD/reader-test/books"
+
 # V4-06 mini games: built-in rounds, deterministic sessions, rewards only
 # for correct dial answers, growth memory, tones, game scene and its
 # refresh regions; KPG1 game packs read from the golden pack the tool made.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
   "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
@@ -298,6 +331,8 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/firmware/components/kid_app/src/game_pack_reader.cc" \
   "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
   "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
   "$ROOT/tests/cpp/test_game_pack_reader.cc" \
   -o "$BUILD/test_game_pack_reader"

@@ -52,3 +52,38 @@ bool NvsAtomicPetStore::Write(unsigned slot, const Blob& blob) {
 }
 
 }  // namespace kid_app
+
+namespace kid_app {
+namespace {
+constexpr const char* kMarkerKey = "migrated";
+}
+
+BlobReadStatus NvsLedgerMigrationMarker::Read(Blob* out, size_t* length) {
+    if (!out || !length) return BlobReadStatus::Error;
+    nvs_handle_t nvs;
+    const esp_err_t opened=nvs_open(kNamespace,NVS_READONLY,&nvs);
+    if (opened==ESP_ERR_NVS_NOT_FOUND) return BlobReadStatus::NotFound;
+    if (opened!=ESP_OK) return BlobReadStatus::Error;
+    size_t len=0;
+    esp_err_t result=nvs_get_blob(nvs,kMarkerKey,nullptr,&len);
+    out->fill(0);
+    // Wrong size: report it (corrupt marker, fail closed); never erase.
+    if (result==ESP_OK && len==out->size())
+        result=nvs_get_blob(nvs,kMarkerKey,out->data(),&len);
+    nvs_close(nvs);
+    if (result==ESP_ERR_NVS_NOT_FOUND) return BlobReadStatus::NotFound;
+    if (result!=ESP_OK) return BlobReadStatus::Error;
+    *length=len;
+    return BlobReadStatus::Ok;
+}
+
+bool NvsLedgerMigrationMarker::Write(const Blob& value) {
+    nvs_handle_t nvs;
+    if (nvs_open(kNamespace,NVS_READWRITE,&nvs)!=ESP_OK) return false;
+    const esp_err_t set=nvs_set_blob(nvs,kMarkerKey,value.data(),value.size());
+    const esp_err_t commit=set==ESP_OK ? nvs_commit(nvs) : set;
+    nvs_close(nvs);
+    return commit==ESP_OK;
+}
+
+}  // namespace kid_app

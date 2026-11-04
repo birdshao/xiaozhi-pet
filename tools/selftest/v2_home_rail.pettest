@@ -3,7 +3,7 @@ PETSELFTEST1
 # Rail: 0 chat, 1 story (default), 2 game, 3 feed, 4 sleep.
 # Counted from "mark begin" (see tools/selftest_report.py).
 # expect home_select 0,1,2,3,4,3,2,1,0,1,2,3,2,1
-# expect commits 4
+# expect commits 3
 # expect selftest_done 1
 # expect max_partial_ms 2500
 # expect max_full_ms 5000
@@ -37,7 +37,8 @@ tap down 2500
 tap down 2500
 tap down 2500
 tap press 6000
-# Story (index 1): reader page 1, next page, then back home.
+# Story (index 1): reader page 1, next page (V4-05: UI-only, no commit),
+# then back home.
 tap up 2500
 tap up 2500
 tap press 7000
