@@ -1,0 +1,39 @@
+PETSELFTEST1
+# Board on the atomic ledger: one feed commits to kid_pet_sync, the sleep
+# flow powers off through the PMIC with the RTC alarm armed, the board
+# boots again and the ledger restores exactly what it held at power-off:
+# the same generation (ledger_gen= / gen=) and the same feed count (fed=).
+# The first boot of this firmware migrates the old kid_pet / kid_parent
+# keys (before "mark begin"); the boot after the alarm finds the marker.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect commits 1
+# expect ledger_restored 1
+# expect min:migration=already 1
+# expect none:migration=failed 0
+# expect min:PET_SLEEP_SHOWN 1
+# expect min:settled=1 1
+# expect min:alarm_s=45 1
+# expect min:armed=1 1
+# expect min:wake=selftest 1
+# expect min:woke_by_alarm=1 1
+# expect min:reason=alarm_wake 1
+# expect none:PET_SLEEP_POWEROFF_RETURNED 0
+# expect none:PET_INPUT_REJECTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral" (selection back on Story).
+tap press 7000
+hold press 1500 7000
+mark begin
+# Rail: Story(1) -> Feed(3), press: one durable feed (happy face, hearts).
+tap down 2500
+tap down 2500
+tap press 8000
+# PWR: sleep, power off, RTC alarm wakes the board 45 s later.
+alarm 45
+tap pwr 30000
+end

@@ -22,6 +22,7 @@ idf_component_register(
          "src/content_pack_reader.cc"
          "src/battery_policy.cc"
          "src/parent_settings.cc" "src/parent_menu.cc" "src/nvs_parent_settings_store.cc"
+         "src/pet_ledger_migration.cc"
     INCLUDE_DIRS "include"
     # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see
     # tools/make_prompt_audio.py). Symbols: _binary_prompt_<item>_wav_*.

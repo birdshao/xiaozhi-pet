@@ -280,3 +280,19 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/tests/cpp/test_parent_settings.cc" \
   -o "$BUILD/test_parent_settings"
 "$BUILD/test_parent_settings"
+
+# Board switch to the atomic ledger: one-time verified migration from the
+# legacy kid_pet checkpoint and kid_parent/settings (power loss at every
+# step, idempotent, legacy keys never written), local-only (no outbox) mode.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_ledger_migration.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_pet_ledger_migration.cc" \
+  -o "$BUILD/test_pet_ledger_migration"
+"$BUILD/test_pet_ledger_migration"

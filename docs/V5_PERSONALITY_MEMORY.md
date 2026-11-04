@@ -76,7 +76,7 @@
 
 ## 6. 尚未完成
 
-- 板级接线：板子目前仍用 legacy `FreertosPetService`（`kid_pet`），`PetAtomicLedger` 是 opt-in，尚未在板上启用（见 `P3_ATOMIC_PET_LEDGER.md`）。启用后记忆才会真正写入设备 NVS；`FreertosAtomicPetService` 还没有投递 `MemoryEvent` 的入口。
+- 板级接线已完成（ADR-014，见 `P3_ATOMIC_PET_LEDGER.md`）：板子改用 `FreertosAtomicPetService`，首次启动从旧 `kid_pet` 迁移；喂食/问候计数按 RTC 本地日换日（`SetDayProvider`）；话术按账本里的性格选（`TemperamentNow()`，家长设置性格前为温柔）；`PostMemory` / 板上 `RecordMemory()` 是写记忆的入口，选择题的喜好由绘本阅读器接入。
 - V5-04 前半已完成（见 `V2_SOUND_PACK.md`）：拿起/喂食/轻摇/早安/哄睡时，按性格从无槽位的审核句里确定地选一句，播放 TF 声音包里的录音（无录音时播一段提示音）。
   后半未做：记忆驱动的 `{book}`/`{like}` 槽位句（早安回顾昨天的书、拿起时提到喜好）需要书名/选项名的音频拼接，以及板上启用原子账本后的真实记忆。
 - V4-04/05 页内选择题还没有产生 `PreferenceChosen` 的真实来源。
