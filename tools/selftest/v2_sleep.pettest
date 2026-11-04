@@ -22,7 +22,7 @@ mark begin
 tap down 2500
 tap down 2500
 tap down 2500
-tap press 5500
+tap press 8000
 tap up 7000
 # PWR: sleep, power off, RTC alarm wakes the board 45 s later.
 alarm 45

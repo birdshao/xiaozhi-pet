@@ -9,7 +9,8 @@ namespace kid_app {
 
 uint32_t PackScene(const SceneModel& scene) {
     return (static_cast<uint32_t>(scene.book_page) << 16) |
-           (static_cast<uint32_t>(scene.emotion) << 8) |
+           ((static_cast<uint32_t>(scene.pose) & 0x0F) << 12) |
+           ((static_cast<uint32_t>(scene.emotion) & 0x0F) << 8) |
            ((static_cast<uint32_t>(scene.home_selection) & 0x0F) << 4) |
            (static_cast<uint32_t>(scene.kind) & 0x0F);
 }
@@ -18,7 +19,8 @@ SceneModel UnpackScene(uint32_t bits) {
     SceneModel scene;
     scene.kind = static_cast<SceneKind>(bits & 0x0F);
     scene.home_selection = static_cast<uint8_t>((bits >> 4) & 0x0F);
-    scene.emotion = static_cast<Emotion>((bits >> 8) & 0xFF);
+    scene.emotion = static_cast<Emotion>((bits >> 8) & 0x0F);
+    scene.pose = static_cast<ScenePose>((bits >> 12) & 0x0F);
     scene.book_page = static_cast<uint16_t>(bits >> 16);
     return scene;
 }
@@ -261,10 +263,14 @@ void QuestionMark(MonoFrame& f, int cx, int cy, int r, int w) {
 // A round tabby kitten. (cx, cy) is the head centre, scale is percent of the
 // home size. Shapes are drawn back to front: ears, head, markings, face.
 
-// asleep: closed eyes whatever the emotion. halo: a white rim around head
-// and ears so the outline stays visible on a black background.
-void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion, bool asleep = false,
-             bool halo = false) {
+// Eye override for animation poses: Closed whatever the emotion (blink,
+// asleep), WinkLeft closes only the viewer's left eye.
+enum class Eyes : uint8_t { ByEmotion, Closed, WinkLeft };
+
+// halo: a white rim around head and ears so the outline stays visible on a
+// black background.
+void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion,
+             Eyes eyes = Eyes::ByEmotion, bool halo = false) {
     auto s = [scale](int d) { return d * scale / 100; };
     const int line = std::max(2, s(7));
     if (halo) {
@@ -304,39 +310,38 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion, bool asle
 
     // Eyes.
     const int ex = s(50), ey = cy + s(2);
-    if (asleep) {  // peaceful closed eyes
-        Arc(f, cx - ex, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
-        Arc(f, cx + ex, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
-    } else switch (emotion) {
-        case Emotion::Happy:  // ^ ^
-            Arc(f, cx - ex, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
-            Arc(f, cx + ex, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
-            break;
-        case Emotion::Sleepy:  // drowsy: half-lidded lines with lashes
-            for (int side : {-1, 1}) {
-                Arc(f, cx + side * ex, ey - s(4), s(20), s(14), 15, 165, std::max(2, s(8)));
+    for (int side : {-1, 1}) {
+        const int x = cx + side * ex;
+        if (eyes == Eyes::Closed) {  // peaceful closed eyes
+            Arc(f, x, ey - s(6), s(20), s(13), 15, 165, std::max(2, s(8)));
+            continue;
+        }
+        if (eyes == Eyes::WinkLeft && side < 0) {  // ^
+            Arc(f, x, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
+            continue;
+        }
+        switch (emotion) {
+            case Emotion::Happy:  // ^ ^
+                Arc(f, x, ey + s(8), s(20), s(17), 195, 345, std::max(2, s(9)));
+                break;
+            case Emotion::Sleepy:  // drowsy: half-lidded lines with lashes
+                Arc(f, x, ey - s(4), s(20), s(14), 15, 165, std::max(2, s(8)));
                 Stroke(f, cx + side * (ex + s(18)), ey + s(4), cx + side * (ex + s(26)), ey + s(12),
                        std::max(1, s(4)));
-            }
-            break;
-        case Emotion::Surprised:  // wide rings, small pupils
-            for (int side : {-1, 1}) {
-                Ring(f, cx + side * ex, ey, s(22), s(26), std::max(2, s(6)));
-                Disk(f, cx + side * ex, ey, std::max(2, s(9)));
-            }
-            break;
-        case Emotion::Curious:  // big shiny eyes glancing up
-        case Emotion::Neutral:
-        default: {
-            const bool curious = emotion == Emotion::Curious;
-            const int rx = s(curious ? 21 : 18), ry = s(curious ? 25 : 22);
-            for (int side : {-1, 1}) {
-                const int x = cx + side * ex;
-                FillEllipse(f, x, ey, rx, ry);
+                break;
+            case Emotion::Surprised:  // wide rings, small pupils
+                Ring(f, x, ey, s(22), s(26), std::max(2, s(6)));
+                Disk(f, x, ey, std::max(2, s(9)));
+                break;
+            case Emotion::Curious:  // big shiny eyes glancing up
+            case Emotion::Neutral:
+            default: {
+                const bool curious = emotion == Emotion::Curious;
+                FillEllipse(f, x, ey, s(curious ? 21 : 18), s(curious ? 25 : 22));
                 Disk(f, x + s(curious ? 6 : -5), ey - s(curious ? 10 : 8), std::max(1, s(7)), false);
                 Disk(f, x + s(curious ? -6 : 6), ey + s(8), std::max(1, s(3)), false);
+                break;
             }
-            break;
         }
     }
 
@@ -368,8 +373,16 @@ void CatHead(MonoFrame& f, int cx, int cy, int scale, Emotion emotion, bool asle
     }
 }
 
-// Sitting pose for the home screen: tail, body, paws, collar bell, head.
-void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion) {
+// Filled heart: two lobes centred on row cy, tip r * 4 / 3 below.
+void Heart(MonoFrame& f, int cx, int cy, int r) {
+    Disk(f, cx - r / 2, cy, r / 2 + 2);
+    Disk(f, cx + r / 2, cy, r / 2 + 2);
+    FillTriangle(f, cx - r - 1, cy + 2, cx + r + 1, cy + 2, cx, cy + r * 4 / 3);
+}
+
+// Sitting pose for the home screen: tail, body, paws, collar bell, head,
+// plus the animation pose overlays (all above the action rail).
+void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
     // Tail curling up on the right.
     Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 22);
     Arc(f, cx + 100, cy + 150, 56, 46, -60, 100, 10, false);
@@ -381,7 +394,26 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion) {
         Stroke(f, px - 8, py + 4, px - 8, py + 14, 4);
         Stroke(f, px + 8, py + 4, px + 8, py + 14, 4);
     }
-    CatHead(f, cx, cy, 100, emotion);
+    const bool wave = pose == ScenePose::Wave;
+    if (wave) {  // arm raised from the body, behind the head
+        Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 34);
+        Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 20, false);
+    }
+    CatHead(f, cx, cy, 100, emotion,
+            pose == ScenePose::Blink ? Eyes::Closed : wave ? Eyes::WinkLeft : Eyes::ByEmotion);
+    if (wave) {  // paw pads up, with motion lines
+        const int px = cx + 142, py = cy + 48;
+        Blob(f, px, py, 28, 30, 6);
+        for (int dx : {-10, 0, 10}) Stroke(f, px + dx, py - 22, px + dx, py - 12, 4);
+        Arc(f, px, py, 48, 48, -70, -20, 5);
+        Arc(f, px, py, 62, 62, -66, -24, 5);
+    }
+    if (pose == ScenePose::Hearts1) Heart(f, cx + 150, cy - 64, 16);
+    if (pose == ScenePose::Hearts2) {
+        Heart(f, cx + 168, cy - 110, 26);
+        Heart(f, cx + 136, cy - 40, 12);
+        Heart(f, cx - 166, cy - 86, 16);
+    }
     // Bell on the collar, just under the chin.
     Blob(f, cx, cy + 110, 14, 13, 4);
     Shade(f, cx, cy + 110, 10, 9, 8);
@@ -474,7 +506,7 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     Disk(f, 70, 190, 4);
     Shade(f, 400, 356, 200, 20, 6);
     Ring(f, 400, 356, 200, 20, 3);
-    SittingCat(f, 400, 158, model.emotion);
+    SittingCat(f, 400, 158, model.emotion, model.pose);
     ActionRail(f, model.home_selection);
 }
 
@@ -511,7 +543,7 @@ void ReaderScene(MonoFrame& f, const SceneModel& model) {
 
 // Fixed picture kept on the unpowered ePaper: night sky, moon, and TuanTuan
 // curled up asleep on a cushion.
-void SleepScene(MonoFrame& f) {
+void SleepScene(MonoFrame& f, ScenePose pose) {
     // Black sky above a rolling white hill with a stippled horizon.
     for (int y = 0; y < kH; ++y) Span(f, 0, kW - 1, y, true);
     FillEllipse(f, 400, 660, 720, 350, false);
@@ -555,14 +587,15 @@ void SleepScene(MonoFrame& f) {
     Arc(f, bx - 20, by + 18, 140, 42, 0, 118, 22);
     Arc(f, bx - 20, by + 18, 140, 42, 3, 115, 10, false);
     const int hx = 330, hy = 280;
-    CatHead(f, hx, hy, 72, Emotion::Neutral, /*asleep=*/true, /*halo=*/true);
+    CatHead(f, hx, hy, 72, Emotion::Neutral, Eyes::Closed, /*halo=*/true);
     Blob(f, hx - 32, hy + 70, 26, 14, 5);
     Blob(f, hx + 32, hy + 70, 26, 14, 5);
 
-    // Zzz rising into the sky.
+    // Zzz rising into the sky; the falling-asleep animation adds one at a time.
+    const int letters = pose == ScenePose::Zzz1 ? 1 : pose == ScenePose::Zzz2 ? 2 : 3;
     LetterZ(f, 196, 170, 20, 6, false);
-    LetterZ(f, 146, 110, 28, 7, false);
-    LetterZ(f, 84, 42, 38, 8, false);
+    if (letters >= 2) LetterZ(f, 146, 110, 28, 7, false);
+    if (letters >= 3) LetterZ(f, 84, 42, 38, 8, false);
 }
 
 }  // namespace
@@ -572,7 +605,7 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
     if (model.kind == SceneKind::Reader) {
         ReaderScene(output, model);
     } else if (model.kind == SceneKind::Sleep) {
-        SleepScene(output);
+        SleepScene(output, model.pose);
     } else {
         HomeScene(output, model);
     }
