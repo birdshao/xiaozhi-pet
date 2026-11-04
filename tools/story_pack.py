@@ -1,13 +1,17 @@
 """Build a reviewed offline picture+PCM story book for ESP32-S3 SD FAT.
 
-Binary KPB1 layout is fixed and documented in docs/P4_OFFLINE_STORY_PACK.md.
+Binary KPB1 layout is fixed and documented in docs/P4_OFFLINE_STORY_PACK.md;
+KPB2 (grey pages + dial choice questions) in docs/V4_KPB2_CONTENT_FORMAT.md.
 It is intentionally NOT executable firmware, and cannot bypass adult review.
 Usage:
   python -m tools.story_pack render --title ... --text ... --font ... --output page.png
   python -m tools.story_pack pack --source book.json --output story.kpb --reviewed
+  python -m tools.story_pack validate --package story.kpb
+  python -m tools.story_pack preview --package story.kpb --output preview/
 
-Inputs: 800x480 PNG, 24kHz mono 16-bit little-endian uncompressed WAV.
-Output: 1-bit white=1 800x480 page plus PCM16 stream (no RIFF) per page.
+book.json schema_version 1 compiles KPB1, schema_version 2 compiles KPB2.
+Inputs: 800x480 PNG (or binary PGM), 24kHz mono 16-bit uncompressed WAV.
+KPB1 output: 1-bit white=1 800x480 page plus PCM16 stream (no RIFF) per page.
 """
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ import struct
 import tempfile
 import wave
 import zlib
+
+from tools import kpb2
 
 WIDTH, HEIGHT = 800, 480
 FRAME_BYTES = WIDTH * HEIGHT // 8  # 48 KiB
@@ -57,12 +63,17 @@ def _asset(root: Path, path: object, expected: str) -> Path:
     full = (root / relative).resolve()
     if not full.is_relative_to(root.resolve()) or not full.is_file():
         raise ValueError(f"{expected} asset missing or outside book directory")
-    if full.suffix.lower() != expected:
+    if full.suffix.lower() not in expected.split("|"):
         raise ValueError(f"{expected} extension is required")
     return full
 
 
 def _bitmap(path: Path) -> bytes:
+    if path.suffix.lower() == ".pgm":
+        width, height, lum = kpb2.read_pgm(path)
+        if (width, height) != (WIDTH, HEIGHT):
+            raise ValueError("Book page must be exactly 800 x 480")
+        return kpb2.mono_threshold(lum)
     from PIL import Image
 
     with Image.open(path) as image:
@@ -95,6 +106,33 @@ def _crc(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
+def _atomic_write(target: Path, content: bytes) -> None:
+    """Atomic file replacement to avoid leaving a partially written release.
+    Build into a temporary sibling in the same directory."""
+    fd, tmp = tempfile.mkstemp(prefix=".story-", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as writer:
+            writer.write(content)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _make_kpb2(source: Path, output: Path) -> dict:
+    blob, metadata, assets = kpb2.compile_book(source)
+    sidecar = output.with_suffix(".manifest.json")
+    if output in assets or sidecar in assets:
+        raise ValueError("Output would overwrite a source file")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(output, blob)
+    _atomic_write(sidecar, (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+                  .encode("utf-8"))
+    return metadata
+
+
 def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
     """Trusted offline operation. Never publishes without explicit review."""
     if not reviewed:
@@ -102,6 +140,8 @@ def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
     source = source.resolve()
     output = output.resolve()
     doc = _read_json(source)
+    if doc.get("schema_version") == 2:
+        return _make_kpb2(source, output)
     if set(doc) != {"schema_version", "book_id", "title", "approved", "pages"} or \
             doc["schema_version"] != 1 or doc["approved"] is not True:
         raise ValueError("Book manifest must be approved schema v1")
@@ -124,7 +164,7 @@ def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
                 item["approved"] is not True:
             raise ValueError("Every numbered page requires explicit review")
         text = _approved_text(item["text"], 320)
-        img_path = _asset(root, item["image"], ".png")
+        img_path = _asset(root, item["image"], ".png|.pgm")
         wav_path = _asset(root, item["audio"], ".wav")
         image = _bitmap(img_path)
         audio = _pcm(wav_path)
@@ -162,7 +202,7 @@ def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
 
     # Must never overwrite the source manifest / imported images by accident.
     if output == source or output.is_relative_to(root) and output in (
-            _asset(root, p["image"], ".png") for p in pages):
+            _asset(root, p["image"], ".png|.pgm") for p in pages):
         raise ValueError("Output would overwrite a source file")
     output.parent.mkdir(parents=True, exist_ok=True)
     sidecar = output.with_suffix(".manifest.json")
@@ -175,21 +215,8 @@ def make_pack(source: Path, output: Path, *, reviewed: bool) -> dict:
                 "pages": detail, "package_bytes": len(result),
                 "sha256": hashlib.sha256(result).hexdigest(),
                 "integrity": "CRC32 per payload; no cryptographic authentication"}
-    # Atomic file replacement to avoid leaving a partially written release.
-    # Build into a temporary sibling in the same directory.
-    def atomic_write(target: Path, content: bytes) -> None:
-        fd, tmp = tempfile.mkstemp(prefix=".story-", dir=str(target.parent))
-        try:
-            with os.fdopen(fd, "wb") as writer:
-                writer.write(content)
-                writer.flush()
-                os.fsync(writer.fileno())
-            os.replace(tmp, target)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-    atomic_write(output, result)
-    atomic_write(sidecar, (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    _atomic_write(output, result)
+    _atomic_write(sidecar, (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return metadata
 
 
@@ -245,10 +272,25 @@ def main() -> None:
     render.add_argument("--text", required=True)
     render.add_argument("--page", type=int, required=True)
     render.add_argument("--output", type=Path, required=True)
+    validate = sub.add_parser("validate", help="Strictly re-check a KPB1/KPB2 file")
+    validate.add_argument("--package", type=Path, required=True)
+    preview = sub.add_parser("preview", help="Write PNGs of what the device will show")
+    preview.add_argument("--package", type=Path, required=True)
+    preview.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.cmd == "render":
         render_page(args.output, args.font, args.title, args.text, args.page)
         print("PAGE_IMAGE_READY_FOR_MANUAL_REVIEW")
+    elif args.cmd == "validate":
+        try:
+            info = kpb2.parse(args.package.read_bytes())
+        except ValueError as error:
+            raise SystemExit(f"PACKAGE_INVALID {error}")
+        print("PACKAGE_VALID", info["format"], "pages=%d" % len(info["pages"]),
+              "questions=%d" % info["question_count"])
+    elif args.cmd == "preview":
+        for path in kpb2.preview(args.package, args.output):
+            print("PREVIEW", path)
     else:
         data = make_pack(args.source, args.output, reviewed=args.reviewed)
         print("REVIEWED_STORY_PACK_CREATED", data["sha256"], data["package_bytes"])

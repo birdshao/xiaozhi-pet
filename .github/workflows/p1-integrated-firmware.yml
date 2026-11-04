@@ -19,6 +19,8 @@ on:
       - 'tests/test_selftest_report.py'
       - 'tests/test_prompt_audio.py'
       - 'tools/make_prompt_audio.py'
+      - 'tests/test_sound_pack.py'
+      - 'tools/sound_pack.py'
       - 'tools/selftest_report.py'
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
@@ -54,6 +56,9 @@ jobs:
       - name: Check embedded option prompt clips (format, rail order)
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_prompt_audio.py' -v
+      - name: Check the TF sound pack tool (format, review gate, catalog)
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_sound_pack.py' -v
       - name: Check SD GPIOs and EPD story fallback before board build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v

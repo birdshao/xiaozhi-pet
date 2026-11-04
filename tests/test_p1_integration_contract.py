@@ -283,7 +283,9 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = self._board()
         player = patched[patched.index('void PromptTaskLoop()'):]
         player = player[:player.index('\n    }\n')]
-        self.assertIn('LoadPromptClip(', player)
+        # V2-08: option names come from the TF pack or the embedded clips.
+        self.assertIn('sound_bank_.LoadOption(request.index, &clip)', player)
+        self.assertIn('kid_app::SoundBank sound_bank_{&kid_app::LoadPromptClip}', patched)
         self.assertIn('BeginLocalStoryPcm(session)', player)
         self.assertIn('TryQueueLocalStoryPcm(session, chunk, n)', player)
         self.assertIn('clip.Copy(offset, chunk, 480)', player)
@@ -297,8 +299,10 @@ class DisplayOverlayTest(unittest.TestCase):
         # a waiting request interrupts the current one.
         self.assertLess(player.index('CancelLocalStoryPcm()'), player.index('BeginLocalStoryPcm('))
         self.assertIn('uxQueueMessagesWaiting(prompt_queue_)', player)
-        for marker in ('PET_PROMPT_PLAY', 'PET_PROMPT_QUEUED', 'PET_PROMPT_INTERRUPTED',
-                       'PET_PROMPT_FAILED'):
+        # PET_PROMPT_* / PET_PHRASE_* outcome lines share one format.
+        self.assertIn('PET_PROMPT_PLAY index=%u', player)
+        self.assertIn('kind = phrase ? "PHRASE" : "PROMPT"', player)
+        for marker in ('PET_%s_QUEUED', 'PET_%s_INTERRUPTED', 'PET_%s_FAILED'):
             self.assertIn(marker, player)
         self.assertIn('xQueueOverwrite(prompt_queue_', patched)
         self.assertIn('"pet_prompt"', patched)
@@ -306,16 +310,88 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('0x50524F4D', player)
         # Same guard as story narration (pet mode, not asleep, idle) before
         # starting and while pushing, so a voice session is never talked over.
-        allowed = patched[patched.index('bool PromptAllowed()'):]
+        allowed = patched[patched.index('bool PromptAllowed('):]
         allowed = allowed[:allowed.index('\n    }\n')]
         for cond in ('pet_mode_.load()', '!sleep_active_.load()', 'kDeviceStateIdle'):
             self.assertIn(cond, allowed)
-        self.assertLess(player.index('PromptAllowed()'), player.index('BeginLocalStoryPcm('))
+        self.assertLess(player.index('PromptAllowed(bedtime)'),
+                        player.index('BeginLocalStoryPcm('))
         push = player[player.index('while (offset < clip.samples)'):]
-        self.assertIn('PromptAllowed()', push)
+        self.assertIn('PromptAllowed(bedtime)', push)
         self.assertIn('stalls > 50', push)
         self.assertIn('reason=state', player)
         self.assertIn('"pet_prompt", 6144', patched)
+
+    def test_v2_sound_pack_loaded_by_the_prompt_task(self):
+        patched = self._board()
+        for header in ('sound_bank.h', 'pet_phrases.h'):
+            self.assertIn(f'#include "kid_app/{header}"', patched)
+        # The SD card is mounted once by the story reader; the prompt task
+        # opens the pack after that attempt, read-only, and only there.
+        init = self._body(patched, 'bool InitializePetRuntime()')
+        self.assertLess(init.index('story_sd_.Initialize('), init.index('sound_sd_.store('))
+        self.assertIn('story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent', init)
+        load = self._body(patched, 'void LoadSoundPack()')
+        self.assertIn('sound_file_.Open("/sdcard/sounds", "default")', load)
+        self.assertIn('sound_pack_.Open(sound_file_)', load)
+        self.assertIn('sound_bank_.UsePack(&sound_pack_)', load)
+        for state in ('"no_sd"', '"absent"', '"invalid"', '"ready"', 'PET_SOUND_PACK'):
+            self.assertIn(state, load)
+        player = self._body(patched, 'void PromptTaskLoop()')
+        self.assertLess(player.index('LoadSoundPack()'), player.index('xQueueReceive('))
+        self.assertEqual(patched.count('LoadSoundPack()'), 2)  # definition + player
+        # A TF read error ends the clip instead of spinning.
+        self.assertLess(player.index('if (n == 0) break;'),
+                        player.index('ScalePcm(chunk, n, PromptVolumePct())'))
+        self.assertNotIn('fopen', patched)
+
+    def test_v5_pet_lines_share_the_prompt_path(self):
+        patched = self._board()
+        player = self._body(patched, 'void PromptTaskLoop()')
+        # The line is chosen (Personality, via the planner) before older
+        # audio is cut, so a dropped line never silences a prompt.
+        self.assertLess(player.index('phrase_planner_.Next(context, NowMs())'),
+                        player.index('CancelLocalStoryPcm()'))
+        self.assertIn('PET_PHRASE_SKIPPED', player)
+        self.assertIn('sound_bank_.LoadPhrase(phrase_id, &clip)', player)
+        self.assertIn('PET_PHRASE_PLAY id=%u ctx=%s src=%s', player)
+        self.assertIn('0x50485253u', player)  # own session ids
+        # Same volume path as the option names (self-test volume, quiet
+        # hours); the XiaoZhi codec volume is never touched.
+        self.assertEqual(player.count('ScalePcm('), 1)
+        self.assertNotIn('SetOutputVolume', patched)
+        allowed = self._body(patched, 'bool PromptAllowed(bool bedtime = false)')
+        self.assertIn('(bedtime || !sleep_active_.load())', allowed)
+        self.assertIn('kDeviceStateIdle', allowed)
+        post = self._body(patched, 'void PostPhrase(')
+        for guard in ('!pet_mode_.load()', 'napping_.load()',
+                      'sleep_active_.load() && context != kid_app::PhraseContext::Bedtime'):
+            self.assertIn(guard, post)
+        self.assertIn('PostPrompt(request)', post)
+        self.assertNotIn('LocalStoryPcm', post)
+        # Where the pet speaks.
+        commit = self._body(patched, 'static void PetCommitted(')
+        self.assertGreater(commit.index('PostPhrase(kid_app::PhraseContext::Feed)'),
+                           commit.index('pet_event_mode_.store('))
+        self.assertIn('PostPhrase(kid_app::PhraseContext::Greeting)', commit)
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertIn('if (acted) PostPhrase(kid_app::PhraseContext::Giggle)', gesture)
+        self.assertEqual(gesture.count('PostLocal('), 1)
+        begin = self._body(patched, 'void BeginMorning(')
+        self.assertIn('PostPhrase(kid_app::PhraseContext::MorningRecap)', begin)
+        sleep = patched[patched.index('case kid_app::SleepAction::ShowSleepScene:'):]
+        sleep = sleep[:sleep.index('return;')]
+        self.assertLess(sleep.index('StopPrompt()'),
+                        sleep.index('PostPhrase(kid_app::PhraseContext::Bedtime)'))
+        self.assertLess(sleep.index('CancelLocalStoryPcm()'),
+                        sleep.index('PostPhrase(kid_app::PhraseContext::Bedtime)'))
+        restore = patched[patched.index('case kid_app::SleepAction::RestoreScene:'):]
+        self.assertIn('StopPrompt()', restore[:restore.index('return;')])
+        off = self._body(patched, 'void PowerOffForSleep()')
+        self.assertLess(off.index('StopPrompt()'), off.index('pmic_->PowerOff()'))
+        # Lines come from the reviewed table only: no text, no TTS here.
+        self.assertNotIn('PhraseTemplate', patched)
+        self.assertNotIn('.text', player)
 
     def test_selftest_alarm_and_no_rerun_after_alarm_wake(self):
         patched = self._board()

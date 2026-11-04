@@ -14,9 +14,10 @@ namespace kid_app {
 // Where a line is spoken. Every context has at least one slot-free template
 // per temperament, so selection never fails.
 enum class PhraseContext : uint8_t {
-    Greeting, MorningRecap, FavoriteMention, Feed, StoryInvite, Bedtime
+    Greeting, MorningRecap, FavoriteMention, Feed, StoryInvite, Bedtime,
+    Giggle  // V5-04: gentle shake
 };
-constexpr size_t kPhraseContextCount = 6;
+constexpr size_t kPhraseContextCount = 7;
 
 // Memory slot a template needs; filled later from MemoryStore, never from
 // free text. {book} = a recent book title, {like} = a chosen option name.
