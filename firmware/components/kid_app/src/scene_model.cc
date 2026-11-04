@@ -400,6 +400,57 @@ void Heart(MonoFrame& f, int cx, int cy, int r) {
     FillTriangle(f, cx - r - 1, cy + 2, cx + r + 1, cy + 2, cx, cy + r * 4 / 3);
 }
 
+// Good-morning stretch (ScenePose::Sunrise): both arms up beside the head.
+// Arms go behind the head, the paws are drawn on top of it.
+void StretchArms(MonoFrame& f, int cx, int cy) {
+    for (int side : {-1, 1}) {
+        Stroke(f, cx + side * 64, cy + 118, cx + side * 150, cy - 26, 34);
+        Stroke(f, cx + side * 64, cy + 118, cx + side * 150, cy - 26, 20, false);
+    }
+}
+
+void StretchPaws(MonoFrame& f, int cx, int cy) {
+    for (int side : {-1, 1}) {
+        const int px = cx + side * 156, py = cy - 42;
+        Blob(f, px, py, 28, 30, 6);
+        for (int dx : {-10, 0, 10}) Stroke(f, px + dx, py - 22, px + dx, py - 12, 4);
+        // Little "stretch" lines above the paws.
+        Arc(f, px, py, 50, 50, side < 0 ? 215 : 285, side < 0 ? 255 : 325, 5);
+    }
+}
+
+// Good-morning sky (V3-04), top-left corner: a sun whose white halo clears
+// the night twinkles. Rising: a cloud hides its lower half, short rays and
+// sleepy eyes. Risen: rays all around and a smile.
+void MorningSun(MonoFrame& f, bool risen) {
+    const int cx = 132, cy = 140, r = 40;
+    FillEllipse(f, cx, cy, 92, 88, false);
+    const int rays = 12;
+    for (int i = 0; i < rays; ++i) {
+        const double a = (i * 360.0 / rays + 15) * kPi / 180.0;
+        if (!risen && std::sin(a) > -0.2) continue;  // behind the cloud
+        const int r0 = r + 12, r1 = r + (risen ? 40 : 26);
+        Stroke(f, cx + static_cast<int>(std::lround(r0 * std::cos(a))),
+               cy + static_cast<int>(std::lround(r0 * std::sin(a))),
+               cx + static_cast<int>(std::lround(r1 * std::cos(a))),
+               cy + static_cast<int>(std::lround(r1 * std::sin(a))), 7);
+    }
+    Blob(f, cx, cy, r, r, 6);
+    Shade(f, cx, cy, r - 8, r - 8, 3);
+    if (risen) {
+        for (int side : {-1, 1}) Disk(f, cx + side * 14, cy - 6, 5);
+        Arc(f, cx, cy + 4, 16, 12, 20, 160, 5);
+    } else {
+        for (int side : {-1, 1}) Arc(f, cx + side * 14, cy - 10, 9, 6, 15, 165, 4);
+    }
+    if (risen) return;
+    // Cloud: dark bumps first, then the white inside, so only the outer
+    // outline remains.
+    const int bumps[][4] = {{-34, 26, 36, 24}, {14, 18, 40, 30}, {52, 34, 30, 20}, {-4, 42, 70, 20}};
+    for (const auto& b : bumps) FillEllipse(f, cx + b[0], cy + b[1], b[2] + 6, b[3] + 6);
+    for (const auto& b : bumps) FillEllipse(f, cx + b[0], cy + b[1], b[2], b[3], false);
+}
+
 // Sitting pose for the home screen: tail, body, paws, collar bell, head,
 // plus the animation pose overlays (all above the action rail).
 void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
@@ -414,18 +465,22 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
         Stroke(f, px - 8, py + 4, px - 8, py + 14, 4);
         Stroke(f, px + 8, py + 4, px + 8, py + 14, 4);
     }
-    const bool wave = pose == ScenePose::Wave;
+    const bool wave = pose == ScenePose::Wave || pose == ScenePose::Morning;
     if (wave) {  // arm raised from the body, behind the head
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 34);
         Stroke(f, cx + 70, cy + 120, cx + 138, cy + 62, 20, false);
     }
+    const bool stretch = pose == ScenePose::Sunrise;
+    if (stretch) StretchArms(f, cx, cy);
     const bool dizzy = pose == ScenePose::Dizzy1 || pose == ScenePose::Dizzy2;
     Eyes eyes = Eyes::ByEmotion;
-    if (pose == ScenePose::Blink) eyes = Eyes::Closed;
-    if (wave) eyes = Eyes::WinkLeft;
+    if (pose == ScenePose::Blink || stretch) eyes = Eyes::Closed;
+    if (pose == ScenePose::Wave) eyes = Eyes::WinkLeft;
     if (pose == ScenePose::Giggle) eyes = Eyes::Laugh;
     if (dizzy) eyes = Eyes::Spiral;
-    CatHead(f, cx, cy, 100, emotion, eyes);
+    // Stretching TuanTuan yawns: the round "O" mouth.
+    CatHead(f, cx, cy, 100, stretch ? Emotion::Surprised : emotion, eyes);
+    if (stretch) StretchPaws(f, cx, cy);
     if (pose == ScenePose::Giggle) {  // wobble lines on both sides of the head
         for (int side : {-1, 1})
             for (int i = 0; i < 2; ++i)
@@ -548,6 +603,8 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     Disk(f, 70, 190, 4);
     Shade(f, 400, 356, 200, 20, 6);
     Ring(f, 400, 356, 200, 20, 3);
+    if (model.pose == ScenePose::Sunrise || model.pose == ScenePose::Morning)
+        MorningSun(f, model.pose == ScenePose::Morning);
     SittingCat(f, 400, 158, model.emotion, model.pose);
     ActionRail(f, model.home_selection);
 }

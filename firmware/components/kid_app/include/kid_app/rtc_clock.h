@@ -27,6 +27,8 @@ bool PlausibleWallClock(const CivilTime& time);
 // Pure register codec; I2C access stays in the board adapter.
 namespace Pcf85063 {
 constexpr uint8_t kControl2 = 0x01;      // bit7 AIE, bit6 AF
+// One free byte, kept with the time on the backup supply (PMIC off too).
+constexpr uint8_t kRamByte = 0x03;
 constexpr uint8_t kTimeRegister = 0x04;  // seconds .. years, 7 bytes
 constexpr uint8_t kAlarmRegister = 0x0B; // second .. weekday alarm, 5 bytes
 constexpr uint8_t kAlarmInterruptEnable = 0x80;

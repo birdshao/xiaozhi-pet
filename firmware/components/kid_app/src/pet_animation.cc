@@ -13,6 +13,8 @@ constexpr AnimationFrame kSleepIn[] = {{ScenePose::Zzz2, 300}, {ScenePose::Still
 constexpr AnimationFrame kGiggle[] = {{ScenePose::Giggle, 600}, {ScenePose::Still, 0}};
 constexpr AnimationFrame kDizzy[] = {
     {ScenePose::Dizzy1, 200}, {ScenePose::Dizzy2, 500}, {ScenePose::Still, 0}};
+// The first frame repeats the base picture (no visible change) to hold it.
+constexpr AnimationFrame kMorning[] = {{ScenePose::Sunrise, 2000}, {ScenePose::Morning, 0}};
 
 template <size_t N>
 uint8_t Use(const AnimationFrame (&table)[N], const AnimationFrame** frames) {
@@ -30,6 +32,7 @@ uint8_t AnimationFrames(Animation animation, const AnimationFrame** frames) {
         case Animation::SleepIn: return Use(kSleepIn, frames);
         case Animation::Giggle: return Use(kGiggle, frames);
         case Animation::Dizzy: return Use(kDizzy, frames);
+        case Animation::Morning: return Use(kMorning, frames);
         case Animation::None: break;
     }
     *frames = nullptr;
@@ -44,6 +47,7 @@ const char* AnimationName(Animation animation) {
         case Animation::SleepIn: return "sleep_in";
         case Animation::Giggle: return "giggle";
         case Animation::Dizzy: return "dizzy";
+        case Animation::Morning: return "morning";
         case Animation::None: break;
     }
     return "none";
