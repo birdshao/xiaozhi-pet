@@ -299,6 +299,22 @@ bool PetAtomicLedger::ImportLegacyForFreshServer(
     return true;
 }
 
+bool PetAtomicLedger::ImportLegacyLocal(const PetCheckpoint& checkpoint,
+                                        uint64_t legacy_generation,
+                                        const ParentSettings& parent) {
+    if (!storage_empty_ || initialized_ ||
+        legacy_generation==std::numeric_limits<uint64_t>::max() ||
+        !ValidParentSettings(parent))
+        return false;
+    const uint64_t previous=generation_;
+    generation_=legacy_generation;
+    if (!Commit(checkpoint,PetDeviceBridge::State{},MemoryStore{},&parent)) {
+        generation_=previous;
+        return false;
+    }
+    return true;
+}
+
 CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
                                            PetEffects* effects,
                                            uint32_t day) {
@@ -313,7 +329,7 @@ CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
 
     PetDeviceBridge::State pending=queue_;
     bool can_commit=true;
-    if (IsProjectable(event.action)) {
+    if (project_ && IsProjectable(event.action)) {
         if (pending.count==PetDeviceBridge::kCapacity ||
             pending.next_sequence>=kMaxSeq) {
             can_commit=false;
