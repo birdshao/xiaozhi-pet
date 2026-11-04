@@ -12,7 +12,7 @@ PETSELFTEST1
 # expect none:migration=failed 0
 # expect min:PET_SLEEP_SHOWN 1
 # expect min:settled=1 1
-# expect min:alarm_s=45 1
+# expect min:alarm_s=30 1
 # expect min:armed=1 1
 # expect min:wake=selftest 1
 # expect min:woke_by_alarm=1 1
@@ -22,18 +22,20 @@ PETSELFTEST1
 # expect none:PET_SELFTEST_ABORT 0
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
-wait 20000
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
 pet
-wait 7000
+wait 6000
 # Normalize restored pet state to "home, neutral" (selection back on Story).
-tap press 7000
-hold press 1500 7000
+tap press 6000
+hold press 1500 6000
 mark begin
 # Rail: Story(1) -> Feed(3), press: one durable feed (happy face, hearts).
 tap down 2500
 tap down 2500
 tap press 8000
-# PWR: sleep, power off, RTC alarm wakes the board 45 s later.
-alarm 45
+# PWR: sleep, power off, RTC alarm wakes the board 30 s later.
+alarm 30
 tap pwr 30000
 end

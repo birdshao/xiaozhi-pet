@@ -26,8 +26,10 @@ PETSELFTEST1
 # expect max_full_ms 12000
 volume 15
 book reader_test
-# Let XiaoZhi finish Wi-Fi/activation; the runner retries the toggle.
-wait 20000
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries. No feature timer is
+# waited for (reader holds are presentation), so it always runs at 100 %.
+waitidle 60000
 pet
 wait 7000
 # Normalize to home: press opens the preselected Story, hold returns home.

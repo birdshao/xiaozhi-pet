@@ -14,7 +14,8 @@ namespace kid_app {
 //
 // Feature timers that only exist to wait for a person (idle blink, cleanup
 // after idle, power idle/nap, the morning window, the parent menu idle
-// exit, battery sampling and reaction periods) wrap their duration in
+// exit, the mini game repeat/idle exit, battery sampling and reaction
+// periods) wrap their duration in
 // SelfTestClock::Scaled(). Never wrap refresh physics (EPD busy waits,
 // animation frame/settle times), audio playback, the sleep cancel window
 // (a child's chance to change their mind, counted from the panel) or
