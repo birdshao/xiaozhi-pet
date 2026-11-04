@@ -62,11 +62,17 @@ PowerEvent PowerManager::Tick(uint32_t now_ms, const PowerConditions& conditions
             state_ = PowerState::Nap;
             nap_since_ms_ = now_ms;
             return PowerEvent::EnterNap;
-        case PowerState::Nap:
-            if (!conditions.may_power_off ||
-                now_ms - nap_since_ms_ < (night ? kNightOffAfterNapMs : kOffAfterNapMs))
+        case PowerState::Nap: {
+            const bool low = conditions.low_battery;
+            const uint32_t off_after = night ? kNightOffAfterNapMs
+                                       : low ? kLowBatteryOffAfterNapMs
+                                             : kOffAfterNapMs;
+            if (!conditions.may_power_off || now_ms - nap_since_ms_ < off_after)
                 return PowerEvent::None;
-            return SleepNow(night ? SleepReason::Night : SleepReason::Idle);
+            return SleepNow(night ? SleepReason::Night
+                            : low ? SleepReason::LowBattery
+                                  : SleepReason::Idle);
+        }
         case PowerState::Off:
             break;
     }
@@ -88,6 +94,7 @@ const char* SleepReasonName(SleepReason reason) {
         case SleepReason::Idle: return "idle";
         case SleepReason::Night: return "night";
         case SleepReason::Morning: return "morning";
+        case SleepReason::LowBattery: return "low_battery";
         case SleepReason::None: break;
     }
     return "none";

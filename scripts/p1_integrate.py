@@ -707,6 +707,7 @@ BOARD_WORKER = r'''
             }
             case kid_app::SleepAction::RestoreScene: {
                 sleep_active_.store(false);
+                sleep_battery_ = false;  // V3-05: a retry sets it again
                 StopPrompt();  // a cancelled sleep cuts the good night
                 SceneStateLock lock(scene_state_mutex_);
                 pet_mailbox_.Publish(UnpackPetScene(last_pet_scene_.load()));
@@ -728,16 +729,21 @@ BOARD_WORKER = r'''
         // ADR-010: the RTC alarm powers TuanTuan on at the plan's wake time;
         // a self-test "alarm" step wins so unattended trials come back soon.
         uint32_t wake_s = sleep_alarm_s_.exchange(0);
+        // V3-05: a critical battery arms no rhythm alarm (waking into a dead
+        // battery only drains it further); PWR powers TuanTuan on again.
+        const bool battery = sleep_battery_;
+        sleep_battery_ = false;
         const char* wake_by = wake_s ? "selftest" : "rhythm";
         // V3-04: the next alarm boot skips the morning power-off after a
         // self-test alarm, so the host can restore the board.
         WriteRtcWakeMark(wake_s ? kSelfTestWakeMark : 0);
-        if (!wake_s) wake_s = SecondsUntilWake();
-        if (!wake_s) wake_by = "none";  // RTC not set: PWR wakes the pet
+        if (!wake_s && !battery) wake_s = SecondsUntilWake();
+        // Nothing armed (RTC not set, or a flat battery): PWR wakes the pet.
+        if (!wake_s) wake_by = battery ? "none_battery" : "none";
         const bool alarm = wake_s && ArmRtcAlarmIn(wake_s);
-        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s",
+        ESP_LOGI(TAG, "PET_SLEEP_POWEROFF settled=%d alarm_s=%u armed=%d wake=%s battery=%d",
                  pet_service_.Settled() ? 1 : 0, static_cast<unsigned>(wake_s), alarm ? 1 : 0,
-                 wake_by);
+                 wake_by, battery ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(300));
         if (pmic_) pmic_->PowerOff();
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -811,6 +817,7 @@ BOARD_WORKER = r'''
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
             UpdatePower(state);
+            UpdateBattery(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -1149,7 +1156,9 @@ BOARD_WORKER = r'''
         // "voice" step) counts as a voice session too.
         conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active() ||
                           voice_face_.load() != 0;
-        conditions.may_power_off = on_battery_.load() && !selftest_seen_.load();
+        conditions.may_power_off = on_battery_.load() && !selftest_seen_.load() &&
+                                   !battery_.External();  // V3-05: never while charging
+        conditions.low_battery = battery_.LowPower();
         const int phase = day_phase_.load();
         conditions.phase_known = phase >= 0;
         if (conditions.phase_known) conditions.phase = static_cast<kid_app::DayPhase>(phase);
@@ -1205,6 +1214,119 @@ BOARD_WORKER = r'''
         const uint8_t write[] = {kid_app::Pcf85063::kRamByte, value};
         if (!DiagI2c(0x51, write, sizeof(write), nullptr, 0))
             ESP_LOGW(TAG, "PET_RTC_WAKE_MARK refused=i2c_error");
+    }
+
+    // ---- V3-05 low battery and charging ----
+    // pet_boot_diag samples the PMIC (or what a self-test "battery" step
+    // set) every 2 s into one word; pet_input owns the policy and acts on
+    // it. Reactions are UI only, like the voice faces: no NVS, no Pet action.
+    kid_app::BatteryPolicy battery_;           // pet_input only
+    uint16_t battery_seen_ = 0;                // pet_input: last sample handled
+    bool battery_pet_ = false;                 // pet_input: Pet mode last loop
+    uint32_t battery_pet_since_ms_ = 0;        // pet_input: Pet mode opened
+    bool sleep_battery_ = false;               // pet_input: critical, no alarm
+    uint16_t battery_seq_ = 0;                 // pet_boot_diag only
+    uint32_t battery_sample_ms_ = 0;           // pet_boot_diag only
+    std::atomic<uint32_t> battery_sample_{0};  // PackBatteryReading | seq << 16
+    std::atomic<uint32_t> battery_inject_{0};  // self-test reading, 0 = PMIC
+    std::atomic<bool> battery_scripted_{false};  // a script set the battery
+    static constexpr uint32_t kBatterySampleMs = 2000;
+    static constexpr uint32_t kBatteryReactAfterPetMs = 10000;  // greet first
+
+    // pet_boot_diag. False: no reading (board without PMIC).
+    bool ReadBattery(kid_app::BatteryReading* out) {
+        const uint32_t injected = battery_inject_.load();
+        if (injected) {
+            *out = kid_app::UnpackBatteryReading(injected);
+            return true;
+        }
+        if (!pmic_) return false;
+        out->pct = pmic_->GetBatteryLevel();
+        out->charging = pmic_->IsCharging();
+        out->on_battery = pmic_->IsDischarging();
+        return true;
+    }
+
+    void SampleBattery(uint32_t now) {
+        if (battery_sample_ms_ && now - battery_sample_ms_ < kBatterySampleMs) return;
+        battery_sample_ms_ = now ? now : 1;
+        kid_app::BatteryReading reading{};
+        if (!ReadBattery(&reading)) return;
+        if (++battery_seq_ == 0) battery_seq_ = 1;  // 0: nothing sampled yet
+        battery_sample_.store(kid_app::PackBatteryReading(reading) |
+                              (static_cast<uint32_t>(battery_seq_) << 16));
+    }
+
+    // pet_input, every loop after UpdatePower.
+    void UpdateBattery(DeviceState state) {
+        const uint32_t now = NowMs();
+        const bool pet = pet_mode_.load();
+        if (pet && !battery_pet_) battery_pet_since_ms_ = now;
+        battery_pet_ = pet;
+        const uint32_t sample = battery_sample_.load();
+        const auto seq = static_cast<uint16_t>(sample >> 16);
+        if (seq != battery_seen_) {
+            battery_seen_ = seq;
+            const auto reading = kid_app::UnpackBatteryReading(sample);
+            const auto event = battery_.Update(reading, now);
+            if (event != kid_app::BatteryEvent::None) {
+                ESP_LOGI(TAG, "PET_BATTERY event=%s state=%s pct=%d chg=%d bat=%d src=%s",
+                         kid_app::BatteryEventName(event),
+                         kid_app::BatteryStateName(battery_.State()), reading.pct,
+                         reading.charging ? 1 : 0, reading.on_battery ? 1 : 0,
+                         battery_inject_.load() ? "selftest" : "pmic");
+                HandleBatteryEvent(event, now);
+            }
+        }
+        // Eat / yawn only on the awake Pet home screen: not going to sleep,
+        // napping, in the morning window, talking or on the reader; and
+        // not in a scripted trial that does not script the battery.
+        const bool allowed =
+            pet && now - battery_pet_since_ms_ >= kBatteryReactAfterPetMs &&
+            !sleep_flow_.Active() && !sleep_active_.load() && !napping_.load() &&
+            !morning_shown_.load() && voice_face_.load() == 0 && state == kDeviceStateIdle &&
+            kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
+            (!selftest_seen_.load() || battery_scripted_.load());
+        const auto reaction = battery_.Reaction(now, allowed);
+        if (reaction == kid_app::BatteryReaction::None) return;
+        const bool acted = RequestHomeAnimation(reaction == kid_app::BatteryReaction::Eat
+                                                    ? kid_app::Animation::Charge
+                                                    : kid_app::Animation::Yawn);
+        ESP_LOGI(TAG, "PET_BATTERY_REACTION anim=%s acted=%d pct=%d",
+                 kid_app::BatteryReactionName(reaction), acted ? 1 : 0, battery_.Percent());
+    }
+
+    // pet_input. Critical: the usual sleep flow (queued pet events commit,
+    // sleeping picture, cancel window, PMIC off) but no wake alarm; it is
+    // never a direct PMIC power-off.
+    void HandleBatteryEvent(kid_app::BatteryEvent event, uint32_t now) {
+        switch (event) {
+            case kid_app::BatteryEvent::Plugged:
+                if (!pet_mode_.load()) return;
+                // Plugged in while going to sleep for a flat battery: stay up.
+                if (sleep_battery_ && sleep_flow_.Cancel()) {
+                    ESP_LOGI(TAG, "PET_BATTERY_SHUTDOWN_CANCELLED reason=plugged");
+                    HandleSleepAction(kid_app::SleepAction::RestoreScene);
+                }
+                // Someone plugged the cable in: activity (ends a nap).
+                HandlePowerEvent(power_.OnActivity(now));
+                return;
+            case kid_app::BatteryEvent::Critical:
+                if (!pet_mode_.load()) {
+                    ESP_LOGW(TAG, "PET_BATTERY_SHUTDOWN skipped=pet_off pct=%d",
+                             battery_.Percent());
+                    return;
+                }
+                sleep_battery_ = true;  // also when a sleep is already under way
+                ESP_LOGI(TAG, "PET_BATTERY_SHUTDOWN pct=%d", battery_.Percent());
+                if (!sleep_flow_.Active()) HandleSleepAction(sleep_flow_.Request(now));
+                return;
+            case kid_app::BatteryEvent::None:
+            case kid_app::BatteryEvent::Unplugged:
+            case kid_app::BatteryEvent::Full:
+            case kid_app::BatteryEvent::EnteredLow:
+                return;  // logged; the yawn follows from Reaction()
+        }
     }
 
     // V1 read-only hardware acceptance. Probes and reads only: never sets
@@ -1578,6 +1700,12 @@ BOARD_WORKER = r'''
             in.battery_pct = pmic_->GetBatteryLevel();
             in.charging = pmic_->IsCharging();
         }
+        // V3-05: a self-test "battery" step stands in for the PMIC.
+        if (const uint32_t injected = battery_inject_.load()) {
+            const auto reading = kid_app::UnpackBatteryReading(injected);
+            in.battery_pct = reading.pct;
+            in.charging = reading.charging;
+        }
         in.quiet = quiet_hours_.load();
         in.network = WifiManager::GetInstance().IsConnected() ? kid_app::NetworkState::Online
                                                                : kid_app::NetworkState::Offline;
@@ -1711,6 +1839,30 @@ BOARD_WORKER = r'''
                     ESP_LOGI(TAG, "PET_SELFTEST_VOICE phase=%s",
                              kid_app::VoiceFaceName(static_cast<kid_app::VoiceFace>(step.ms)));
                     break;
+                case kid_app::SelfTestOp::Battery: {
+                    // V3-05: readings as if from the PMIC (status band and
+                    // battery policy); "off" hands back to the real PMIC.
+                    const bool off = step.ms == kid_app::SelfTestScript::kBatteryOff;
+                    kid_app::BatteryReading reading{};
+                    reading.pct = static_cast<int>(step.ms & 0xFF);
+                    reading.charging = (step.ms & kid_app::SelfTestScript::kBatteryCharging) != 0;
+                    reading.on_battery = !reading.charging;
+                    // A critical level powers off: the alarm must still be
+                    // armed, or the board would not come back (as "morning").
+                    if (!off && reading.on_battery &&
+                        reading.pct < kid_app::BatteryPolicy::kCriticalPct &&
+                        !sleep_alarm_s_.load()) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_ABORT reason=battery step=%u",
+                                 static_cast<unsigned>(i));
+                        delete script;
+                        return;
+                    }
+                    battery_scripted_.store(true);
+                    battery_inject_.store(off ? 0 : kid_app::PackBatteryReading(reading));
+                    ESP_LOGI(TAG, "PET_SELFTEST_BATTERY pct=%d chg=%d off=%d", reading.pct,
+                             reading.charging ? 1 : 0, off ? 1 : 0);
+                    break;
+                }
                 case kid_app::SelfTestOp::Volume:
                     prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_VOLUME pct=%u", static_cast<unsigned>(step.ms));
@@ -1764,6 +1916,7 @@ BOARD_WORKER = r'''
                 }
                 HandleGesture(gesture_detector_.OnWindow(s, now), "imu");
             }
+            SampleBattery(now);
             if (now - last_heartbeat_ms >= 10000) {
                 last_heartbeat_ms = now;
                 SyncRtcFromSystemTime();
@@ -1823,6 +1976,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/gesture_detector.h"\n'
         '#include "kid_app/rhythm_scheduler.h"\n'
         '#include "kid_app/power_manager.h"\n'
+        '#include "kid_app/battery_policy.h"\n'
         '#include <ctime>\n'
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'

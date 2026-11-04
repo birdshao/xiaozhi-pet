@@ -251,3 +251,11 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/tests/cpp/test_content_pack_reader.cc" \
   -o "$BUILD/test_content_pack_reader"
 "$BUILD/test_content_pack_reader" "$ROOT/tests/fixtures/kpb2"
+
+# V3-05 low battery and charging: debounced plug/unplug, low/critical bands
+# with hysteresis, critical retry, rate-limited eat/yawn reactions.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/battery_policy.cc" \
+  "$ROOT/tests/cpp/test_battery_policy.cc" \
+  -o "$BUILD/test_battery_policy"
+"$BUILD/test_battery_policy"

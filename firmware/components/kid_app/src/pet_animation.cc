@@ -15,6 +15,9 @@ constexpr AnimationFrame kDizzy[] = {
     {ScenePose::Dizzy1, 200}, {ScenePose::Dizzy2, 500}, {ScenePose::Still, 0}};
 // The first frame repeats the base picture (no visible change) to hold it.
 constexpr AnimationFrame kMorning[] = {{ScenePose::Sunrise, 2000}, {ScenePose::Morning, 0}};
+// Long holds: the reminder has to be seen, and each frame is one partial.
+constexpr AnimationFrame kCharge[] = {{ScenePose::Charging, 3000}, {ScenePose::Still, 0}};
+constexpr AnimationFrame kYawn[] = {{ScenePose::Yawn, 4000}, {ScenePose::Still, 0}};
 
 template <size_t N>
 uint8_t Use(const AnimationFrame (&table)[N], const AnimationFrame** frames) {
@@ -33,6 +36,8 @@ uint8_t AnimationFrames(Animation animation, const AnimationFrame** frames) {
         case Animation::Giggle: return Use(kGiggle, frames);
         case Animation::Dizzy: return Use(kDizzy, frames);
         case Animation::Morning: return Use(kMorning, frames);
+        case Animation::Charge: return Use(kCharge, frames);
+        case Animation::Yawn: return Use(kYawn, frames);
         case Animation::None: break;
     }
     *frames = nullptr;
@@ -48,6 +53,8 @@ const char* AnimationName(Animation animation) {
         case Animation::Giggle: return "giggle";
         case Animation::Dizzy: return "dizzy";
         case Animation::Morning: return "morning";
+        case Animation::Charge: return "charge";
+        case Animation::Yawn: return "yawn";
         case Animation::None: break;
     }
     return "none";
