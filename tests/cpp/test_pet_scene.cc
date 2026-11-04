@@ -94,7 +94,8 @@ int main() {
         MonoFrame still;
         SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2}, still);
         for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
-                                Emotion::Sleepy, Emotion::Surprised}) {
+                                Emotion::Sleepy, Emotion::Surprised, Emotion::Listening,
+                                Emotion::Thinking, Emotion::Speaking}) {
             for (kid_app::ScenePose pose :
                  {kid_app::ScenePose::Still, kid_app::ScenePose::Blink, kid_app::ScenePose::Wave,
                   kid_app::ScenePose::Hearts1, kid_app::ScenePose::Hearts2,
@@ -147,6 +148,33 @@ int main() {
             for (int x = 0; x < MonoFrame::kWidth; ++x)
                 assert(!sunrise.IsBlack(x, SceneComposer::kRailTop - 2) &&
                        !morning.IsBlack(x, SceneComposer::kRailTop - 2));
+        }
+        // V6-01 voice faces: each one differs from the resting picture and
+        // from the others, and all of them stay inside the screen above the
+        // rail (rail band checked in the loop above).
+        {
+            const Emotion voice[] = {Emotion::Listening, Emotion::Thinking, Emotion::Speaking};
+            MonoFrame faces[3];
+            for (int i = 0; i < 3; ++i) {
+                SceneComposer::Render(SceneModel{SceneKind::Home, voice[i], 1, 2}, faces[i]);
+                assert(faces[i].Data() != still.Data());
+                for (int x = 0; x < MonoFrame::kWidth; ++x)
+                    assert(!faces[i].IsBlack(x, SceneComposer::kRailTop - 2));
+            }
+            assert(faces[0].Data() != faces[1].Data() && faces[1].Data() != faces[2].Data() &&
+                   faces[0].Data() != faces[2].Data());
+            // Listening: sound waves right of the raised paw. Thinking: a
+            // cloud top right. Speaking: sound arcs on both sides.
+            auto ink = [](const MonoFrame& f, int x0, int y0, int x1, int y1) {
+                for (int y = y0; y < y1; ++y)
+                    for (int x = x0; x < x1; ++x)
+                        if (f.IsBlack(x, y)) return true;
+                return false;
+            };
+            assert(ink(faces[0], 600, 90, 650, 170) && !ink(still, 600, 90, 650, 170));
+            assert(ink(faces[1], 600, 20, 680, 80) && !ink(still, 600, 20, 680, 60));
+            assert(ink(faces[2], 200, 160, 240, 240) && ink(faces[2], 560, 160, 600, 240));
+            assert(!ink(still, 200, 160, 240, 240));
         }
         // Falling asleep: Zzz1 < Zzz2 < Still (all three letters).
         MonoFrame z1, z2, z3;
@@ -235,7 +263,8 @@ int main() {
         // The boxes are reserved: blank for every expression and pose while
         // the status is unknown (so the planner's regions never overlap).
         for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
-                                Emotion::Sleepy, Emotion::Surprised}) {
+                                Emotion::Sleepy, Emotion::Surprised, Emotion::Listening,
+                                Emotion::Thinking, Emotion::Speaking}) {
             for (ScenePose pose : {ScenePose::Still, ScenePose::Blink, ScenePose::Wave,
                                    ScenePose::Hearts1, ScenePose::Hearts2, ScenePose::Giggle,
                                    ScenePose::Dizzy1, ScenePose::Dizzy2, ScenePose::Sunrise,
@@ -333,7 +362,8 @@ int main() {
     {
         for (SceneKind kind : {SceneKind::Home, SceneKind::Reader, SceneKind::Sleep}) {
             for (Emotion emotion : {Emotion::Neutral, Emotion::Happy, Emotion::Curious,
-                                    Emotion::Sleepy, Emotion::Surprised}) {
+                                    Emotion::Sleepy, Emotion::Surprised, Emotion::Listening,
+                                    Emotion::Thinking, Emotion::Speaking}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
                         for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Morning);

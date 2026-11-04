@@ -39,6 +39,21 @@ int main() {
     assert(pet.Apply({6, PetAction::QuietEnd}, &effects) == PetResult::Applied);
     assert(PetScenePresenter::Present(pet.Snapshot()).emotion == Emotion::Neutral);
 
+    // V6-01: the durable voice modes show the listening / speaking faces on
+    // the home screen, and the normal picture comes back afterwards.
+    assert(pet.Apply({7, PetAction::VoiceBegin}, &effects) == PetResult::Applied);
+    auto listening = PetScenePresenter::Present(pet.Snapshot());
+    assert(listening.kind == SceneKind::Home && listening.emotion == Emotion::Listening);
+    assert(pet.Apply({8, PetAction::VoiceReplyBegin}, &effects) == PetResult::Applied);
+    auto speaking = PetScenePresenter::Present(pet.Snapshot());
+    assert(speaking.kind == SceneKind::Home && speaking.emotion == Emotion::Speaking);
+    assert(pet.Apply({9, PetAction::VoiceEnd}, &effects) == PetResult::Applied);
+    assert(PetScenePresenter::Present(pet.Snapshot()).emotion == Emotion::Neutral);
+    // Quiet wins over a voice mode (no chat faces during quiet time).
+    assert(pet.Apply({10, PetAction::VoiceBegin}, &effects) == PetResult::Applied);
+    assert(pet.Apply({11, PetAction::QuietBegin}, &effects) == PetResult::Applied);
+    assert(PetScenePresenter::Present(pet.Snapshot()).emotion == Emotion::Sleepy);
+
     // Render into a physical-size black/white buffer without backend services.
     MonoFrame frame;
     SceneComposer::Render(reader, frame);

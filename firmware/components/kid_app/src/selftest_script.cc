@@ -1,6 +1,7 @@
 #include "kid_app/selftest_script.h"
 
 #include "kid_app/gesture_detector.h"
+#include "kid_app/voice_face.h"
 
 #include <cstring>
 
@@ -82,6 +83,23 @@ bool GestureName(const char* name, uint32_t* out) {
     }
     return false;
 }
+bool VoicePhase(const char* name, uint32_t* out) {
+    struct Entry {
+        const char* name;
+        VoiceFace face;
+    };
+    static const Entry kPhases[] = {{"off", VoiceFace::None},
+                                    {"listen", VoiceFace::Listening},
+                                    {"think", VoiceFace::Thinking},
+                                    {"speak", VoiceFace::Speaking}};
+    for (const auto& entry : kPhases) {
+        if (std::strcmp(name, entry.name) == 0) {
+            *out = static_cast<uint32_t>(entry.face);
+            return true;
+        }
+    }
+    return false;
+}
 }  // namespace
 
 bool SelfTestScript::Parse(const char* text) {
@@ -139,6 +157,9 @@ bool SelfTestScript::Parse(const char* text) {
         } else if (std::strcmp(words[0], "gesture") == 0) {
             if (n != 2 || !GestureName(words[1], &step.ms)) return false;
             step.op = SelfTestOp::Gesture;
+        } else if (std::strcmp(words[0], "voice") == 0) {
+            if (n != 2 || !VoicePhase(words[1], &step.ms)) return false;
+            step.op = SelfTestOp::Voice;
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;
@@ -186,9 +207,9 @@ bool SelfTestScript::ParseSector(const uint8_t* sector, size_t size) {
 uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
-        // Alarm seconds, Volume percent and Gesture codes are not delays.
+        // Alarm seconds, Volume percent, Gesture and Voice codes are not delays.
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
-            steps_[i].op == SelfTestOp::Gesture)
+            steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

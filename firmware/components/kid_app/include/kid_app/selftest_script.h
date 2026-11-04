@@ -27,16 +27,21 @@ namespace kid_app {
 //                           good-morning picture, back to sleep after 60 s
 //                           without input. Only after an "alarm" step, so the
 //                           power-off it leads to always wakes the board again.
+//   voice <phase>           as if XiaoZhi were: listen, think, speak; off hands
+//                           the voice face back to XiaoZhi's real state (V6-01)
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
-enum class SelfTestOp : uint8_t { Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning };
+enum class SelfTestOp : uint8_t {
+    Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice
+};
 
 struct SelfTestStep {
     SelfTestOp op = SelfTestOp::Wait;
     InputKey key = InputKey::DialPress;
     uint32_t ms = 0;      // wait/hold ms; seconds for Alarm; percent for Volume;
-                          // kid_app::Gesture value for Gesture
+                          // kid_app::Gesture value for Gesture;
+                          // kid_app::VoiceFace value for Voice (None = off)
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark only
 };

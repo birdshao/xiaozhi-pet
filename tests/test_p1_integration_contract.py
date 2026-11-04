@@ -3,7 +3,11 @@
 Does not need the ESP-IDF SDK; test patches on fixture snippets.
 """
 import unittest
+from pathlib import Path
 from scripts.p1_integrate import patch_display_h, patch_display_cc, patch_board
+from scripts.p1_integrate import patch_display_voice_h
+
+ROOT = Path(__file__).resolve().parent.parent
 
 class DisplayOverlayTest(unittest.TestCase):
     def test_scene_display_header(self):
@@ -655,6 +659,102 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(fallback.index('ShowPetScene(scene)'), fallback.index('pmic_->PowerOff()'))
         self.assertLess(fallback.index('ArmRtcAlarmIn(wake_s)'), fallback.index('pmic_->PowerOff()'))
         self.assertIn('WriteRtcWakeMark(0)', fallback)
+    def test_v6_display_counts_recognised_sentences(self):
+        header = patch_display_voice_h(
+            '#include <driver/gpio.h>\n#include "lcd_display.h"\n'
+            'class CustomEpdDisplay : public LcdDisplay {\npublic:\n'
+            '    void EPD_DrawColorPixel(uint16_t x, uint16_t y, uint8_t color);\n};\n')
+        self.assertIn('#include <atomic>', header)
+        hook = header[header.index('void SetChatMessage('):]
+        hook = hook[:hook.index('\n    }\n')]
+        # Counts "user" (stt) messages only and always forwards to LVGL; the
+        # sentence text itself is never stored or logged by the pet.
+        self.assertIn('std::strcmp(role, "user") == 0', hook)
+        self.assertIn('user_utterances_.fetch_add(1)', hook)
+        self.assertIn('LcdDisplay::SetChatMessage(role, content);', hook)
+        self.assertNotIn('ESP_LOG', hook)
+        self.assertIn('uint32_t UserUtterances() const', header)
+        # run() applies it on top of the pet display header.
+        source = (ROOT / 'scripts' / 'p1_integrate.py').read_text(encoding='utf-8')
+        self.assertIn('patch_display_voice_h(patch_display_h(', source)
+
+    def test_v6_voice_faces_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/voice_face.h"', patched)
+        update = patched[patched.index('void UpdateVoiceFace('):]
+        update = update[:update.index('\n    }\n')]
+        # XiaoZhi states -> link; "thinking" from recognised sentences.
+        self.assertIn('kDeviceStateConnecting || state == kDeviceStateListening', update)
+        self.assertIn('state == kDeviceStateSpeaking', update)
+        self.assertIn('display_->UserUtterances()', update)
+        self.assertIn('voice_tracker_.Update(link, heard, NowMs(), &face)', update)
+        # Off outside Pet mode / while going to sleep; display_ only read in Pet mode.
+        self.assertIn('if (!pet || sleep_active_.load()) link = kid_app::VoiceLink::Off;', update)
+        self.assertIn('(pet ? display_->UserUtterances() : 0)', update)
+        # UI-only overlay: published under the scene lock from the durable
+        # picture, never a durable Pet action or NVS write.
+        locked = update[update.index('SceneStateLock lock(scene_state_mutex_)'):]
+        self.assertIn('voice_face_.store(', locked)
+        self.assertIn('pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())))',
+                      locked)
+        self.assertNotIn('PostLocal', update)
+        self.assertNotIn('last_pet_scene_.store', update)
+        self.assertIn('PET_VOICE_FACE face=%s', update)
+        loop = patched[patched.index('void InputTaskLoop()'):]
+        loop = loop[:loop.index('\n    }\n')]
+        self.assertIn('UpdateVoiceFace(state);', loop)
+        # Committed scenes keep the face while a voice session runs.
+        commit = patched[patched.index('static void PetCommitted('):]
+        commit = commit[:commit.index('\n    }\n')]
+        self.assertIn('pet_mailbox_.Publish(self->WithVoiceFace(scene))', commit)
+        self.assertIn('last_pet_scene_.store(PackPetScene(scene))', commit)
+        # No idle blink or cleanup on a voice face.
+        idle = patched[patched.index('static void PetIdle('):]
+        idle = idle[:idle.index('\n    }\n')]
+        self.assertIn('self->voice_face_.load() == 0', idle)
+        # V3-03: a voice session (or a face still shown) blocks idle, nap and
+        # idle power-off; leaving a nap keeps the face.
+        power = patched[patched.index('void UpdatePower('):]
+        power = power[:power.index('\n    }\n')]
+        self.assertIn('state != kDeviceStateIdle || sleep_flow_.Active() ||\n'
+                      '                          voice_face_.load() != 0', power)
+        nap = patched[patched.index('void PublishPowerScene('):]
+        nap = nap[:nap.index('\n    }\n')]
+        self.assertIn('pet_mailbox_.Publish(drowsy ? scene : WithVoiceFace(scene))', nap)
+
+    def test_v6_boot_talks_on_the_pet_home_screen(self):
+        patched = self._board()
+        click = patched[patched.index('boot_button_.OnClick('):]
+        click = click[:click.index('\n        });\n')]
+        pet = click[click.index('if (pet_mode_.load()) {'):]
+        # Home rail: BOOT starts/stops XiaoZhi (not while going to sleep);
+        # quiet time and the reader keep their single-click routing.
+        self.assertIn('PetInputRouter::IsHomeRail(pet_mode)', pet)
+        self.assertIn('if (!sleep_active_.load()) app.ToggleChatState();', pet)
+        self.assertLess(pet.index('app.ToggleChatState();'), pet.index('PetInputRouter::Decide('))
+        self.assertIn('if (DialPressHeld()) return;', click)
+        self.assertLess(click.index('if (DialPressHeld()) return;'), click.index('ToggleChatState'))
+
+    def test_v6_selftest_voice_step(self):
+        patched = self._board()
+        run = patched[patched.index('void MaybeRunSelfTest()'):]
+        run = run[:run.index('\n    }\n')]
+        voice = run[run.index('case kid_app::SelfTestOp::Voice:'):]
+        voice = voice[:voice.index('break;')]
+        self.assertIn('selftest_heard_.fetch_add(1)', voice)
+        self.assertIn('selftest_voice_.store(', voice)
+        self.assertIn('PET_SELFTEST_VOICE phase=%s', voice)
+        # Forced phases go through the same tracker as XiaoZhi's states.
+        update = patched[patched.index('void UpdateVoiceFace('):]
+        update = update[:update.index('\n    }\n')]
+        self.assertIn('selftest_voice_.load()', update)
+        self.assertIn('selftest_heard_.load()', update)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v6_voice_faces.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        for phase in ('voice listen', 'voice think', 'voice speak', 'voice off'):
+            self.assertIn(phase + '\n', scenario)
+        self.assertIn('# expect max_partial_ms 2500', scenario)
 
 if __name__ == "__main__":
     unittest.main()

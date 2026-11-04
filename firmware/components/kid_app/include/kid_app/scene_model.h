@@ -12,7 +12,12 @@ namespace kid_app {
 class StoryPackReader;
 // Sleep: shown before PMIC power-off and kept by the ePaper while off.
 enum class SceneKind : uint8_t { Home, Reader, Sleep };
-enum class Emotion : uint8_t { Neutral, Happy, Curious, Sleepy, Surprised };
+// Listening / Thinking / Speaking: voice-session faces (V6-01, see
+// voice_face.h); like every expression they stay above the action rail.
+// Packed in 4 bits (PackScene): at most 16 emotions.
+enum class Emotion : uint8_t {
+    Neutral, Happy, Curious, Sleepy, Surprised, Listening, Thinking, Speaking
+};
 // Short animation frames drawn on top of a scene (PetAnimationDirector).
 // Still is the resting picture. Home: Blink (eyes closed), Wave (paw up,
 // wink), Hearts1/Hearts2 (after feeding), Giggle (gentle shake: laughing

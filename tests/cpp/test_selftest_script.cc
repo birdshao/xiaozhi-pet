@@ -1,6 +1,7 @@
 #include "kid_app/selftest_script.h"
 
 #include "kid_app/gesture_detector.h"
+#include "kid_app/voice_face.h"
 
 #include <cassert>
 #include <cstring>
@@ -108,6 +109,24 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\ngesture\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture spin\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture pickup now\nend\n"));
+    }
+
+    // voice <phase>: inject XiaoZhi voice states for the V6-01 faces.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nvoice listen\nvoice think\nvoice speak\n"
+                            "voice off\nwait 10\nend\n"));
+        assert(script.Count() == 5 && script.TotalMs() == 10);  // phases are not delays
+        const kid_app::VoiceFace want[] = {kid_app::VoiceFace::Listening,
+                                           kid_app::VoiceFace::Thinking,
+                                           kid_app::VoiceFace::Speaking, kid_app::VoiceFace::None};
+        for (int i = 0; i < 4; ++i) {
+            assert(script.Steps()[i].op == SelfTestOp::Voice);
+            assert(script.Steps()[i].ms == static_cast<uint32_t>(want[i]));
+        }
+        assert(!script.Parse("PETSELFTEST1\nvoice\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvoice sing\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvoice listen now\nend\n"));
     }
 
     // Raw flash sector: text followed by erased 0xFF bytes.

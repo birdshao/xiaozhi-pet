@@ -14,6 +14,16 @@ SceneModel PetScenePresenter::Present(const PetSnapshot& state) {
         scene.emotion = Emotion::Sleepy;
         return scene;
     }
+    // Durable voice modes (VoiceBegin / VoiceReplyBegin) show the V6-01
+    // faces; the board's XiaoZhi overlay uses the same ones (voice_face.h).
+    if (state.mode == PetMode::Listening) {
+        scene.emotion = Emotion::Listening;
+        return scene;
+    }
+    if (state.mode == PetMode::Speaking) {
+        scene.emotion = Emotion::Speaking;
+        return scene;
+    }
     switch (state.mood) {
         case PetMood::Happy: scene.emotion = Emotion::Happy; break;
         case PetMood::Curious: scene.emotion = Emotion::Curious; break;

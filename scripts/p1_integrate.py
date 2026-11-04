@@ -51,6 +51,27 @@ def patch_display_h(text: str) -> str:
     return text
 
 
+def patch_display_voice_h(text: str) -> str:
+    text = once(text, "#include <driver/gpio.h>",
+                "#include <driver/gpio.h>\n#include <atomic>\n#include <cstring>",
+                "display header voice includes")
+    text = once(text, "    void EPD_DrawColorPixel(uint16_t x, uint16_t y, uint8_t color);",
+        """    void EPD_DrawColorPixel(uint16_t x, uint16_t y, uint8_t color);
+
+    // V6-01: XiaoZhi shows the recognised sentence (server "stt") as a
+    // "user" chat message. The pet only counts them (never reads the text)
+    // to tell "thinking" from "listening"; LVGL handling is unchanged.
+    void SetChatMessage(const char* role, const char* content) override {
+        if (role && content && content[0] && std::strcmp(role, "user") == 0)
+            user_utterances_.fetch_add(1);
+        LcdDisplay::SetChatMessage(role, content);
+    }
+    uint32_t UserUtterances() const { return user_utterances_.load(); }
+    std::atomic<uint32_t> user_utterances_{0};
+""", "display header voice utterances")
+    return text
+
+
 DISPLAY_IMPL = r'''
 bool CustomEpdDisplay::ShowPetPreview(kid_app::Emotion emotion) {
     return ShowPetScene({kid_app::SceneKind::Home, emotion, 1});
@@ -319,11 +340,13 @@ BOARD_WORKER = r'''
     static void PetIdle(const kid_app::SceneModel& displayed, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self || !self->pet_mode_.load()) return;
-        // Blink and cleanup only on a quiet, awake Pet home screen.
+        // Blink and cleanup only on a quiet, awake Pet home screen (never
+        // on a voice face, also while it lingers for its minimum dwell).
         const bool ambient = !self->sleep_active_.load() && !self->napping_.load() &&
                              !self->morning_shown_.load() &&
                              displayed.kind == kid_app::SceneKind::Home &&
-                             Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+                             Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
+                             self->voice_face_.load() == 0;
         kid_app::DirectorStep step{};
         {
             SceneStateLock lock(self->anim_mutex_);
@@ -378,7 +401,8 @@ BOARD_WORKER = r'''
             auto scene = kid_app::PetScenePresenter::Present(snapshot);
             scene.home_selection = self->home_selection_.load();
             self->last_pet_scene_.store(PackPetScene(scene));
-            if (effects.repaint && !self->sleep_active_.load()) self->pet_mailbox_.Publish(scene);
+            if (effects.repaint && !self->sleep_active_.load())
+                self->pet_mailbox_.Publish(self->WithVoiceFace(scene));
             // Mode after scene: the input task never sees a home mode
             // paired with a stale reader scene.
             self->pet_event_mode_.store(snapshot.mode);
@@ -717,12 +741,57 @@ BOARD_WORKER = r'''
         HandleSleepAction(kid_app::SleepAction::RestoreScene);
     }
 
+    // ---- V6-01 listening / thinking / speaking faces ----
+    // pet_input owns the tracker. The face is a UI-only overlay on the home
+    // scene (like the rail highlight): XiaoZhi's state never reaches NVS and
+    // last_pet_scene_ keeps the durable picture, so the normal home face
+    // comes back by itself. The tracker settles fast XiaoZhi flips and keeps
+    // faces >= 1.5 s apart (one partial each, never a refresh storm).
+    kid_app::VoiceFaceTracker voice_tracker_;   // pet_input task only
+    std::atomic<uint8_t> voice_face_{0};        // kid_app::VoiceFace shown
+    // Self-test "voice" step: forced phase (0 = XiaoZhi's real state) and
+    // extra recognised sentences for "think".
+    std::atomic<uint8_t> selftest_voice_{0};
+    std::atomic<uint32_t> selftest_heard_{0};
+
+    kid_app::SceneModel WithVoiceFace(const kid_app::SceneModel& scene) const {
+        return kid_app::ApplyVoiceFace(scene,
+                                       static_cast<kid_app::VoiceFace>(voice_face_.load()));
+    }
+
+    void UpdateVoiceFace(DeviceState state) {
+        auto link = kid_app::VoiceLink::Off;
+        if (state == kDeviceStateConnecting || state == kDeviceStateListening)
+            link = kid_app::VoiceLink::Listening;
+        else if (state == kDeviceStateSpeaking)
+            link = kid_app::VoiceLink::Speaking;
+        const auto forced = static_cast<kid_app::VoiceFace>(selftest_voice_.load());
+        if (forced != kid_app::VoiceFace::None)
+            link = forced == kid_app::VoiceFace::Speaking ? kid_app::VoiceLink::Speaking
+                                                          : kid_app::VoiceLink::Listening;
+        const bool pet = pet_mode_.load();
+        if (!pet || sleep_active_.load()) link = kid_app::VoiceLink::Off;
+        // pet_input starts in InitializeButtons(), before the EPD display
+        // exists; Pet mode (and so display_) only comes later.
+        const uint32_t heard = (pet ? display_->UserUtterances() : 0) + selftest_heard_.load();
+        kid_app::VoiceFace face{};
+        if (!voice_tracker_.Update(link, heard, NowMs(), &face)) return;
+        SceneStateLock lock(scene_state_mutex_);
+        voice_face_.store(static_cast<uint8_t>(face));
+        ESP_LOGI(TAG, "PET_VOICE_FACE face=%s state=%d src=%s", kid_app::VoiceFaceName(face),
+                 static_cast<int>(state),
+                 forced != kid_app::VoiceFace::None ? "selftest" : "xiaozhi");
+        if (pet_mode_.load() && !sleep_active_.load())
+            pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
+    }
+
     void InputTaskLoop() {
         RawKeyEdge edge{};
         for (;;) {
             const auto state = Application::GetInstance().GetDeviceState();
             input_hub_.SetVoiceActive(state == kDeviceStateListening ||
                                       state == kDeviceStateSpeaking);
+            UpdateVoiceFace(state);
             while (xQueueReceive(pet_input_queue_, &edge, pdMS_TO_TICKS(20)) == pdTRUE) {
                 const auto key = static_cast<kid_app::InputKey>(edge.key);
                 if (edge.down) input_hub_.Press(key, edge.at_ms);
@@ -916,7 +985,7 @@ BOARD_WORKER = r'''
             if (!kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load())) return;
             scene.emotion = kid_app::Emotion::Sleepy;
         }
-        pet_mailbox_.Publish(scene);
+        pet_mailbox_.Publish(drowsy ? scene : WithVoiceFace(scene));
     }
 
     // pet_input only. True when this input ended a nap or the morning
@@ -991,7 +1060,10 @@ BOARD_WORKER = r'''
         if (morning_request_.exchange(false)) BeginMorning(now);
         if (power_poke_.exchange(false)) HandlePowerEvent(power_.OnActivity(now));
         kid_app::PowerConditions conditions;
-        conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active();
+        // A voice face still on the panel (its dwell, or a self-test
+        // "voice" step) counts as a voice session too.
+        conditions.busy = state != kDeviceStateIdle || sleep_flow_.Active() ||
+                          voice_face_.load() != 0;
         conditions.may_power_off = on_battery_.load() && !selftest_seen_.load();
         const int phase = day_phase_.load();
         conditions.phase_known = phase >= 0;
@@ -1544,6 +1616,15 @@ BOARD_WORKER = r'''
                         return;
                     }
                     break;
+                case kid_app::SelfTestOp::Voice:
+                    // A script cannot talk to XiaoZhi: force the phase the
+                    // faces follow ("think" = one more recognised sentence).
+                    if (step.ms == static_cast<uint32_t>(kid_app::VoiceFace::Thinking))
+                        selftest_heard_.fetch_add(1);
+                    selftest_voice_.store(static_cast<uint8_t>(step.ms));
+                    ESP_LOGI(TAG, "PET_SELFTEST_VOICE phase=%s",
+                             kid_app::VoiceFaceName(static_cast<kid_app::VoiceFace>(step.ms)));
+                    break;
                 case kid_app::SelfTestOp::Volume:
                     prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_VOLUME pct=%u", static_cast<unsigned>(step.ms));
@@ -1631,6 +1712,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/home_menu.h"\n'
         '#include "kid_app/refresh_planner.h"\n'
         '#include "kid_app/pet_animation.h"\n'
+        '#include "kid_app/voice_face.h"\n'
         '#include "kid_app/selftest_script.h"\n'
         '#include "kid_app/sleep_flow.h"\n'
         '#include "kid_app/prompt_scheduler.h"\n'
@@ -1665,8 +1747,17 @@ def patch_board(text: str) -> str:
     text = once(text, "            app.ToggleChatState();",
         """            if (DialPressHeld()) return;  // BOOT + dial = parent combo
             if (pet_mode_.load()) {
+                // V6-01: on the pet home screen BOOT talks to XiaoZhi (press
+                // to start, press again to stop); TuanTuan listens, thinks
+                // and speaks along (UpdateVoiceFace). Not while going to
+                // sleep or in quiet time; the reader keeps BOOT = next page.
+                const auto pet_mode = pet_event_mode_.load();
+                if (kid_app::PetInputRouter::IsHomeRail(pet_mode)) {
+                    if (!sleep_active_.load()) app.ToggleChatState();
+                    return;
+                }
                 const auto decision = kid_app::PetInputRouter::Decide(
-                    pet_event_mode_.load(), kid_app::PetClick::Single);
+                    pet_mode, kid_app::PetClick::Single);
                 if (decision.valid && !pet_service_.PostLocal(decision.action))
                     ESP_LOGW(TAG, "PET_INPUT_REJECTED");
                 return;
@@ -1772,7 +1863,7 @@ def run(source: Path) -> None:
     # cannot leave half a patched source tree.
     patches = {
         cmake: patch_main_cmake(cmake.read_text(encoding="utf-8")),
-        header: patch_display_h(header.read_text(encoding="utf-8")),
+        header: patch_display_voice_h(patch_display_h(header.read_text(encoding="utf-8"))),
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
         audio_h: patch_audio_h(audio_h.read_text(encoding="utf-8")),
