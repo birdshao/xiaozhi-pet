@@ -232,6 +232,13 @@ void TestKpb1(const std::string& dir) {
 void TestCorruption(const std::string& dir) {
     const std::vector<uint8_t> good = Load(dir + "/golden_book.kpb");
     assert(Opens(good));
+    {
+        // Control: re-sealing works, a registered id (turtle) still opens.
+        std::vector<uint8_t> b = good;
+        Put16(b, kQuestionAt + 32, 10);  // rabbit -> turtle, still registered
+        Reseal(b);
+        assert(Opens(b));
+    }
     MemoryFile file(good);
     ContentPackReader r;
     assert(r.Open(file));
@@ -271,6 +278,16 @@ void TestCorruption(const std::string& dir) {
                  Put16(b, kQuestionAt, 2); Reseal(b); }},
             {"unused option", [](std::vector<uint8_t>& b) {
                  b[kQuestionAt + 192 + 32 + 2 * 48] = 1; Reseal(b); }},
+            // ADR-012 whitelist: unregistered topic slot / option id.
+            {"unknown slot", [](std::vector<uint8_t>& b) {
+                 Put16(b, kQuestionAt + 6, 5); Reseal(b); }},
+            {"unknown option id", [](std::vector<uint8_t>& b) {
+                 Put16(b, kQuestionAt + 32, 11); Reseal(b); }},
+            // Invalid UTF-8 label behind a correct segment CRC.
+            {"bad utf-8", [&](std::vector<uint8_t>& b) {
+                 b[label.offset] = 0xFF;
+                 Put32(b, kQuestionAt + 32 + 44, Crc(b.data() + label.offset, label.bytes));
+                 Reseal(b); }},
         };
     for (const auto& c : bad) {
         std::vector<uint8_t> b = good;

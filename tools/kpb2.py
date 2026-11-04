@@ -78,6 +78,11 @@ PREFERENCE_TOPICS: dict[str, tuple[int, str, dict[str, tuple[int, str]]]] = {
     }),
 }
 
+# Highest registered option id per like slot; the C++ reader keeps the same
+# table (kLikeOptionMax in content_pack_reader.cc) and rejects anything else.
+LIKE_OPTION_MAX = {slot: max(i for i, _ in options.values())
+                   for slot, _, options in PREFERENCE_TOPICS.values()}
+
 BOOK_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 
@@ -569,8 +574,8 @@ def _parse_question(raw: bytes, page: int, index: int) -> dict:
         like = bool(oflags & OPTION_FLAG_LIKE)
         if oflags & ~OPTION_FLAG_LIKE or reserved:
             raise ValueError("Unknown option flags")
-        if like and (slot == 0 or not 0 < option_id < NON_LIKE_OPTION_BASE):
-            raise ValueError("Like option needs a slot and a registry id")
+        if like and not 0 < option_id <= LIKE_OPTION_MAX.get(slot, 0):
+            raise ValueError("Like option needs a registered slot and option id")
         if not like and option_id != NON_LIKE_OPTION_BASE + k + 1:
             raise ValueError("Non-like option id must be 0xFF00 + position")
         if w % 8 or not ICON_MIN <= w <= ICON_MAX or not ICON_MIN <= h <= ICON_MAX:
@@ -621,7 +626,8 @@ def _parse_kpb1(blob: bytes) -> dict:
                 raise ValueError(f"Invalid KPB1 segment on page {i + 1}")
             end = offset + size
         pages.append({"number": number, "grey": False, "questions": [],
-                      "text": blob[segs[2][0]:segs[2][0] + segs[2][1]].decode("utf-8")})
+                      "text": blob[segs[2][0]:segs[2][0] + segs[2][1]]
+                      .decode("utf-8", errors="replace")})
     if end != total:
         raise ValueError("Trailing bytes after KPB1 data")
     return {"format": "KPB1", "package_type": "book", "content_id": 0, "revision": 0,

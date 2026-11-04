@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <iterator>
 
 namespace kid_app {
 namespace {
@@ -32,6 +33,10 @@ constexpr uint32_t kOptionsAt = 32;
 constexpr uint16_t kPageGrey = 0x0001;
 constexpr uint8_t kQuestionVoice = 0x01;
 constexpr uint8_t kOptionLike = 0x01;
+// Highest registered option id per like slot (index = slot; 0 unused).
+// Must match PREFERENCE_TOPICS in tools/kpb2.py (tests/test_v4_kpb2.py
+// checks this line). Append only: published ids never change.
+constexpr uint16_t kLikeOptionMax[] = {0, 10, 9, 8, 6};
 
 uint16_t U16(const uint8_t* d) {
     return static_cast<uint16_t>(d[0] | (uint16_t(d[1]) << 8));
@@ -63,18 +68,52 @@ uint32_t Advance(uint32_t crc, const uint8_t* data, size_t bytes) {
 uint32_t Crc(const uint8_t* data, size_t bytes) {
     return ~Advance(0xFFFFFFFFu, data, bytes);
 }
+// Streaming strict UTF-8 check (no overlongs, surrogates or > U+10FFFF),
+// the same acceptance as Python's bytes.decode("utf-8").
+class Utf8Check {
+public:
+    void Feed(const uint8_t* d, size_t n) {
+        for (size_t i = 0; i < n && ok_; ++i) {
+            const uint8_t b = d[i];
+            if (need_) {
+                ok_ = b >= lo_ && b <= hi_;
+                lo_ = 0x80;
+                hi_ = 0xBF;
+                --need_;
+            } else if (b >= 0x80) {
+                if (b >= 0xC2 && b <= 0xDF) need_ = 1;
+                else if (b >= 0xE0 && b <= 0xEF) need_ = 2;
+                else if (b >= 0xF0 && b <= 0xF4) need_ = 3;
+                else ok_ = false;
+                if (b == 0xE0) lo_ = 0xA0;
+                if (b == 0xED) hi_ = 0x9F;
+                if (b == 0xF0) lo_ = 0x90;
+                if (b == 0xF4) hi_ = 0x8F;
+            }
+        }
+    }
+    bool Valid() const { return ok_ && need_ == 0; }
+
+private:
+    bool ok_ = true;
+    uint8_t need_ = 0;
+    uint8_t lo_ = 0x80, hi_ = 0xBF;
+};
+
 // Fixed 512-byte stack chunk, as in KPB1: no heap, no full-asset buffer.
-bool Verified(StoryPackFile& file, const ContentSegment& s) {
+bool Verified(StoryPackFile& file, const ContentSegment& s, bool utf8 = false) {
     std::array<uint8_t, 512> chunk{};
     uint32_t crc = 0xFFFFFFFFu;
     uint32_t done = 0;
+    Utf8Check text;
     while (done < s.bytes) {
         const size_t n = std::min<size_t>(chunk.size(), s.bytes - done);
         if (!file.ReadAt(s.offset + done, chunk.data(), n)) return false;
         crc = Advance(crc, chunk.data(), n);
+        if (utf8) text.Feed(chunk.data(), n);
         done += static_cast<uint32_t>(n);
     }
-    return ~crc == s.crc;
+    return ~crc == s.crc && (!utf8 || text.Valid());
 }
 
 // KPB2 data region: every segment starts exactly at the previous end
@@ -83,7 +122,7 @@ class SegmentChain {
 public:
     SegmentChain(StoryPackFile& file, uint32_t start, uint32_t total)
         : file_(file), end_(start), total_(total) {}
-    bool Next(const ContentSegment& s) {
+    bool Next(const ContentSegment& s, bool utf8 = false) {
         const uint64_t aligned = (uint64_t(end_) + 3u) & ~uint64_t(3u);
         if (s.offset != aligned || aligned + s.bytes > total_) return false;
         if (aligned > end_) {
@@ -92,7 +131,7 @@ public:
             if (!file_.ReadAt(end_, pad.data(), n) || !AllZero(pad.data(), n))
                 return false;
         }
-        if (!Verified(file_, s)) return false;
+        if (!Verified(file_, s, utf8)) return false;
         end_ = s.offset + s.bytes;
         return true;
     }
@@ -179,8 +218,9 @@ bool ParseQuestion(const uint8_t* r, uint16_t page, uint8_t index,
         const uint16_t m = ContentPackReader::kHighlightMargin;
         if ((oflags & ~kOptionLike) != 0 || o[3] != 0 ||
             (opt.counts_as_like
-                 ? (q.like_slot == 0 || opt.id == 0 ||
-                    opt.id >= ContentPackReader::kNonLikeOptionBase)
+                 ? (q.like_slot == 0 ||
+                    q.like_slot >= std::size(kLikeOptionMax) || opt.id == 0 ||
+                    opt.id > kLikeOptionMax[q.like_slot])
                  : opt.id != ContentPackReader::kNonLikeOptionBase + k + 1) ||
             (b.x % 8) != 0 || (b.w % 8) != 0 ||
             b.w < kIconMin || b.w > kIconMax ||
@@ -337,7 +377,7 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
         return false;
 
     SegmentChain chain(file, data, total);
-    if (!chain.Next(title)) return false;
+    if (!chain.Next(title, true)) return false;
     uint16_t seen = 0;
     for (uint16_t i = 0; i < count; ++i) {
         std::array<uint8_t, kPageRecord> record{};
@@ -347,7 +387,7 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
             !ParsePage(record.data(), static_cast<uint16_t>(i + 1), seen, &p) ||
             seen + p.question_count > questions ||
             !chain.Next(p.mono) || (p.has_grey && !chain.Next(p.grey)) ||
-            !chain.Next(p.pcm) || !chain.Next(p.text))
+            !chain.Next(p.pcm) || !chain.Next(p.text, true))
             return false;
         for (uint8_t j = 0; j < p.question_count; ++j) {
             std::array<uint8_t, kQuestionRecord> raw{};
@@ -355,12 +395,12 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
             if (!file.ReadAt(question_table + (seen + j) * kQuestionRecord,
                              raw.data(), raw.size()) ||
                 !ParseQuestion(raw.data(), p.number, j, &q) ||
-                !chain.Next(q.prompt_pcm) || !chain.Next(q.prompt_text))
+                !chain.Next(q.prompt_pcm) || !chain.Next(q.prompt_text, true))
                 return false;
             for (uint8_t k = 0; k < q.option_count; ++k) {
                 const ContentOption& o = q.options[k];
                 if (!chain.Next(o.icon) || !chain.Next(o.pcm) ||
-                    !chain.Next(o.label))
+                    !chain.Next(o.label, true))
                     return false;
             }
         }

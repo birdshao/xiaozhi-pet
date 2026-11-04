@@ -227,6 +227,19 @@ class Kpb2Tests(unittest.TestCase):
         # icon x not byte aligned
         bad(lambda b: refresh_crcs(struct.pack_into("<H", b, QUESTION_AT + 32 + 4, 100)
                                    or b), "8 px")
+        # like slot / option id outside the PREFERENCE_TOPICS whitelist
+        bad(lambda b: refresh_crcs(struct.pack_into("<H", b, QUESTION_AT + 6, 5) or b),
+            "registered")
+        bad(lambda b: refresh_crcs(struct.pack_into("<H", b, QUESTION_AT + 32, 11) or b),
+            "registered")
+        # invalid UTF-8 label behind a correct segment CRC
+        def bad_label(b):
+            offset, size = struct.unpack_from("<II", b, QUESTION_AT + 32 + 36)
+            b[offset] = 0xFF
+            struct.pack_into("<I", b, QUESTION_AT + 32 + 44,
+                             zlib.crc32(b[offset:offset + size]) & 0xFFFFFFFF)
+            refresh_crcs(b)
+        bad(bad_label, "utf-8")
         # third question claimed on page 1
         bad(lambda b: refresh_crcs(struct.pack_into("<H", b, 96 + 6, 3) or b), "page record")
         self.assertEqual(kpb2.parse(bytes(good))["format"], "KPB2")
@@ -271,6 +284,16 @@ class Kpb2Tests(unittest.TestCase):
         self._rejects(self._doc(), "5 seconds")
         with self.assertRaisesRegex(ValueError, "--reviewed"):
             make_pack(self.source, self.output, reviewed=False)
+
+    def test_like_whitelist_matches_cpp_reader(self):
+        table = ", ".join(["0"] + [str(kpb2.LIKE_OPTION_MAX[s])
+                                   for s in range(1, len(kpb2.LIKE_OPTION_MAX) + 1)])
+        source = (ROOT / "firmware/components/kid_app/src/content_pack_reader.cc").read_text(
+            encoding="utf-8")
+        self.assertIn("kLikeOptionMax[] = {%s};" % table, source)
+        for slot, _, options in kpb2.PREFERENCE_TOPICS.values():
+            ids = sorted(i for i, _ in options.values())
+            self.assertEqual(ids, list(range(1, len(ids) + 1)), "ids are append-only 1..n")
 
     def test_kpb1_still_compiles_and_validates(self):
         out = self.base / "k1" / "golden_kpb1.kpb"
