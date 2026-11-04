@@ -1,0 +1,30 @@
+PETSELFTEST1
+# V2-07 option name prompts: the item the child stops on is spoken once;
+# items passed quickly are skipped; a press stops a prompt.
+# Rail: 0 chat, 1 story (default), 2 game, 3 feed, 4 sleep.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect prompt_seq 2,4,3,0
+# expect min:PET_PROMPT_QUEUED 4
+# expect none:PET_PROMPT_FAILED 0
+# expect selftest_done 1
+wait 20000
+pet
+wait 7000
+# Normalize restored pet state to "home, neutral".
+tap press 7000
+hold press 1500 7000
+mark begin
+# Stop on game (2): spoken.
+tap down 2500
+# Pass feed (3) quickly, stop on sleep (4): only sleep spoken.
+tap down 150
+tap down 2500
+# Stop on feed (3): spoken.
+tap up 2500
+# Pass game and story quickly, stop on chat (0): only chat spoken.
+tap up 150
+tap up 150
+tap up 2500
+pet
+wait 4000
+end

@@ -148,6 +148,23 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_sleep_flow"
 "$BUILD/test_sleep_flow"
 
+# V2-07 option prompts: strict 24 kHz mono PCM16 WAV clips and
+# "speak the item the child stops on" scheduling.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/firmware/components/kid_app/src/prompt_scheduler.cc" \
+  "$ROOT/tests/cpp/test_option_prompts.cc" \
+  -o "$BUILD/test_option_prompts"
+"$BUILD/test_option_prompts"
+
+# V3-01 rhythm: day phases, quiet hours across midnight, next RTC wake-up.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/tests/cpp/test_rhythm_scheduler.cc" \
+  -o "$BUILD/test_rhythm_scheduler"
+"$BUILD/test_rhythm_scheduler"
+
 # V4-01 gestures from accelerometer windows (V1 round 3 thresholds):
 # pickup, gentle/hard shake, face down/up, cooldowns, disable.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

@@ -1,6 +1,6 @@
 # Dedicated ESP-IDF component. Firmware side depends only on this component.
 idf_component_register(
-    SRCS "src/scene_model.cc" "src/pet_controller.cc" "src/input_hub.cc" "src/home_menu.cc" "src/refresh_planner.cc" "src/pet_animation.cc" "src/selftest_script.cc" "src/sleep_flow.cc" "src/rtc_clock.cc" "src/motion_stats.cc" "src/gesture_detector.cc" "src/pet_input_router.cc" "src/pet_scene_presenter.cc"
+    SRCS "src/scene_model.cc" "src/pet_controller.cc" "src/input_hub.cc" "src/home_menu.cc" "src/refresh_planner.cc" "src/pet_animation.cc" "src/selftest_script.cc" "src/sleep_flow.cc" "src/rtc_clock.cc" "src/rhythm_scheduler.cc" "src/motion_stats.cc" "src/gesture_detector.cc" "src/pet_input_router.cc" "src/pet_scene_presenter.cc"
          "src/pet_persistence.cc" "src/nvs_pet_blob_store.cc"
          "src/pet_event_executor.cc" "src/freertos_pet_service.cc"
          "src/audio_coordinator.cc" "src/pet_refresh_gate.cc"
@@ -13,7 +13,13 @@ idf_component_register(
          "src/esp_pet_https_transport.cc" "src/freertos_pet_http_worker.cc"
          "src/story_pack_reader.cc" "src/story_pack_file_port.cc"
          "src/waveshare_story_sd.cc" "src/freertos_story_pcm_worker.cc"
+         "src/wav_clip.cc" "src/prompt_scheduler.cc" "src/prompt_clips.cc"
     INCLUDE_DIRS "include"
+    # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see
+    # tools/make_prompt_audio.py). Symbols: _binary_prompt_<item>_wav_*.
+    EMBED_FILES "assets/prompts/prompt_chat.wav" "assets/prompts/prompt_story.wav"
+                "assets/prompts/prompt_game.wav" "assets/prompts/prompt_feed.wav"
+                "assets/prompts/prompt_sleep.wav"
     PRIV_REQUIRES nvs_flash freertos esp_timer esp_http_client mbedtls cjson fatfs sdmmc esp_driver_sdmmc
 )
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
