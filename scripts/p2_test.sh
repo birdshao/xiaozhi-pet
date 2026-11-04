@@ -296,3 +296,19 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/tests/cpp/test_pet_ledger_migration.cc" \
   -o "$BUILD/test_pet_ledger_migration"
 "$BUILD/test_pet_ledger_migration"
+
+# V4-05 picture-book reader: dial state machine (pages, narration, read
+# again, questions, end, home), like-write guard, overlay frames and 4-grey
+# planes on the golden packs and on the reader self-test book the tool makes.
+PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reader-test" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/book_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/tests/cpp/test_book_reader.cc" \
+  -o "$BUILD/test_book_reader"
+"$BUILD/test_book_reader" "$ROOT/tests/fixtures/kpb2" "$BUILD/reader-test/books"

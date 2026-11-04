@@ -64,11 +64,16 @@ class StoryAudioContract(unittest.TestCase):
         self.assertIn("StoryAudioPush", BOARD_WORKER)
         self.assertIn("StoryAudioCancel", BOARD_WORKER)
         self.assertIn("GetAudioService().TryQueueLocalStoryPcm",BOARD_WORKER)
-        self.assertIn("if (story_pcm_.Ready()) {",BOARD_WORKER)
-        # V2-09: still only after a shown page, and never while going to sleep.
-        self.assertIn("if (okay && !sleep_active_.load()) story_pcm_.RequestPage",BOARD_WORKER)
-        self.assertIn("else story_pcm_.Stop()",BOARD_WORKER)
-        self.assertIn("story_pcm_.RequestPage(scene.book_page)",BOARD_WORKER)
+        # V2-09 / V4-05: still only after a shown page (the EPD task reports
+        # it, BookReader::OnShown starts the narration), never while going
+        # to sleep, and a page that cannot be shown stops the old one.
+        self.assertIn("if (okay) book_shown_.store(PackPetScene(scene));",BOARD_WORKER)
+        self.assertIn("else if (story_pcm_.Ready()) story_pcm_.Stop();",BOARD_WORKER)
+        play=BOARD_WORKER[BOARD_WORKER.index("void PlayBookClip("):]
+        play=play[:play.index("\n    }\n")]
+        self.assertIn("if (sleep_active_.load()) return;",play)
+        self.assertIn("story_pcm_.RequestClip(",play)
+        self.assertNotIn("RequestPage(scene.book_page)",BOARD_WORKER)
         self.assertIn("story_pcm_.Stop()",BOARD_WORKER)
         src=(ROOT/"firmware/components/kid_app/src/freertos_story_pcm_worker.cc").read_text()
         self.assertIn("kFrameSamples = 480",src)

@@ -37,12 +37,15 @@ namespace kid_app {
 //                           level on battery (< 8 %) powers off, so it is
 //                           only accepted after an "alarm" step.
 //   battery off             back to the real PMIC readings
+//   book <id>               V4-05: read /sdcard/books/<id>.kpb ([a-z0-9_], <= 15
+//                           chars) instead of the demo book; only before the
+//                           first "pet" step (the card is read once per boot)
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo
+    Combo, Book
 };
 
 struct SelfTestStep {
@@ -53,7 +56,7 @@ struct SelfTestStep {
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff
     uint32_t gap_ms = 0;  // pause after releasing the key
-    char name[16] = {};   // Mark only
+    char name[16] = {};   // Mark; Book: book id
 };
 
 class SelfTestScript {

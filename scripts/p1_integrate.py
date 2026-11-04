@@ -48,6 +48,15 @@ def patch_display_h(text: str) -> str:
     bool ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t page);\n    void ExitPetPreview();
 """, "display header public")
     text = once(text, "    uint8_t* buffer = NULL;", "    uint8_t* buffer = NULL;\n    bool pet_preview_enabled_ = false; // LVGL lock protected", "display header state")
+    text = once(text, "    void ExitPetPreview();\n", """    // V4-05 picture book (48,000 B frames, MonoFrame layout; the caller
+    // reads the card before): 1-bit full page, official 4-grey full page
+    // (RAM 0x24/0x26 planes, then the 1-bit fallback as the partial base),
+    // and a 1-bit partial refresh against an explicit previous image.
+    bool ShowBookMono(const uint8_t* mono);
+    bool ShowBookGrey(const uint8_t* ram24, const uint8_t* ram26, const uint8_t* mono);
+    bool ShowBookPartial(const uint8_t* next, const uint8_t* previous);
+    void ExitPetPreview();
+""", "display header book")
     return text
 
 
@@ -161,6 +170,86 @@ bool CustomEpdDisplay::ShowStoryPage(kid_app::StoryPackReader& reader, uint16_t 
     }
     frame->~MonoFrame();
     heap_caps_free(memory);
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowBookMono(const uint8_t* mono) {
+    bool okay = false;
+    if (mono && lvgl_port_lock(5000)) {
+        if (buffer && epd_spi_data.buffer_len >= static_cast<int>(kid_app::MonoFrame::kSize)) {
+            memcpy(buffer, mono, kid_app::MonoFrame::kSize);
+            pet_preview_enabled_ = true;
+            EPD_SendCommand(0x3C);  // border waveform as in EPD_Init (full)
+            EPD_SendData(0x01);
+            EPD_DisplayPartBaseImage();
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowBookGrey(const uint8_t* ram24, const uint8_t* ram26,
+                                    const uint8_t* mono) {
+    bool okay = false;
+    if (ram24 && ram26 && mono && lvgl_port_lock(5000)) {
+        const int n = static_cast<int>(kid_app::MonoFrame::kSize);
+        if (buffer && epd_spi_data.buffer_len >= n) {
+            pet_preview_enabled_ = true;
+            // Waveshare's official EPD_3IN97_Init_4GRAY / Display_4Gray: the
+            // EPD_Init registers, a fixed temperature (0x1A = 0x5A) that
+            // selects the panel's 4-grey waveform, both RAM planes, then
+            // 0x22 = 0xD7 (refresh without reloading the sensor value).
+            EPD_Init();
+            EPD_SendCommand(0x1A);
+            EPD_SendData(0x5A);
+            EPD_SendCommand(0x24);
+            writeBytes(ram24, n);
+            EPD_SendCommand(0x26);
+            writeBytes(ram26, n);
+            EPD_SendCommand(0x22);
+            EPD_SendData(0xD7);
+            EPD_SendCommand(0x20);
+            read_busy();
+            // Back to the 1-bit baseline without a refresh: registers and
+            // sensor temperature as after boot, both RAMs = the page's 1-bit
+            // fallback, so the next partial (question cards) diffs against it.
+            EPD_Init();
+            memcpy(buffer, mono, n);
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, n);
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, n);
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
+    return okay;
+}
+
+bool CustomEpdDisplay::ShowBookPartial(const uint8_t* next, const uint8_t* previous) {
+    bool okay = false;
+    if (next && previous && lvgl_port_lock(5000)) {
+        const int n = static_cast<int>(kid_app::MonoFrame::kSize);
+        if (buffer && epd_spi_data.buffer_len >= n) {
+            memcpy(buffer, next, n);
+            pet_preview_enabled_ = true;
+            // As ShowPetSceneFast, but RAM 0x26 gets the caller's previous
+            // image: pixels that differ from the new one are driven (the
+            // question cards over a grey page), all others are left alone.
+            EPD_SendCommand(0x3C);  // border waveform: hold during partial
+            EPD_SendData(0x80);
+            EPD_SendCommand(0x26);
+            writeBytes(previous, n);
+            EPD_SendCommand(0x24);
+            writeBytes(buffer, n);
+            EPD_TurnOnDisplayPart();
+            EPD_SendCommand(0x26);
+            writeBytes(buffer, n);
+            okay = true;
+        }
+        lvgl_port_unlock();
+    }
     return okay;
 }
 
@@ -299,19 +388,24 @@ BOARD_WORKER = r'''
                                                              : status_shown_;
         bool okay = false;
         const uint32_t epd_started_ms = NowMs();
+        kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
+        // V4-05: anything else on the panel (or Pet mode left) means the
+        // next book frame starts with a full page again.
+        if (scene.kind != kid_app::SceneKind::Reader || planner_reset_.load())
+            book_panel_valid_ = false;
         if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready()) {
-            okay = display_->ShowStoryPage(*story_sd_.Reader(), scene.book_page);
-            // Only speak after EPD shows a validated book page;
-            // invalid/out-of-range pages must cancel prior narration.
-            if (story_pcm_.Ready()) {
-                if (okay && !sleep_active_.load()) story_pcm_.RequestPage(scene.book_page);
-                else story_pcm_.Stop();
-            }
+            // V4-05: grey / 1-bit page and the question cards from the card.
+            // Only speak after EPD shows a validated book page: book_shown_
+            // tells the reader on pet_input (BookReader::OnShown), which
+            // starts the narration; the end picture, a page outside the
+            // book or a failure falls back to the placeholder, quietly.
+            okay = DrawBookLocked(scene, &mode);
+            if (okay) book_shown_.store(PackPetScene(scene));
+            else if (story_pcm_.Ready()) story_pcm_.Stop();
         }
         // Missing SD or a page outside a reviewed book falls back to
         // the pre-existing monochrome reader placeholder.
         if (planner_reset_.exchange(false)) refresh_planner_.ForceFull();
-        kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
         if (!okay) {
             mode = refresh_planner_.Plan(scene);
             if (mode == kid_app::RefreshMode::Full) scene.status = NewestStatus(scene.kind);
@@ -423,6 +517,8 @@ BOARD_WORKER = r'''
             SceneStateLock lock(self->scene_state_mutex_);
             auto scene = kid_app::PetScenePresenter::Present(snapshot);
             scene.home_selection = self->home_selection_.load();
+            // V4-05: the open book owns the reader picture (page, question).
+            if (scene.kind == kid_app::SceneKind::Reader) scene = self->BookSceneLocked();
             self->last_pet_scene_.store(PackPetScene(scene));
             if (effects.repaint && !self->sleep_active_.load())
                 self->pet_mailbox_.Publish(self->WithVoiceFace(scene));
@@ -536,13 +632,19 @@ BOARD_WORKER = r'''
             story_sd_attempted_ = true;
             // Default approved demo book only. Never format an SD card.
             // Missing/malformed media cannot prevent pet mode startup.
-            if (!story_sd_.Initialize("forest_friends"))
+            if (!story_sd_.Initialize(story_book_))
                 ESP_LOGW(TAG, "PET_STORY_SD_FALLBACK");
             // V2-08: pet_prompt may now look for the sound pack.
             sound_sd_.store(story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent);
+            // V4-05: what the dial needs, read once here (pet_input never
+            // reads the card); no book = an empty outline (placeholder).
+            if (story_sd_.Ready() &&
+                !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_))
+                ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
+            book_outline_ready_.store(true);
         }
         if (story_sd_.Ready() && !story_pcm_.Ready() &&
-            !story_pcm_.Start("/sdcard/books", "forest_friends",
+            !story_pcm_.Start("/sdcard/books", story_book_,
                               {&StoryAudioBegin, &StoryAudioPush,
                                &StoryAudioCancel}, this))
             ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
@@ -709,6 +811,12 @@ BOARD_WORKER = r'''
         // BOOT/PWR keep their existing board handlers; only dial semantics
         // become durable Pet actions, and only while Pet mode is on.
         if (!pet_mode_.load()) return;
+        // V4-05: in the reader the dial drives the open book (UI-only, like
+        // the home rail); only "home" becomes a durable action (StopStory).
+        if (pet_event_mode_.load() == kid_app::PetMode::Story && book_.Active()) {
+            ApplyBookStep(book_.OnInput(event.kind, NowMs()), "input");
+            return;
+        }
         kid_app::PetInputDecision decision{};
         bool begin_sleep = false;
         {
@@ -913,6 +1021,7 @@ BOARD_WORKER = r'''
             kid_app::InputEvent event{};
             while (input_hub_.Next(&event)) HandleInputEvent(event);
             UpdateParentMenu();
+            UpdateBook();
             UpdatePower(state);
             UpdateBattery(state);
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
@@ -934,6 +1043,234 @@ BOARD_WORKER = r'''
             kid_app::PromptRequest prompt{};
             if (prompt_scheduler_.Tick(NowMs(), &prompt)) PostPrompt(prompt);
         }
+    }
+
+    // ---- V4-05 picture-book reader ----
+    // pet_input owns the BookReader (dial, timers, audio, memory requests);
+    // kid_epd owns the frames and the panel. They meet in two words: the
+    // book scene (page + question overlay, published like the home rail)
+    // and book_shown_ (the view the panel now shows from the card).
+    // Grey pages use the official 4-grey waveform; flip this to show every
+    // page's 1-bit fallback instead (format and reader stay the same).
+    static constexpr bool kBookGreyEnabled = true;
+    char story_book_[16] = "forest_friends";  // self-test "book" may change it
+    kid_app::BookOutline book_outline_;        // written once before ready
+    std::atomic<bool> book_outline_ready_{false};
+    kid_app::BookReader book_;                 // pet_input task only
+    std::atomic<uint32_t> book_scene_{0};      // packed; scene_state_mutex_
+    std::atomic<uint32_t> book_shown_{0};      // kid_epd -> pet_input
+    // kid_epd only (pet_screen_mutex_): page picture, panel picture, next.
+    kid_app::MonoFrame* book_base_ = nullptr;
+    kid_app::MonoFrame* book_panel_frame_ = nullptr;
+    kid_app::MonoFrame* book_next_ = nullptr;
+    kid_app::BookView book_panel_{};
+    bool book_panel_valid_ = false;
+
+    // Caller holds scene_state_mutex_.
+    kid_app::SceneModel BookSceneLocked() const {
+        const uint32_t packed = book_scene_.load();
+        return packed ? UnpackPetScene(packed) : kid_app::BookScene({}, false);
+    }
+
+    void UpdateBook() {
+        const uint32_t now = NowMs();
+        if (pet_event_mode_.load() != kid_app::PetMode::Story) {
+            if (book_.Active()) {
+                book_.Close();
+                SceneStateLock lock(scene_state_mutex_);
+                book_scene_.store(0);
+                ESP_LOGI(TAG, "PET_BOOK_CLOSE");
+            }
+            return;
+        }
+        // Timers wait while asleep, napping, in the parent menu or out of
+        // Pet mode; the picture comes back from last_pet_scene_.
+        if (!pet_mode_.load() || sleep_active_.load() || napping_.load() || ParentMenuOpen())
+            return;
+        if (!book_.Active()) {
+            if (!book_outline_ready_.load()) return;
+            book_.Open(&book_outline_, now);
+            book_shown_.store(0);
+            ESP_LOGI(TAG, "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d",
+                     story_book_, static_cast<unsigned>(book_outline_.pages),
+                     static_cast<unsigned>(book_outline_.GreyPages()),
+                     static_cast<unsigned>(book_outline_.QuestionTotal()),
+                     book_outline_.kpb2 ? 1 : 0);
+            kid_app::BookStep open{};
+            open.publish = true;
+            ApplyBookStep(open, "open");
+        }
+        const uint32_t shown = book_shown_.exchange(0);
+        if (shown) ApplyBookStep(book_.OnShown(kid_app::BookViewOf(UnpackPetScene(shown)), now),
+                                 "shown");
+        ApplyBookStep(book_.Tick(now), "tick");
+    }
+
+    void ApplyBookStep(const kid_app::BookStep& step, const char* why) {
+        PlayBookClip(step.clip);
+        if (step.publish) {
+            SceneStateLock lock(scene_state_mutex_);
+            const auto scene = book_.Scene();
+            const uint32_t packed = PackPetScene(scene);
+            book_scene_.store(packed);
+            last_pet_scene_.store(packed);
+            if (!sleep_active_.load()) pet_mailbox_.Publish(scene);
+            const auto& view = book_.View();
+            ESP_LOGI(TAG, "PET_BOOK_VIEW page=%u q=%u sel=%u marked=%d end=%d why=%s",
+                     static_cast<unsigned>(view.page), static_cast<unsigned>(view.question),
+                     static_cast<unsigned>(view.highlight), view.marked ? 1 : 0,
+                     book_.AtEnd() ? 1 : 0, why);
+        }
+        if (step.answer != kid_app::BookAnswer::None) {
+            static const char* const kResult[] = {"none", "choice", "right", "wrong"};
+            ESP_LOGI(TAG, "PET_BOOK_ANSWER result=%s chosen=%u page=%u q=%u",
+                     kResult[static_cast<int>(step.answer)], static_cast<unsigned>(step.chosen),
+                     static_cast<unsigned>(book_.View().page),
+                     static_cast<unsigned>(book_.View().question));
+        }
+        if (step.memory.kind != kid_app::BookMemoryKind::None) RecordBookMemory(step.memory);
+        if (step.home) {
+            ESP_LOGI(TAG, "PET_BOOK_HOME");
+            if (!pet_service_.PostLocal(kid_app::PetAction::StopStory))
+                ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+        }
+    }
+
+    // pet_input. The story worker plays it through StoryAudioBegin/Push
+    // (Pet mode, awake, XiaoZhi idle, parent volume cap); last wins.
+    void PlayBookClip(const kid_app::BookClip& clip) {
+        if (clip.kind == kid_app::BookClipKind::None || !story_pcm_.Ready()) return;
+        if (clip.kind == kid_app::BookClipKind::Stop) {
+            story_pcm_.Stop();
+            StoryAudioCancel(this);
+            return;
+        }
+        if (sleep_active_.load()) return;
+        const auto kind = clip.kind == kid_app::BookClipKind::Page     ? kid_app::StoryClip::Page
+                          : clip.kind == kid_app::BookClipKind::Prompt ? kid_app::StoryClip::Prompt
+                                                                       : kid_app::StoryClip::Option;
+        static const char* const kKind[] = {"page", "prompt", "option"};
+        story_pcm_.RequestClip(kind, clip.page, clip.question, clip.option);
+        ESP_LOGI(TAG, "PET_BOOK_AUDIO kind=%s page=%u q=%u option=%u",
+                 kKind[static_cast<int>(kind)], static_cast<unsigned>(clip.page),
+                 static_cast<unsigned>(clip.question), static_cast<unsigned>(clip.option));
+    }
+
+    // ADR-012: a book like (dial press on a like option of a like question)
+    // or "book finished" becomes a MemoryEvent only through BookMemoryEvent
+    // (the kid_app choice guard), then goes to the ledger like every other
+    // memory (RecordMemory). Id and day go back to 0: the atomic Pet worker
+    // assigns the next local id (shared replay window) and the RTC day.
+    void RecordBookMemory(const kid_app::BookMemoryRequest& request) {
+        kid_app::MemoryEvent event{};
+        if (!kid_app::BookMemoryEvent(book_outline_, request, kid_app::kLocalEventBit, 0,
+                                      &event)) {
+            ESP_LOGW(TAG, "PET_BOOK_MEMORY_REJECTED kind=%u", static_cast<unsigned>(request.kind));
+            return;
+        }
+        event.id = 0;
+        const bool posted = RecordMemory(event);
+        if (event.kind == kid_app::MemoryEventKind::PreferenceChosen)
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=like like=%u:%u posted=%d",
+                     static_cast<unsigned>(event.slot), static_cast<unsigned>(event.option),
+                     posted ? 1 : 0);
+        else
+            ESP_LOGI(TAG, "PET_BOOK_MEMORY kind=finished book=%u posted=%d",
+                     static_cast<unsigned>(event.option), posted ? 1 : 0);
+    }
+
+    bool AllocBookFrames() {
+        if (book_base_) return true;
+        void* memory[3] = {};
+        for (auto& m : memory) {
+            m = heap_caps_malloc(sizeof(kid_app::MonoFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!m) {
+                for (auto* f : memory) heap_caps_free(f);
+                ESP_LOGE(TAG, "PET_BOOK_FRAMES_FAILED");
+                return false;
+            }
+        }
+        book_base_ = new (memory[0]) kid_app::MonoFrame();
+        book_panel_frame_ = new (memory[1]) kid_app::MonoFrame();
+        book_next_ = new (memory[2]) kid_app::MonoFrame();
+        return true;
+    }
+
+    // kid_epd: 4-grey page. Card reads and plane split happen before the
+    // display lock; one 192 KiB PSRAM block only while drawing.
+    bool ShowBookGreyLocked(kid_app::ContentPackReader& content, uint16_t page) {
+        const size_t grey_bytes = kid_app::ContentPackReader::kGreyBytes;
+        const size_t plane = kid_app::ContentPackReader::kMonoBytes;
+        auto* grey = static_cast<uint8_t*>(
+            heap_caps_malloc(grey_bytes + 2 * plane, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!grey) return false;
+        uint8_t* ram24 = grey + grey_bytes;
+        uint8_t* ram26 = ram24 + plane;
+        const bool okay = content.ReadGrey(page, grey, grey_bytes) &&
+                          kid_app::EpdGreyPlanes(grey, grey_bytes, ram24, ram26) &&
+                          display_->ShowBookGrey(ram24, ram26, book_base_->Data().data());
+        heap_caps_free(grey);
+        return okay;
+    }
+
+    // kid_epd (pet_screen_mutex_). A new page (or a question ending) is a
+    // full refresh: 4-grey when the page has a grey picture, else 1-bit.
+    // Question cards and the dial highlight are 1-bit partial refreshes on
+    // top. False = not a page of this book or a card/panel failure.
+    bool DrawBookLocked(const kid_app::SceneModel& scene, kid_app::RefreshMode* mode) {
+        auto& content = story_sd_.Reader()->Content();
+        const auto view = kid_app::BookViewOf(scene);
+        kid_app::ContentPage page{};
+        if (!content.Page(view.page, &page) || !AllocBookFrames()) {
+            book_panel_valid_ = false;
+            return false;
+        }
+        const uint32_t started_ms = NowMs();
+        const bool same_page = book_panel_valid_ && book_panel_.page == view.page;
+        const char* how = "partial";
+        if (!same_page || (!view.question && book_panel_.question)) {
+            book_panel_valid_ = false;
+            if (!story_sd_.Reader()->ReadFrame(view.page, *book_base_)) return false;
+            bool okay = false;
+            how = "mono";
+            if (page.has_grey && kBookGreyEnabled) {
+                okay = ShowBookGreyLocked(content, view.page);
+                how = okay ? "grey" : "mono_after_grey";
+            }
+            if (!okay) okay = display_->ShowBookMono(book_base_->Data().data());
+            if (!okay) return false;
+            *mode = kid_app::RefreshMode::Full;
+            *book_panel_frame_ = *book_base_;
+            book_panel_ = kid_app::BookView{};
+            book_panel_.page = view.page;
+            book_panel_valid_ = true;
+        } else {
+            *mode = kid_app::RefreshMode::Partial;
+        }
+        if (view.question && view != book_panel_) {
+            *book_next_ = *book_base_;
+            bool okay = kid_app::ComposeBookOverlay(content, view, *book_next_);
+            // A question's first frame drives every card pixel (the page
+            // under the cards may be grey) and clears the previous question's
+            // cards; later frames only change the rings.
+            if (okay && book_panel_.question != view.question)
+                okay = kid_app::ForceBookOverlay(content, view, *book_next_, *book_panel_frame_);
+            okay = okay && display_->ShowBookPartial(book_next_->Data().data(),
+                                                     book_panel_frame_->Data().data());
+            if (!okay) {
+                book_panel_valid_ = false;
+                ESP_LOGW(TAG, "PET_BOOK_DRAW_FAILED page=%u q=%u",
+                         static_cast<unsigned>(view.page), static_cast<unsigned>(view.question));
+                return false;
+            }
+            *book_panel_frame_ = *book_next_;
+        }
+        book_panel_ = view;
+        ESP_LOGI(TAG, "PET_BOOK_DRAW page=%u q=%u sel=%u marked=%d how=%s ms=%u",
+                 static_cast<unsigned>(view.page), static_cast<unsigned>(view.question),
+                 static_cast<unsigned>(view.highlight), view.marked ? 1 : 0, how,
+                 static_cast<unsigned>(NowMs() - started_ms));
+        return true;
     }
 
     // ---- V2-07 option name prompts ----
@@ -2117,6 +2454,17 @@ BOARD_WORKER = r'''
                 case kid_app::SelfTestOp::Mark:
                     ESP_LOGI(TAG, "PET_SELFTEST_MARK name=%s", step.name);
                     break;
+                case kid_app::SelfTestOp::Book:
+                    // V4-05: read a test book from the card instead of the
+                    // demo book. The card is opened once, when Pet mode
+                    // first starts; later the step only logs.
+                    if (pet_runtime_ready_.load()) {
+                        ESP_LOGW(TAG, "PET_SELFTEST_BOOK_IGNORED id=%s", step.name);
+                    } else {
+                        std::memcpy(story_book_, step.name, sizeof(story_book_));
+                        ESP_LOGI(TAG, "PET_SELFTEST_BOOK id=%s", story_book_);
+                    }
+                    break;
                 case kid_app::SelfTestOp::Combo:
                     // V3-06 parent entry: BOOT and dial press held together.
                     PostKeyEdge(kid_app::InputKey::Boot, true);
@@ -2242,7 +2590,10 @@ def patch_board(text: str) -> str:
         '#include <esp_timer.h>\n'
         '#include <freertos/queue.h>\n'
         '#include "kid_app/waveshare_story_sd.h"\n'
-        '#include "kid_app/freertos_story_pcm_worker.h"',
+        '#include "kid_app/freertos_story_pcm_worker.h"\n'
+        '#include "kid_app/book_reader.h"\n'
+        '#include "kid_app/memory_store.h"\n'
+        '#include <cstring>',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
                 BOARD_WORKER.rstrip() + "\n\n    void InitializeButtons() {",
