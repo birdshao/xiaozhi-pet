@@ -13,7 +13,13 @@ idf_component_register(
          "src/esp_pet_https_transport.cc" "src/freertos_pet_http_worker.cc"
          "src/story_pack_reader.cc" "src/story_pack_file_port.cc"
          "src/waveshare_story_sd.cc" "src/freertos_story_pcm_worker.cc"
+         "src/wav_clip.cc" "src/prompt_scheduler.cc" "src/prompt_clips.cc"
     INCLUDE_DIRS "include"
+    # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see
+    # tools/make_prompt_audio.py). Symbols: _binary_prompt_<item>_wav_*.
+    EMBED_FILES "assets/prompts/prompt_chat.wav" "assets/prompts/prompt_story.wav"
+                "assets/prompts/prompt_game.wav" "assets/prompts/prompt_feed.wav"
+                "assets/prompts/prompt_sleep.wav"
     PRIV_REQUIRES nvs_flash freertos esp_timer esp_http_client mbedtls cjson fatfs sdmmc esp_driver_sdmmc
 )
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
