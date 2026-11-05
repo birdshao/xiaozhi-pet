@@ -44,7 +44,7 @@ void LogDirectory(const char* path) {
             ESP_LOGI(kTag, "SD_DIR path=%s more=1", path);
             break;
         }
-        char full[160];
+        char full[32 + sizeof(entry->d_name)];  // "/sdcard/books/" + longest name
         std::snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
         struct stat info {};
         const bool ok = stat(full, &info) == 0;
