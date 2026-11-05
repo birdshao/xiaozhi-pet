@@ -12,6 +12,13 @@ constexpr uint16_t kClipPrompt = kGameTonePrompt;
 constexpr uint16_t kClipHide = GameArtTone(static_cast<uint16_t>(GameArt::Square));
 // Holes at the ends: always a few cells of rolling, never at the start.
 constexpr uint8_t kHoles[] = {0, 1, 5, 6};
+// A short tone for a menu card: the picture's own tone, or (the V4-08 cards,
+// which have no tone of their own) a neighbour's from mini_game.cc.
+uint16_t ChoiceTone(uint16_t art) {
+    if (MicArtValid(art)) return art == static_cast<uint16_t>(MicArt::Hand) ? GameArtTone(A(GameArt::Square))
+                                                                              : GameArtTone(A(GameArt::Star));
+    return GameArtTone(art);
+}
 }  // namespace
 
 const char* MotionKindName(MotionKind kind) {
@@ -24,6 +31,8 @@ const char* GameChoiceName(GameChoice choice) {
         case GameChoice::Quiz: return "quiz";
         case GameChoice::Ball: return "ball";
         case GameChoice::Peekaboo: return "peekaboo";
+        case GameChoice::Candle: return "candle";
+        case GameChoice::Clap: return "clap";
     }
     return "unknown";
 }
@@ -203,7 +212,7 @@ GameMenuOutput GameMenu::Start(uint32_t now_ms, uint8_t start) {
     GameMenuOutput out{};
     active_ = true;
     end_ = GameEnd::None;
-    choice_.Reset(3, std::min<uint8_t>(start, 2));
+    index_ = std::min<uint8_t>(start, kGameChoiceCount - 1);
     last_input_ms_ = now_ms;
     out.redraw = true;
     out.clip = kClipPrompt;
@@ -217,14 +226,16 @@ GameMenuOutput GameMenu::Input(GameInput input, uint32_t now_ms) {
     switch (input) {
         case GameInput::Up:
         case GameInput::Down:
-            if (choice_.Move(input == GameInput::Up ? -1 : 1)) {
+            if (input == GameInput::Up ? index_ > 0 : index_ + 1 < kGameChoiceCount) {
+                index_ = static_cast<uint8_t>(index_ + (input == GameInput::Up ? -1 : 1));
                 out.redraw = true;
-                out.clip = GameArtTone(View().options[choice_.Index()]);
+                const GameView v = View();
+                out.clip = ChoiceTone(v.options[v.highlight]);
             }
             break;
         case GameInput::Press:
             active_ = false;
-            out.chosen = static_cast<GameChoice>(choice_.Index() + 1);
+            out.chosen = static_cast<GameChoice>(index_ + 1);
             break;
         case GameInput::Long:
             active_ = false;
@@ -256,9 +267,14 @@ GameView GameMenu::View() const {
     GameView v{};
     if (!active_) return v;
     v.option_count = 3;
-    v.highlight = choice_.Index();
     v.question_art = A(GameArt::Heart);
-    v.options = {A(GameArt::Star), A(GameArt::BallBig), A(GameArt::Cat)};
+    // Three cards at a time, the window follows the highlight.
+    const uint16_t art[kGameChoiceCount] = {A(GameArt::Star), A(GameArt::BallBig),
+                                            A(GameArt::Cat), static_cast<uint16_t>(MicArt::CandleLit),
+                                            static_cast<uint16_t>(MicArt::Hand)};
+    const uint8_t first = index_ == 0 ? 0 : std::min<uint8_t>(index_ - 1, kGameChoiceCount - 3);
+    v.highlight = static_cast<uint8_t>(index_ - first);
+    for (uint8_t i = 0; i < 3; ++i) v.options[i] = art[first + i];
     return v;
 }
 

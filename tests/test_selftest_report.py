@@ -216,7 +216,7 @@ class SelfTestReportTests(unittest.TestCase):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
                  "morning", "voice", "battery", "book", "game", "timescale", "twait",
-                 "waitidle", "end"}
+                 "waitidle", "micgame", "envelope", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
         for path in sorted(root.glob("*.pettest")):
@@ -247,6 +247,27 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertEqual(sorted(scaled),
                          ["v3_animations", "v3_battery", "v3_morning", "v3_parent_menu",
                           "v4_mini_game"])
+
+    def test_mic_games_scenario_injects_the_microphone(self):
+        # The hardware trial feeds synthetic loudness numbers; the real tap
+        # must stay off for the whole run and nothing may be recorded.
+        text = (Path(__file__).resolve().parents[1] / "tools/selftest/v4_mic_games.pettest"
+                ).read_text(encoding="ascii")
+        want = expectations(text)
+        self.assertEqual(want["none:src=audio"], "0")
+        self.assertEqual(want["commits"], "0")
+        steps = [line.split() for line in text.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        # Every game is started with a micgame step first, so the script owns the "microphone".
+        starts = [i for i, w in enumerate(steps) if w[0] == "micgame"]
+        self.assertEqual(len(starts), 3)
+        for i in starts:
+            self.assertEqual(steps[i + 1][:2], ["tap", "press"])
+        kinds = {w[1] for w in steps if w[0] == "envelope"}
+        self.assertEqual(kinds, {"clap", "speech", "noise", "blow"})
+        self.assertNotIn("timescale", {w[0] for w in steps})  # real-time games
+        self.assertGreater(plan(text)["monitor_s"], plan(text)["expect_s"])
+        self.assertIn("none:src=audio", evaluate(text, GOOD_LOG)["checks"])
 
     def test_motion_games_scenario_plan_and_expectations(self):
         # V4-07: gesture steps cost no time themselves; the waits around them do.
@@ -345,6 +366,10 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertFalse(plan(stays)["power_off"])
         sleeps = stays.replace("end\n", "morning\ntimescale 50\ntwait 60000\nend\n")
         self.assertEqual(plan(sleeps)["until"], "PET_SELFTEST_NONE reason=alarm_wake")
+        # V4-08: an injected sound takes as long as it plays; picking the game is free.
+        mic = plan("PETSELFTEST1\nmicgame clap\nenvelope clap 700\nenvelope blow 5000\nend\n")
+        self.assertEqual(mic["script_s"], 6)
+        self.assertFalse(mic["power_off"])
         critical = "PETSELFTEST1\nalarm 30\nbattery 5 0\nwait 1000\nend\n"
         self.assertTrue(plan(critical)["power_off"])
         self.assertFalse(plan(critical.replace("battery 5 0", "battery 5 1"))["power_off"])

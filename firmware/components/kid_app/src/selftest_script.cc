@@ -2,6 +2,7 @@
 
 #include "kid_app/battery_policy.h"
 #include "kid_app/gesture_detector.h"
+#include "kid_app/mic_envelope.h"
 #include "kid_app/selftest_clock.h"
 #include "kid_app/voice_face.h"
 
@@ -194,6 +195,19 @@ bool SelfTestScript::Parse(const char* text) {
         } else if (std::strcmp(words[0], "game") == 0) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms == 0) return false;
             step.op = SelfTestOp::Game;
+        } else if (std::strcmp(words[0], "envelope") == 0) {
+            MicSynth kind{};
+            if (n != 3 || !MicSynthFromName(words[1], &kind) || !Number(words[2], &step.ms) ||
+                step.ms < 10)
+                return false;
+            std::memcpy(step.name, words[1], std::strlen(words[1]) + 1);
+            step.op = SelfTestOp::Envelope;
+        } else if (std::strcmp(words[0], "micgame") == 0) {
+            if (n != 2 || (std::strcmp(words[1], "candle") != 0 &&
+                           std::strcmp(words[1], "clap") != 0))
+                return false;
+            std::memcpy(step.name, words[1], std::strlen(words[1]) + 1);
+            step.op = SelfTestOp::MicGame;
         } else if (std::strcmp(words[0], "mark") == 0) {
             if (n != 2 || !MarkName(words[1], step.name)) return false;
             step.op = SelfTestOp::Mark;

@@ -987,7 +987,51 @@ void GameBall(MonoFrame& f, int cx, int cy, int radius) {
     Arc(f, cx, cy, radius * 6 / 10, radius * 6 / 10, 20, 160, w);
 }
 
+// V4-08 microphone games (MicArt): candles, the clapping hands, the blowing face.
+void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
+    const int w = std::max(3, r / 10);
+    auto p = [r](int percent) { return r * percent / 100; };
+    switch (art) {
+        case MicArt::CandleLit:
+        case MicArt::CandleOut:
+            FillRect(f, cx - p(24), cy - p(6), 2 * p(24), p(66));
+            Stroke(f, cx, cy - p(6), cx, cy - p(24), std::max(2, w / 2));
+            if (art == MicArt::CandleLit) {
+                FillEllipse(f, cx, cy - p(46), p(15), p(20));
+                FillTriangle(f, cx, cy - p(88), cx - p(14), cy - p(48), cx + p(14), cy - p(48));
+            } else {  // a thin curl of smoke
+                Arc(f, cx - p(9), cy - p(44), p(13), p(13), -90, 90, w);
+                Arc(f, cx + p(9), cy - p(70), p(13), p(13), 90, 270, w);
+            }
+            break;
+        case MicArt::Hand:
+        case MicArt::HandHit:
+            for (int side : {-1, 1}) {  // two palms about to meet
+                if (art == MicArt::HandHit) FillEllipse(f, cx + side * p(30), cy, p(26), p(50));
+                else Blob(f, cx + side * p(34), cy, p(26), p(50), w);
+            }
+            if (art == MicArt::HandHit) {
+                Sparkle(f, cx, cy - p(66), p(18));
+                Sparkle(f, cx - p(70), cy - p(54), p(10));
+                Sparkle(f, cx + p(70), cy - p(54), p(10));
+            }
+            break;
+        case MicArt::Blow:
+            Blob(f, cx - p(30), cy, p(52), p(52), w);
+            Disk(f, cx - p(18), cy - p(14), p(7));
+            Disk(f, cx - p(52), cy - p(14), p(7));
+            Disk(f, cx - p(10), cy + p(16), p(9));  // the round mouth
+            for (int k = -1; k <= 1; ++k)           // the air
+                Stroke(f, cx + p(36), cy + p(16) + k * p(26), cx + p(92), cy + p(16) + k * p(34), w);
+            break;
+    }
+}
+
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (MicArtValid(art)) {
+        MicArtIcon(f, static_cast<MicArt>(art), cx, cy, r);
+        return;
+    }
     const int w = std::max(3, r / 10);
     auto p = [r](int percent) { return r * percent / 100; };
     switch (static_cast<GameArt>(art)) {

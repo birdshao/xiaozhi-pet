@@ -272,17 +272,39 @@ void TestMenu() {
     out = m.Input(GameInput::Down, 1200);
     assert(out.redraw && out.clip == GameArtTone(static_cast<uint16_t>(GameArt::BallBig)) &&
            m.View().highlight == 1);
-    m.Input(GameInput::Down, 1300);
+    // Five games, three cards at a time: the window slides with the highlight.
+    const uint16_t kStar = static_cast<uint16_t>(GameArt::Star),
+                   kBall = static_cast<uint16_t>(GameArt::BallBig),
+                   kCat = static_cast<uint16_t>(GameArt::Cat),
+                   kCandle = static_cast<uint16_t>(MicArt::CandleLit),
+                   kHand = static_cast<uint16_t>(MicArt::Hand);
+    out = m.Input(GameInput::Down, 1300);  // peekaboo: the window moves, highlight in the middle
+    v = m.View();
+    assert(out.redraw && v.highlight == 1 && v.options[0] == kBall && v.options[1] == kCat &&
+           v.options[2] == kCandle);
+    out = m.Input(GameInput::Down, 1350);  // candles
+    v = m.View();
+    assert(out.redraw && out.clip != 0 && v.highlight == 1 && v.options[0] == kCat &&
+           v.options[1] == kCandle && v.options[2] == kHand);
+    out = m.Input(GameInput::Down, 1360);  // clap: last window, highlight on the last card
+    v = m.View();
+    assert(out.redraw && v.highlight == 2 && v.options[0] == kCat && v.options[1] == kCandle &&
+           v.options[2] == kHand);
     out = m.Input(GameInput::Down, 1400);  // clamped
     assert(!out.redraw && m.View().highlight == 2);
     out = m.Input(GameInput::Press, 1500);
-    assert(out.chosen == GameChoice::Peekaboo && !m.Active() && !out.finished);
-    // Picks map to the three games; Start can preselect (after a refusal).
-    for (uint8_t i = 0; i < 3; ++i) {
+    assert(out.chosen == GameChoice::Clap && !m.Active() && !out.finished);
+    // Picks map to the five games; Start can preselect (after a refusal).
+    const GameChoice want[] = {GameChoice::Quiz, GameChoice::Ball, GameChoice::Peekaboo,
+                               GameChoice::Candle, GameChoice::Clap};
+    for (uint8_t i = 0; i < kGameChoiceCount; ++i) {
         m.Start(0, i);
-        assert(m.View().highlight == i);
-        assert(m.Input(GameInput::Press, 10).chosen == static_cast<GameChoice>(i + 1));
+        const GameView sv = m.View();
+        assert(sv.highlight < 3 && sv.options[sv.highlight] != 0);
+        assert(m.Input(GameInput::Press, 10).chosen == want[i]);
     }
+    m.Start(0);
+    assert(m.View().options[0] == kStar && m.View().highlight == 0);
     // Long press and idle go home.
     m.Start(0);
     out = m.Input(GameInput::Long, 50);

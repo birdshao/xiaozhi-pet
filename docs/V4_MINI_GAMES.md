@@ -1,10 +1,10 @@
-# V4-06 / V4-07：规则小游戏（离线）、KPG1 游戏包与体感游戏
+# V4-06 / V4-07 / V4-08：规则小游戏（离线）、KPG1 游戏包与体感游戏
 
-对应 `DEVELOPMENT_PLAN.md` V4-06（知识小游戏）和 V4-07（体感游戏，见 §12），`PRODUCT_REQUIREMENTS.md` §4（拨轮上下换、按下选、长按回家；不用双击/三击）、§5.2（GAME 场景局刷）、§7（题目来自审核内容包，不由模型即兴出题），ADR-011/012/013。
+对应 `DEVELOPMENT_PLAN.md` V4-06（知识小游戏）和 V4-07（体感游戏，见 §13），`PRODUCT_REQUIREMENTS.md` §4（拨轮上下换、按下选、长按回家；不用双击/三击）、§5.2（GAME 场景局刷）、§7（题目来自审核内容包，不由模型即兴出题），ADR-011/012/013。
 
 ## 1. 一句话
 
-首页动作条选「游戏」按下，先出**游戏菜单**（V4-07，§12：知识题 / 倾斜滚球 / 扣下躲猫猫，拨轮选、按下开始）；选第一张「知识题」后团团出 3 道题（每题 2–3 张答案卡），孩子拨轮挑一张、按下作答；答对团团开心（唯一的奖励），答错温和地说“再想想”，第二次还不对就把答案指给孩子看然后进入下一题；3 题后回首页。题目来自 TF 卡上家长审核过的 **KPG1 游戏包** `/games/default.kpg`；没有卡或包无效时用固件里的**内置题**（不需要录音）。
+首页动作条选「游戏」按下，先出**游戏菜单**（V4-07，§13：知识题 / 倾斜滚球 / 扣下躲猫猫 / 吹蜡烛 / 拍手节奏，拨轮选、按下开始）；选第一张「知识题」后团团出 3 道题（每题 2–3 张答案卡），孩子拨轮挑一张、按下作答；答对团团开心（唯一的奖励），答错温和地说“再想想”，第二次还不对就把答案指给孩子看然后进入下一题；3 题后回首页。题目来自 TF 卡上家长审核过的 **KPG1 游戏包** `/games/default.kpg`；没有卡或包无效时用固件里的**内置题**（不需要录音）。
 
 ## 2. 孩子怎么玩
 
@@ -65,7 +65,7 @@
 
 ## 6. 板端接入（`scripts/p1_integrate.py`）
 
-- 首页动作条按下「游戏」：先开游戏菜单（V4-07，§12），菜单第一张卡才是下面的知识题；`GameStartAllowed()` 不在安静时段、电量不低时开始游戏；否则日志 `PET_GAME_REFUSED reason=quiet|battery|voice`（voice：XiaoZhi 正在连接或对话），团团照旧打招呼（`PetInputRouter` 对 Game 仍返回 Pickup 作为退路）。
+- 首页动作条按下「游戏」：先开游戏菜单（V4-07，§13），菜单第一张卡才是下面的知识题；`GameStartAllowed()` 不在安静时段、电量不低时开始游戏；否则日志 `PET_GAME_REFUSED reason=quiet|battery|voice`（voice：XiaoZhi 正在连接或对话），团团照旧打招呼（`PetInputRouter` 对 Game 仍返回 Pickup 作为退路）。
 - 游戏是**纯 UI**：不发任何 Pet 动作、不写 NVS；`last_pet_scene_` 保持首页画面；`GatedSceneMailbox::game_only` 让游戏期间只有 Game 画面上屏（和家长菜单的 `parent_only` 同一机制）。
 - 结束的地方都会 `EndGame()` 先回首页：玩完/长按/超时、睡觉流程（PWR、闲置睡觉、电量耗尽）、家长组合键、早安画面、语音会话（XiaoZhi 不再空闲）、退出 Pet 模式。
 - 游戏期间：不播团团短句、不响应体感手势、不做电量反应和动画、不打盹（PowerManager 视为忙）、首页选项名提示关闭。
@@ -170,22 +170,92 @@ python -m tools.game_pack demo   --output build/game-smoke     # 仅提示音，
 | `tests/test_v4_game_pack.py` | 源清单 20 多种错误；审核开关；清单里有文字、包里没有；黄金包可复现；篡改（含重新封好 CRC 的语义错误、非零填充）被拒；图库/种类/台词 id 与 C++ 头文件一致；`demo`/`verify` 命令 |
 | `tests/test_p1_integration_contract.py` | 板端接线：启动条件、只放 Game 画面、各种打断先 `EndGame`、游戏中不播短句/不做手势/不打盹、同一音量路径、自测 `game` 步骤 |
 | `tools/selftest/v4_mini_game.pettest` | 真机无人值守：内置题 3 局（完成 / 长按回家 / 超时），只用拨轮步骤（先过 V4-07 游戏菜单，选第一张卡） |
+| `tests/cpp/test_mic_games.cc`（V4-08，§12） | 包络判定（合成吹气/拍手/说话/噪声）、吹蜡烛与拍手节奏会话、成长记忆、画面刷新区域 |
+| `tests/test_v4_mic_games.py`（V4-08，§12） | 隐私契约（判定模块无文件/网络/缓冲区）、AudioService 补丁只给一个数字、板端只在游戏里开麦克风、语音互斥、自测步骤 |
+| `tools/selftest/v4_mic_games.pettest`（V4-08，§12） | 真机无人值守：脚本代替麦克风注入合成包络，三局（拍手 / 吹蜡烛 / 干扰后长按回家） |
 
 黄金包 `tests/fixtures/kpg1/golden_game.kpg` 是合成提示音，**不是儿童内容**；格式有意变更时用 `python tests/test_v4_game_pack.py --write-golden` 重新生成。
 
 ## 11. 没有做的
 
 - 真机未验证：画面、局刷耗时与残影、提示音音量、TF 包加载耗时都等协调会话合并后跑 `v4_mini_game.pettest`。
-- 颜色题（墨水屏只有黑白）；游戏包自带位图（以后要加需换版本号）；麦克风游戏（V4-08）。体感游戏见 §12。
+- 颜色题（墨水屏只有黑白）；游戏包自带位图（以后要加需换版本号）；体感游戏（V4-07）。麦克风游戏见 §12。
 - 动物、英语单词、大小比较三类只有格式和工具支持，没有现成的审核内容和录音。
 
-## 12. V4-07 体感游戏：倾斜滚球、扣下躲猫猫
+## 12. V4-08：麦克风游戏（吹蜡烛、拍手节奏）
+
+对应 `DEVELOPMENT_PLAN.md` V4-08、`PRODUCT_REQUIREMENTS.md` §2 第 7 条、ADR-011。放在上面的小游戏框架里：同一个游戏场景（`SceneKind::Game`）、同一套 `GameOutput`/`GameResult`/`GameEnd`、同一条奖励和成长记忆规则、同一条声音通路和 `GameActive()` 保护。
+
+### 12.1 隐私约束（硬性）
+
+- **只用麦克风的音量包络**（V1-10）：音频输入任务每读到一帧 10 ms 的输入，就算出**一个 RMS 数字（uint16）**交给判定器，**帧本身马上丢掉**。
+- **不录音、不落盘、不上传**：没有任何地方复制、缓存、编码、写文件、写 NVS、进发送队列或走网络；判定模块（`mic_envelope.*`、`mic_game.*`）里没有文件、flash、网络和样本缓冲区的任何代码。
+- 契约测试 `tests/test_v4_mic_games.py` 把这些写成会失败的检查：判定模块里出现 `fopen`/`ofstream`/`nvs_`/`http`/`socket`/`std::vector`/`pcm` 等就报错，`#include` 只允许 `kid_app/` 和几个纯标准头；AudioService 补丁新增的代码不得出现任何队列、编码、文件和网络调用，板端新增的整段不得出现存储或网络调用。
+- **只在游戏真的要听的时候开**：`MicGameSession::MicWanted()` 为真才打开麦克风通路（吹蜡烛：整局；拍手：团团演示完、提示音播完、再留 0.4 s 让判定器适应环境之后），游戏一结束（不论什么原因，`EndGame`）立刻关掉。
+- **与小智语音互斥**：只在小智空闲时才能开始游戏；BOOT 说话（小智不再空闲）会 `EndGame("voice")` 并关掉麦克风；AudioService 补丁里 `EnableVoiceProcessing(true)` 也会清掉这条通路。通路本身还是小智那唯一的输入任务在读，**没有第二个 I²S 读者**。
+- 团团自己的声音（开始/蜡烛熄灭/节拍/“该你了”）会被麦克风听到：吹蜡烛在每个提示音后 0.7 s 内不听；拍手游戏在演示节拍和“该你了”提示音期间麦克风是关着的。
+
+### 12.2 包络判定（`MicClassifier`，纯 C++）
+
+输入每 10 ms 一个 RMS 值，输出 `blowing`（吹气进行中）和 `clap`（确认一次拍手）。先用前 0.3 s 学房间底噪（floor），之后一次“声响”= 超过 `max(3×floor, floor+600)` 起、低于 `max(2×floor, floor+300)` 连续 30 ms 止：
+
+| 声音 | 判定 | 区别 |
+|---|---|---|
+| 拍手 | `clap` | ≤ 150 ms，峰值 ≥ `max(3000, 8×floor)`，前 30 ms 就到峰值的 60 % 以上 |
+| 吹气 | `blowing` | ≥ 250 ms，平均 ≥ `max(1500, 5×floor)`，几乎没有低于均值一半的凹陷（≤ 1 次） |
+| 说话 | 都不是 | 音节之间有凹陷：声响很短（< 250 ms）或反复凹陷；高声说话峰值也达不到拍手的“一上来就最响 + 很短” |
+| 环境噪声 | 都不是 | 不超过开启线，被慢慢学成 floor；持续 > 6 s 的响声（风扇、电视）整体并入 floor |
+
+门限都是**初值**，由 V1-10 的真机数据校准（已知局限：纯 RMS 区分不了“一直拖长的元音”和“吹气”，只能靠平均音量和凹陷；孩子贴近麦克风吹气是设计假设）。
+
+`SynthEnvelopeRms(MicSynth, t_ms)` 给出吹气、拍手、说话、噪声的**确定性合成包络**，主机单测和硬件自测共用。
+
+### 12.3 两个游戏（`MicGameSession`）
+
+| 游戏 | 玩法 | 奖励 / 成长 |
+|---|---|---|
+| 吹蜡烛（`candle`，成长 id 2） | 3 根点着的蜡烛，对着麦克风**稳稳吹** 0.7 s 灭一根（吹到中途停下会慢慢扣回去，每灭一根后 0.7 s 不听）；3 根都灭了团团开心，2.5 s 后回首页。30 s 没人吹回首页 | 灭完最后一根 = 唯一的奖励；成长记忆（`GAME_COMPLETED`，option = 2） |
+| 拍手节奏（`clap`，成长 id 3） | 团团用提示音敲 3 下（间隔 700/700 ms），“该你了”提示音后，孩子拍 3 下**同样的节奏**（每段间隔与示范相差 ≤ 250 ms 算对）；第 2 轮间隔 500/1000 ms。听 7 s，拍了一下后 2.5 s 没有下一下算错。每轮最多 2 次：第一次错“再想想”并重放，第二次错“揭晓”（不算对）进入下一轮 | 每轮拍对 = 一次奖励；两轮玩完且至少对一轮 = 成长记忆（option = 3） |
+
+- 屏幕：团团 + 题目卡（吹气脸 / 拍手），答案栏位置显示 3 根蜡烛（点着/熄灭）或 3 个手（等待/已拍到）；**没有拨轮高亮**（`highlight = 0xFF`），只有长按回首页有效。画面只用已有画笔，新增 5 张图（`MicArt` 101–105，不在 KPG1 图库里，游戏包不能用）。
+- 刷新区域遵守 §5：蜡烛熄灭/拍到一下只改 y ≥ 296 的答案栏，团团反应只改题目区。
+- 内置提示音复用 `mini_game.cc` 里已有的音色（不新增声音数据）。
+- 入口：首页「游戏」不变。**真实使用**时按 `quiz → 吹蜡烛 → quiz → 拍手` 轮着来（`PickMicGame`，开机后第 2、4 次开始游戏是麦克风游戏）；自测脚本里写了 `game <seed>` 就一直是问答，用 `micgame` 步骤强制。
+
+### 12.4 板端
+
+- `scripts/v4_mic_tap_patch.py`（在 `p4_audio_queue_patch` 之后应用）：`AudioService` 新增 `SetMicEnvelopeTap(enable, sink, context)` 和事件位 `AS_EVENT_MIC_ENVELOPE`；`AudioInputTask` 在已有读帧位置算 `MicFrameRms`（取第 0 声道）并调用 `sink(context, rms)`；有语音引擎在跑时复用同一帧，不额外读。
+- `p1_integrate.py` overlay：`mic_game_`/`mic_session_`（游戏入口 `StartMicGame`，`PublishGameSceneLocked`、`HandleGameInput`、`UpdateGame`、`EndGame` 按 `mic_session_` 分流）；`ArmMic`/`DisarmMic`/`UpdateMicGame`。日志：`PET_GAME_START src=mic id= kind= rounds=`、`PET_MIC_TAP armed=1 src=audio|script`、`armed=0`、`PET_MIC_HEARD kind=blow|clap`、`PET_MIC_CANDLE lit=`、`PET_MIC_CLAPS round= claps= feedback= right=`、`PET_GAME_END ...`（和问答同一格式，`growth=1 posted=1`）。
+- **没有**把“麦克风游戏开关”放进家长菜单：本版只有一个 `motion_enabled`（体感）；如要给麦克风单独的家长开关需要加设置字段，留给后续。
+
+### 12.5 自测（`tools/selftest/v4_mic_games.pettest`）
+
+`PETSELFTEST1` 新增两个步骤（`selftest_script.h` 有说明）：
+
+| 步骤 | 作用 |
+|---|---|
+| `micgame <candle\|clap>` | 下一局是这个麦克风游戏；同时把“麦克风”交给脚本（之后真麦克风通路保持关闭） |
+| `envelope <blow\|clap\|speech\|noise> <ms>` | 这 <ms> 毫秒里，判定器听到的是合成包络（只是音量数字，不是音频）；`clap` 在步骤开始时拍一下，之后安静 |
+
+场景：游戏 1 拍手（两轮都拍对）→ 游戏 2 吹蜡烛（先说话、拍手、噪声都无效，再吹 5 s 灭 3 根）→ 游戏 3 吹蜡烛（同样的干扰后长按回首页）。主要期望：`none:src=audio 0`（真麦克风通路一次都没开）、`min:src=script 4`、`min:end=completed 2`、`min:end=home 1`、`min:growth=1 2`、`min:growth=0 1`、`min:correct=2 1`、`commits 0`。
+
+**建议监视秒数**：`python tools/selftest_report.py plan tools/selftest/v4_mic_games.pettest` → 预计到 `PET_SELFTEST_DONE` 约 114 s，上限 124 s（脚本约 101 s）。运行条件同 v4_mini_game：不在安静时段、电量不低、不放 TF 游戏包也行、提示音 `volume 15`。
+
+### 12.6 没有做的 / 待真机
+
+- 真机未验证：真麦克风的包络数值（`SetMicEnvelopeTap` 路径、声道/重采样后的幅度、拍手和吹气的实际门限，需要 V1-10 数据校准）、扬声器回声、局刷耗时。自测只覆盖“判定器 + 会话 + 画面 + 日志”，不经过真麦克风（刻意：`none:src=audio`）。
+- 真机上的最小手测：进游戏后对着麦克风吹 1 s / 拍手，看 `PET_MIC_HEARD`；确认 BOOT 说话时 `PET_MIC_TAP armed=0`。
+
+- 颜色题（墨水屏只有黑白）；游戏包自带位图（以后要加需换版本号）；麦克风游戏（V4-08）。体感游戏见 §13。
+- 动物、英语单词、大小比较三类只有格式和工具支持，没有现成的审核内容和录音。
+
+## 13. V4-07 体感游戏：倾斜滚球、扣下躲猫猫
 
 对应 `DEVELOPMENT_PLAN.md` V4-07，`PRODUCT_REQUIREMENTS.md` §3（只奖励“轻”动作，剧烈摇晃不加分，可关闭）、§7，ADR-011（只在本地算特征，不存原始数据）、ADR-012（奖励与成长记忆）。复用 V4-06 的游戏壳（`GameOutput` / `GameResult` / `GameView` / 提示音 / `PromptRequest::game` / 成长记忆）和 V4-01/02 的手势识别（`GestureDetector`），纯逻辑在 `kid_app/motion_game.{h,cc}`，不新增任何存储。
 
-### 12.1 玩法
+### 13.1 玩法
 
-首页「游戏」→ **游戏菜单**（三张图卡：星星 = 知识题，球 = 倾斜滚球，小猫 = 扣下躲猫猫）。拨轮上下选、按下开始、长按回首页、60 s 没操作回首页（和知识题的高亮/夹紧规则一致）。
+首页「游戏」→ **游戏菜单**：5 个游戏，每次显示 3 张图卡，窗口跟着高亮滑动（星星 = 知识题，球 = 倾斜滚球，小猫 = 扣下躲猫猫，蜡烛 = 吹蜡烛，手 = 拍手节奏，后两个是 V4-08）。拨轮上下选、到头夹紧、按下开始、长按回首页、60 s 没操作回首页。V4-08 原来的“知识题/吹蜡烛/知识题/拍手”轮换取消，改由孩子在菜单里选；自测的 `micgame` 步骤仍直接开始吹蜡烛/拍手（绕过菜单）。
 
 | 游戏 | 孩子怎么玩 | 奖励 |
 |---|---|---|
@@ -196,24 +266,24 @@ python -m tools.game_pack demo   --output build/game-smoke     # 仅提示音，
 - 长按拨轮回首页；滚球 60 s 没倾斜（或躲猫猫等扣 60 s 没动）重复一次提示音，之后回首页；躲猫猫扣着不翻最长 120 s。BOOT（说话）和 PWR（睡觉）和知识题一样结束游戏。
 - 家长菜单里关了“体感”：菜单里选这两个游戏会被拒绝（`PET_GAME_REFUSED reason=motion_off`），停在菜单；知识题不受影响。
 - 声音全是固件内置提示音（开始/进洞/找到/再来一次/再见），没有录音，也走同一个音量上限和安静时段规则。
-- 每局玩完且至少赢一次，生成 `GAME_COMPLETED`，游戏 id：知识内置题 = 1，**滚球 = 2，躲猫猫 = 3**（1–99 留给固件内置，包的 id 从 100 起，不会撞）；中途回家、超时、被打断都不生成。只走原子账本的 `RecordMemory`（和 V4-06 相同），从不写喜好。
+- 每局玩完且至少赢一次，生成 `GAME_COMPLETED`，游戏 id：知识内置题 = 1，**滚球 = 4，躲猫猫 = 5**（2、3 是 V4-08 的吹蜡烛、拍手节奏，1–99 留给固件内置，包的 id 从 100 起，不会撞）；中途回家、超时、被打断都不生成。只走原子账本的 `RecordMemory`（和 V4-06 相同），从不写喜好。
 
-### 12.2 逻辑与画面
+### 13.2 逻辑与画面
 
 - `TiltTracker`：把 500 ms 的 IMU 窗口均值变成 `TiltLeft` / `TiltRight` / `Level`（`Gesture` 新增这三个值，只给滚球用，`GestureDetector` 不报）。屏幕朝上（z ≤ −500 mg）、窗口内晃动 < 500 mg、所选轴均值 > 300 mg 才算倾斜；回到 ±150 mg 内报一次水平。
   - **轴向和正负号是 `TiltConfig`（`use_y`、`sign`）：默认用 x 轴、正为右。板子横拿时哪一个轴对应孩子的“左右”要在真机上标定**（QMI8658 的安装方向没有在文档里确认），不对就改这两个常量即可。
 - `MotionGameSession`：滚球 / 躲猫猫的状态机（和 `GameSession` 一样确定性、单一所有者、时间戳回绕安全，空闲/重复提示计时接 `SelfTestClock`；2 s 的“藏够”是物理动作，不缩放）。
 - `GameMenu`：菜单，复用 `IconChoice`。
-- 画面仍是 `SceneKind::Game`：`GameView` 增加 `motion`（1 滚球 / 2 躲猫猫）、`ball`、`hole`、`hidden`；菜单用原来的答案卡画法（星/球/猫三张图）。滚球的轨道和球在 y ≥ 296 的答案栏区域（球移动 = 只改这一块，计入 rail 局刷预算）；团团反应、进度点在上方（pet 预算）；躲猫猫扣下时上方团团闭眼、下方一张空心手机卡变实心。新画面同样不画进状态栏的两个角框，测试保证区域不越界。
+- 画面仍是 `SceneKind::Game`：`GameView` 增加 `motion`（1 滚球 / 2 躲猫猫）、`ball`、`hole`、`hidden`；菜单用原来的答案卡画法（星/球/猫/蜡烛/手五张图，三张一屏）。滚球的轨道和球在 y ≥ 296 的答案栏区域（球移动 = 只改这一块，计入 rail 局刷预算）；团团反应、进度点在上方（pet 预算）；躲猫猫扣下时上方团团闭眼、下方一张空心手机卡变实心。新画面同样不画进状态栏的两个角框，测试保证区域不越界。
 
-### 12.3 板端接入（`scripts/p1_integrate.py`）
+### 13.3 板端接入（`scripts/p1_integrate.py`）
 
 - `StartGame()` 现在只开菜单（`OpenGameMenu`），菜单选择后 `StartQuiz()`（原 V4-06 的启动）或 `StartMotion()`。`game_mode_`（None / Menu / Quiz / Motion）决定谁拿拨轮和画面；`game_active_` 对菜单和所有游戏都为真，所以 V4-06 加的那些“游戏中不播短句 / 不做动画 / 不打盹 / 不电量反应”守卫全部照旧生效。
 - 手势：`HandleGesture` 在动体感游戏时把 FaceDown / FaceUp / TiltLeft / TiltRight / Level 放进一个原子字，`UpdateGame`（pet_input，20 ms 一次）取出交给 `MotionGameSession`；`PET_GESTURE kind=… acted=1 game=1`。自测的 `gesture` 步骤走同一条路径。
 - 倾斜只在滚球进行时由 `pet_boot_diag` 的 IMU 窗口喂给 `TiltTracker`（`motion_tilt_` 且家长未关体感），其余时间复位；躲猫猫用现有 `GestureDetector` 的 FaceDown/FaceUp（1 s 持续判定）。不新增任何采样、存储或上传。
-- 日志：`PET_GAME_MENU highlight=`、`PET_GAME_MENU_SELECT`、`PET_GAME_CHOICE game=quiz|ball|peekaboo`、`PET_GAME_START src=motion kind=ball|peekaboo id= seed= rounds=`、`PET_MOTION_ROUND n=1/3 kind= ball= hole=`、`PET_MOTION_STEP ball= hole=`、`PET_MOTION_HOLE`、`PET_MOTION_HIDE`、`PET_MOTION_TOO_SOON`、`PET_MOTION_FOUND`、`PET_GAME_END mode=menu|quiz|ball|peekaboo end=… growth=…`。
+- 日志：`PET_GAME_MENU highlight=`、`PET_GAME_MENU_SELECT`、`PET_GAME_CHOICE game=quiz|ball|peekaboo|candle|clap`、`PET_GAME_START src=motion kind=ball|peekaboo id= seed= rounds=`、`PET_MOTION_ROUND n=1/3 kind= ball= hole=`、`PET_MOTION_STEP ball= hole=`、`PET_MOTION_HOLE`、`PET_MOTION_HIDE`、`PET_MOTION_TOO_SOON`、`PET_MOTION_FOUND`、`PET_GAME_END mode=menu|quiz|ball|peekaboo end=… growth=…`。
 
-### 12.4 自测与真机检查
+### 13.4 自测与真机检查
 
 - `tests/cpp/test_motion_game.cc`：倾斜判定（方向、保持、水平只报一次、晃动/扣着不算、轴和符号可配）；滚球确定性与边界、不掉出轨道、反应期不动、不重复得奖；躲猫猫太早 / 藏够 / 摇晃无奖励 / 超时；成长记忆只在完成且赢过时生成；菜单；画面区域和刷新闸门。`scripts/p2_test.sh` 末尾新增一块。
 - `tests/test_p1_integration_contract.py`：菜单先于游戏、手势只转发 5 个游戏手势且不含摇晃、倾斜只在滚球时喂、`EndGame` 清所有标志、不碰存储、自测 `gesture` 复用 `HandleGesture`。`tests/test_selftest_report.py`：新场景的 `plan` 与期望能被报告工具识别（含失败路径）。`tests/cpp/test_selftest_script.cc`：`gesture tiltleft|tiltright|level`。

@@ -2514,6 +2514,7 @@ BOARD_WORKER = r'''
         scene.kind = kid_app::SceneKind::Game;
         scene.game = game_mode_ == GameMode::Menu     ? game_menu_.View()
                      : game_mode_ == GameMode::Motion ? motion_.View()
+                     : mic_session_                   ? mic_game_.View()  // V4-08
                                                       : game_.View();
         pet_mailbox_.Publish(scene);
     }
@@ -2530,7 +2531,14 @@ BOARD_WORKER = r'''
 
     // pet_input, after the rail press (scene_state_mutex_ released): the
     // game menu comes first.
-    void StartGame() { OpenGameMenu(0); }
+    void StartGame() {
+        kid_app::MicGameKind mic_kind{};
+        if (PickMicGame(&mic_kind)) {  // self-test `micgame` only: straight into the game
+            StartMicGame(mic_kind);
+            return;
+        }
+        OpenGameMenu(0);
+    }
 
     void OpenGameMenu(uint8_t start) {
         const auto out = game_menu_.Start(NowMs(), start);
@@ -2559,6 +2567,11 @@ BOARD_WORKER = r'''
             ESP_LOGI(TAG, "PET_GAME_CHOICE game=%s", kid_app::GameChoiceName(out.chosen));
             if (out.chosen == kid_app::GameChoice::Quiz) {
                 StartQuiz();
+            } else if (out.chosen == kid_app::GameChoice::Candle ||
+                       out.chosen == kid_app::GameChoice::Clap) {  // V4-08
+                StartMicGame(out.chosen == kid_app::GameChoice::Candle
+                                 ? kid_app::MicGameKind::Candle
+                                 : kid_app::MicGameKind::ClapRhythm);
             } else if (!motion_enabled_.load()) {  // parents switched motion off
                 ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
                 OpenGameMenu(static_cast<uint8_t>(static_cast<uint8_t>(out.chosen) - 1));
@@ -2719,6 +2732,10 @@ BOARD_WORKER = r'''
             case kid_app::InputKind::DialLong: input = kid_app::GameInput::Long; break;
             default: return;
         }
+        if (mic_session_) {  // V4-08: the dial only ends these games (long press)
+            ApplyMicOutput(mic_game_.Input(input, NowMs()));
+            return;
+        }
         const auto before = game_.View();
         const auto out = game_.Input(input, NowMs());
         if (input == kid_app::GameInput::Press && out.redraw) {
@@ -2749,7 +2766,8 @@ BOARD_WORKER = r'''
                 HandleMenuOutput(game_menu_.Tick(NowMs()));
                 break;
             case GameMode::Quiz:
-                ApplyGameOutput(game_.Tick(NowMs()));
+                if (mic_session_) UpdateMicGame(state);  // V4-08
+                else ApplyGameOutput(game_.Tick(NowMs()));
                 break;
             case GameMode::Motion: {
                 const uint8_t pending = motion_gesture_.exchange(0);
@@ -2773,6 +2791,7 @@ BOARD_WORKER = r'''
     // (sleep, parent menu, morning), so the panel skips a needless refresh.
     void EndGame(const char* reason, bool publish_home = true) {
         if (!game_active_.load()) return;
+        DisarmMic();  // V4-08: the microphone is off as soon as a game ends, whatever the reason
         // Interrupt is a no-op for a game that already finished by itself.
         kid_app::GameResult result{};
         const char* mode = "quiz";
@@ -2789,10 +2808,17 @@ BOARD_WORKER = r'''
                 break;
             case GameMode::Quiz:
             case GameMode::None:
-                game_.Interrupt();
-                result = game_.Result();
+                if (mic_session_) {
+                    mic_game_.Interrupt();
+                    result = mic_game_.Result();
+                    mode = "mic";
+                } else {
+                    game_.Interrupt();
+                    result = game_.Result();
+                }
                 break;
         }
+        mic_session_ = false;
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(false);
@@ -2821,6 +2847,170 @@ BOARD_WORKER = r'''
                  mode, kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
                  static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
                  static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
+    }
+
+    // ---- V4-08 microphone games (blow the candles, clap the rhythm back) ----
+    // Inside the V4-06 game frame (same scene, same GameActive() guards, same
+    // growth memory rule). PRIVACY: the only thing taken from the microphone
+    // is one RMS number per 10 ms frame, handed to MicClassifier by the
+    // AudioInputTask (SetMicEnvelopeTap, scripts/v4_mic_tap_patch.py); no
+    // audio is copied, recorded, stored or sent anywhere. The tap is armed
+    // only while a mic game asks for it (MicWanted()), never in a voice
+    // session (UpdateGame ends the game; the AudioService also clears the
+    // tap when voice processing starts), and it is off as soon as the game
+    // ends. A host self-test can inject synthetic loudness instead
+    // (`envelope` step): the real tap then stays off.
+    kid_app::MicGameSession mic_game_;      // pet_input only
+    bool mic_session_ = false;              // pet_input: the running game is a mic game
+    bool mic_armed_ = false;                // pet_input: tap/injection on
+    std::atomic<uint8_t> mic_force_{0};     // self-test "micgame": 1 candle, 2 clap
+    kid_app::MicClassifier mic_classifier_;  // under mic_mutex_
+    std::mutex mic_mutex_;
+    std::atomic<bool> mic_blow_{false};     // latest decision (audio task writes)
+    std::atomic<uint32_t> mic_claps_{0};    // claps since pet_input last looked
+    std::atomic<bool> mic_inject_{false};   // self-test drives the "microphone"
+    std::atomic<uint8_t> mic_synth_kind_{0};
+    std::atomic<uint32_t> mic_synth_start_ms_{0}, mic_synth_until_ms_{0};
+    uint32_t mic_synth_clock_ms_ = 0;       // pet_input: next synthetic frame time
+    bool mic_heard_blow_ = false;           // pet_input: log edges only
+    uint8_t mic_lit_logged_ = 0xFF;
+    uint8_t mic_claps_logged_ = 0xFF;
+
+    static void MicSink(void* context, uint16_t rms) {
+        static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->OnMicFrame(rms);
+    }
+
+    // Audio input task (or pet_input when injecting). One number in, a
+    // decision out; the number is not kept.
+    void OnMicFrame(uint16_t rms) {
+        std::lock_guard<std::mutex> lock(mic_mutex_);
+        const kid_app::MicDecision decision = mic_classifier_.Feed(rms);
+        mic_blow_.store(decision.blowing);
+        if (decision.clap) mic_claps_.fetch_add(1);
+    }
+
+    // pet_input, when the Game item starts a game. Real children get the
+    // quiz most of the time and a mic game every other round; a script that
+    // names a seed (`game <seed>`) keeps the quiz, `micgame` forces a mic game.
+    bool PickMicGame(kid_app::MicGameKind* kind) {
+        const uint8_t forced = mic_force_.exchange(0);
+        if (forced) {
+            *kind = forced == 1 ? kid_app::MicGameKind::Candle : kid_app::MicGameKind::ClapRhythm;
+            return true;
+        }
+        return false;  // children pick in the game menu (V4-07); no rotation any more
+    }
+
+    void StartMicGame(kid_app::MicGameKind kind) {
+        kid_app::GameOutput out{};
+        if (!mic_game_.Start(kind, NowMs(), &out)) {
+            ESP_LOGW(TAG, "PET_MIC_GAME_START_FAILED kind=%s", kid_app::MicGameKindName(kind));
+            EndGame("start_failed");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            mic_session_ = true;
+            game_mode_ = GameMode::Quiz;  // the quiz dispatch routes mic games too
+            game_active_.store(true);
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        mic_lit_logged_ = 0xFF;
+        mic_claps_logged_ = 0xFF;
+        ESP_LOGI(TAG, "PET_GAME_START src=mic id=%u kind=%s rounds=%u",
+                 static_cast<unsigned>(mic_game_.Result().game_id), kid_app::MicGameKindName(kind),
+                 static_cast<unsigned>(mic_game_.Result().rounds));
+        PostGameClip(out.clip);
+    }
+
+    void ArmMic() {
+        if (mic_armed_) return;
+        mic_armed_ = true;
+        {
+            std::lock_guard<std::mutex> lock(mic_mutex_);
+            mic_classifier_.Reset();  // learns the room again before it decides
+        }
+        mic_blow_.store(false);
+        mic_claps_.store(0);
+        mic_heard_blow_ = false;
+        mic_synth_clock_ms_ = 0;
+        const bool inject = mic_inject_.load();
+        if (!inject)
+            Application::GetInstance().GetAudioService().SetMicEnvelopeTap(true, &MicSink, this);
+        ESP_LOGI(TAG, "PET_MIC_TAP armed=1 src=%s", inject ? "script" : "audio");
+    }
+
+    void DisarmMic() {
+        if (!mic_armed_) return;
+        mic_armed_ = false;
+        Application::GetInstance().GetAudioService().SetMicEnvelopeTap(false, nullptr, nullptr);
+        mic_blow_.store(false);
+        mic_claps_.store(0);
+        ESP_LOGI(TAG, "PET_MIC_TAP armed=0");
+    }
+
+    // pet_input, every loop while a mic game runs (never in a voice session:
+    // UpdateGame has already ended the game then).
+    void UpdateMicGame(DeviceState state) {
+        const bool want = state == kDeviceStateIdle && mic_game_.MicWanted();
+        if (want) ArmMic();
+        else DisarmMic();
+        const uint32_t now = NowMs();
+        if (mic_armed_ && mic_inject_.load()) {
+            // Synthetic loudness, one frame per 10 ms of real time.
+            if (!mic_synth_clock_ms_ || now - mic_synth_clock_ms_ > 200) mic_synth_clock_ms_ = now;
+            const auto kind = static_cast<kid_app::MicSynth>(mic_synth_kind_.load());
+            const uint32_t start = mic_synth_start_ms_.load(), until = mic_synth_until_ms_.load();
+            while (mic_synth_clock_ms_ + kid_app::MicClassifier::kFrameMs <= now) {
+                const bool live = mic_synth_clock_ms_ >= start && mic_synth_clock_ms_ < until;
+                OnMicFrame(kid_app::SynthEnvelopeRms(live ? kind : kid_app::MicSynth::Silence,
+                                                     live ? mic_synth_clock_ms_ - start : 0));
+                mic_synth_clock_ms_ += kid_app::MicClassifier::kFrameMs;
+            }
+        }
+        kid_app::MicDecision decision{};
+        const uint32_t claps = mic_claps_.exchange(0);
+        if (want) {
+            decision.blowing = mic_blow_.load();
+            decision.clap = claps > 0;
+            if (decision.blowing != mic_heard_blow_) {
+                mic_heard_blow_ = decision.blowing;
+                if (mic_heard_blow_) ESP_LOGI(TAG, "PET_MIC_HEARD kind=blow");
+            }
+            if (decision.clap) ESP_LOGI(TAG, "PET_MIC_HEARD kind=clap");
+        }
+        ApplyMicOutput(mic_game_.Tick(now, decision));
+    }
+
+    void ApplyMicOutput(const kid_app::GameOutput& out) {
+        PostGameClip(out.clip);
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(mic_game_.Result().end));
+            return;
+        }
+        if (!out.redraw) return;
+        const auto view = mic_game_.View();
+        if (mic_game_.Kind() == kid_app::MicGameKind::Candle) {
+            if (mic_game_.LitCandles() != mic_lit_logged_) {
+                mic_lit_logged_ = mic_game_.LitCandles();
+                ESP_LOGI(TAG, "PET_MIC_CANDLE lit=%u", static_cast<unsigned>(mic_lit_logged_));
+            }
+        } else if (mic_game_.ClapsHeard() != mic_claps_logged_ ||
+                   view.feedback != kid_app::GameFeedback::None) {
+            mic_claps_logged_ = mic_game_.ClapsHeard();
+            static const char* const kFeedback[] = {"none", "right", "try_again", "reveal"};
+            ESP_LOGI(TAG, "PET_MIC_CLAPS round=%u claps=%u feedback=%s right=%d",
+                     static_cast<unsigned>(mic_game_.Round() + 1),
+                     static_cast<unsigned>(mic_claps_logged_),
+                     kFeedback[static_cast<uint8_t>(view.feedback) & 3], out.right ? 1 : 0);
+        }
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
     }
 
     // ---- Host-scripted self-test (unattended hardware trials) ----
@@ -3019,6 +3209,27 @@ BOARD_WORKER = r'''
                     game_seed_.store(step.ms);
                     ESP_LOGI(TAG, "PET_SELFTEST_GAME seed=%u", static_cast<unsigned>(step.ms));
                     break;
+                case kid_app::SelfTestOp::MicGame:
+                    // V4-08: the next game is this microphone game, and the
+                    // microphone is the script's from now on (synthetic
+                    // loudness, never the real tap).
+                    mic_inject_.store(true);
+                    mic_force_.store(std::strcmp(step.name, "clap") == 0 ? 2 : 1);
+                    ESP_LOGI(TAG, "PET_SELFTEST_MICGAME kind=%s", step.name);
+                    break;
+                case kid_app::SelfTestOp::Envelope: {
+                    kid_app::MicSynth synth{};
+                    if (!kid_app::MicSynthFromName(step.name, &synth)) break;
+                    const uint32_t now = NowMs();
+                    mic_inject_.store(true);
+                    mic_synth_kind_.store(static_cast<uint8_t>(synth));
+                    mic_synth_start_ms_.store(now);
+                    mic_synth_until_ms_.store(now + step.ms);
+                    ESP_LOGI(TAG, "PET_SELFTEST_ENVELOPE kind=%s ms=%u", step.name,
+                             static_cast<unsigned>(step.ms));
+                    vTaskDelay(pdMS_TO_TICKS(step.ms));
+                    break;
+                }
                 case kid_app::SelfTestOp::Hold:
                     // Same raw-edge queue as the physical buttons.
                     PostKeyEdge(step.key, true);
@@ -3028,6 +3239,7 @@ BOARD_WORKER = r'''
                     break;
             }
         }
+        mic_inject_.store(false);  // V4-08: the real tap again (only a mic game arms it)
         ESP_LOGI(TAG, "PET_SELFTEST_DONE steps=%u", static_cast<unsigned>(script->Count()));
         delete script;
     }
@@ -3140,6 +3352,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/parent_menu.h"\n'
         '#include "kid_app/mini_game.h"\n'
+        '#include "kid_app/mic_game.h"\n'
+        '#include "kid_app/mic_envelope.h"\n'
         '#include "kid_app/game_pack_reader.h"\n'
         '#include "kid_app/motion_game.h"\n'
         '#include "kid_app/memory_store.h"\n'
@@ -3290,6 +3504,7 @@ def run(source: Path) -> None:
     from scripts.p4_audio_queue_patch import (
         patch_audio_h, patch_audio_cc, patch_application_cc,
     )
+    from scripts import v4_mic_tap_patch  # V4-08: loudness-only microphone tap
 
     cmake = source / "main/CMakeLists.txt"
     header = source / BOARD_REL / "custom_lcd_display.h"
@@ -3307,8 +3522,10 @@ def run(source: Path) -> None:
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
         board_config: patch_board_config(board_config.read_text(encoding="utf-8")),
-        audio_h: patch_audio_h(audio_h.read_text(encoding="utf-8")),
-        audio_cc: patch_audio_cc(audio_cc.read_text(encoding="utf-8")),
+        audio_h: v4_mic_tap_patch.patch_audio_h(
+            patch_audio_h(audio_h.read_text(encoding="utf-8"))),
+        audio_cc: v4_mic_tap_patch.patch_audio_cc(
+            patch_audio_cc(audio_cc.read_text(encoding="utf-8"))),
         application_cc: patch_application_cc(application_cc.read_text(encoding="utf-8")),
     }
     src = ROOT / "firmware/components/kid_app"

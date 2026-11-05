@@ -16,8 +16,9 @@ namespace kid_app {
 // means that are thrown away.
 
 // Game ids written into the growth memory (1 = built-in quiz set, V4-06).
-constexpr uint16_t kBallGameId = 2;
-constexpr uint16_t kPeekabooGameId = 3;
+// 2 and 3 are the V4-08 microphone games.
+constexpr uint16_t kBallGameId = 4;
+constexpr uint16_t kPeekabooGameId = 5;
 
 // ---- TiltTracker: IMU window -> tilt events for the ball game ----
 struct TiltConfig {
@@ -108,10 +109,13 @@ private:
 };
 
 // ---- Game menu: which game? ----
-// The home rail's Game item opens this: three picture cards (the quiz, the
-// ball, the cat for peekaboo), dial up/down to pick, press to start, long
-// press home. Drawn by the V4-06 answer-card scene.
-enum class GameChoice : uint8_t { None = 0, Quiz = 1, Ball = 2, Peekaboo = 3 };
+// The home rail's Game item opens this: five games, three picture cards at
+// a time (a window that slides with the highlight): the quiz (star), the
+// tilt ball, peekaboo (cat), the V4-08 candles and the clap rhythm. Dial
+// up/down to pick, press to start, long press home. Drawn by the V4-06
+// answer-card scene.
+enum class GameChoice : uint8_t { None = 0, Quiz = 1, Ball = 2, Peekaboo = 3, Candle = 4, Clap = 5 };
+constexpr uint8_t kGameChoiceCount = 5;
 const char* GameChoiceName(GameChoice choice);
 
 struct GameMenuOutput {
@@ -125,7 +129,7 @@ class GameMenu {
 public:
     static constexpr uint32_t kIdleExitMs = 60000;
 
-    // start: the card highlighted first (0-based).
+    // start: the choice highlighted first (0-based).
     GameMenuOutput Start(uint32_t now_ms, uint8_t start = 0);
     GameMenuOutput Input(GameInput input, uint32_t now_ms);
     GameMenuOutput Tick(uint32_t now_ms);
@@ -136,7 +140,7 @@ public:
     GameView View() const;
 
 private:
-    IconChoice choice_;
+    uint8_t index_ = 0;  // 0-based choice
     bool active_ = false;
     GameEnd end_ = GameEnd::None;
     uint32_t last_input_ms_ = 0;

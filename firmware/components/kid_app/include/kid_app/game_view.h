@@ -33,6 +33,13 @@ constexpr bool GameArtIsQuestion(uint16_t id) {
     return id == static_cast<uint16_t>(GameArt::Listen) || GameArtIsOption(id);
 }
 
+// V4-08 microphone games: pictures only they use (candles, the clapping
+// hand, the blowing face). Not in kGameArtIds and not for KPG1 packs, which
+// stay limited to the catalogue above; same append-only rule.
+enum class MicArt : uint16_t {
+    CandleLit = 101, CandleOut = 102, Hand = 103, HandHit = 104, Blow = 105,
+};
+constexpr bool MicArtValid(uint16_t id) { return id >= 101 && id <= 105; }
 // How TuanTuan reacts in the question area. Right is the only reward
 // (hearts, happy face) and only follows a correct dial answer.
 enum class GameFeedback : uint8_t { None, Right, TryAgain, Reveal };

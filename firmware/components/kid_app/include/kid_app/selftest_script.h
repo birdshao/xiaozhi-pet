@@ -56,12 +56,20 @@ namespace kid_app {
 //   game <seed>             the next mini game (V4-06) uses this seed (1..
 //                           600000) instead of a random one, so a script
 //                           knows its rounds and right answers
+//   micgame <candle|clap>   V4-08: the next mini game is that microphone game
+//                           (blow out the candles / clap the rhythm back); a
+//                           plain "game" keeps playing the picture quiz
+//   envelope <kind> <ms>    V4-08: for <ms> the microphone games hear a synthetic
+//                           loudness envelope instead of the microphone (the
+//                           real tap stays off): blow, clap, speech or noise.
+//                           Loudness numbers only, never audio. A clap is one
+//                           clap at the start of the step, then quiet
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo, Book, Game, TimeScale, WaitIdle, TimerWait
+    Combo, Book, Game, TimeScale, WaitIdle, TimerWait, Envelope, MicGame
 };
 
 struct SelfTestStep {
@@ -73,9 +81,9 @@ struct SelfTestStep {
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff;
-                          // Game: the seed
+                          // Game: the seed; Envelope: duration ms
     uint32_t gap_ms = 0;  // pause after releasing the key
-    char name[16] = {};   // Mark; Book: book id
+    char name[16] = {};   // Mark; Book: book id; Envelope / MicGame: kind name
 };
 
 class SelfTestScript {
