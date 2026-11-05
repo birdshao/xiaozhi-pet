@@ -352,3 +352,18 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   "$ROOT/tests/cpp/test_game_pack_reader.cc" \
   -o "$BUILD/test_game_pack_reader"
 "$BUILD/test_game_pack_reader" "$ROOT/tests/fixtures/kpg1"
+
+# V4-08 microphone games: envelope classifier (blow / clap / speech / noise
+# from synthetic RMS sequences, no audio), candle and clap-rhythm sessions,
+# growth memory rule, game scene regions.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/mic_envelope.cc" \
+  "$ROOT/firmware/components/kid_app/src/mic_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_mic_games.cc" \
+  -o "$BUILD/test_mic_games"
+"$BUILD/test_mic_games"
