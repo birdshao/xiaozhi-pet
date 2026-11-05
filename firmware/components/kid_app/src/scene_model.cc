@@ -1002,7 +1002,51 @@ void GameBall(MonoFrame& f, int cx, int cy, int radius) {
     Arc(f, cx, cy, radius * 6 / 10, radius * 6 / 10, 20, 160, w);
 }
 
+// V4-08 microphone games (MicArt): candles, the clapping hands, the blowing face.
+void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
+    const int w = std::max(3, r / 10);
+    auto p = [r](int percent) { return r * percent / 100; };
+    switch (art) {
+        case MicArt::CandleLit:
+        case MicArt::CandleOut:
+            FillRect(f, cx - p(24), cy - p(6), 2 * p(24), p(66));
+            Stroke(f, cx, cy - p(6), cx, cy - p(24), std::max(2, w / 2));
+            if (art == MicArt::CandleLit) {
+                FillEllipse(f, cx, cy - p(46), p(15), p(20));
+                FillTriangle(f, cx, cy - p(88), cx - p(14), cy - p(48), cx + p(14), cy - p(48));
+            } else {  // a thin curl of smoke
+                Arc(f, cx - p(9), cy - p(44), p(13), p(13), -90, 90, w);
+                Arc(f, cx + p(9), cy - p(70), p(13), p(13), 90, 270, w);
+            }
+            break;
+        case MicArt::Hand:
+        case MicArt::HandHit:
+            for (int side : {-1, 1}) {  // two palms about to meet
+                if (art == MicArt::HandHit) FillEllipse(f, cx + side * p(30), cy, p(26), p(50));
+                else Blob(f, cx + side * p(34), cy, p(26), p(50), w);
+            }
+            if (art == MicArt::HandHit) {
+                Sparkle(f, cx, cy - p(66), p(18));
+                Sparkle(f, cx - p(70), cy - p(54), p(10));
+                Sparkle(f, cx + p(70), cy - p(54), p(10));
+            }
+            break;
+        case MicArt::Blow:
+            Blob(f, cx - p(30), cy, p(52), p(52), w);
+            Disk(f, cx - p(18), cy - p(14), p(7));
+            Disk(f, cx - p(52), cy - p(14), p(7));
+            Disk(f, cx - p(10), cy + p(16), p(9));  // the round mouth
+            for (int k = -1; k <= 1; ++k)           // the air
+                Stroke(f, cx + p(36), cy + p(16) + k * p(26), cx + p(92), cy + p(16) + k * p(34), w);
+            break;
+    }
+}
+
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (MicArtValid(art)) {
+        MicArtIcon(f, static_cast<MicArt>(art), cx, cy, r);
+        return;
+    }
     const int w = std::max(3, r / 10);
     auto p = [r](int percent) { return r * percent / 100; };
     switch (static_cast<GameArt>(art)) {
@@ -1093,12 +1137,45 @@ int GameCardX(uint8_t i, uint8_t n) {
     return centre - kGameCardW / 2;
 }
 
+// V4-07 tilt ball: seven cells on a line; the hole at its end (a ring while
+// the ball sits in it), the ball (the GameBall picture) on its cell.
+constexpr int kBallTrackY = 392, kBallCellPitch = 100, kBallTrackX = 100;
+
+void BallTrack(MonoFrame& f, const GameView& g) {
+    Stroke(f, kBallTrackX - 50, kBallTrackY + 52, kBallTrackX + 6 * kBallCellPitch + 50,
+           kBallTrackY + 52, 5);
+    for (int i = 0; i < 7; ++i) {
+        const int x = kBallTrackX + i * kBallCellPitch;
+        if (i == g.hole) {
+            if (i == g.ball) Ring(f, x, kBallTrackY, 46, 46, 6);
+            else Disk(f, x, kBallTrackY, 44);
+        } else if (i != g.ball) {
+            Disk(f, x, kBallTrackY + 40, 5);
+        }
+    }
+    GameBall(f, kBallTrackX + g.ball * kBallCellPitch, kBallTrackY - (g.ball == g.hole ? 0 : 6),
+             g.ball == g.hole ? 30 : 38);
+}
+
+// V4-07 peekaboo: the board as a phone-sized card, hollow face up, solid
+// while TuanTuan hides (face down).
+void PeekabooCard(MonoFrame& f, const GameView& g) {
+    if (g.hidden) {
+        FillRoundRect(f, 300, 336, 200, 112, 22);
+    } else {
+        RoundRectRing(f, 300, 336, 200, 112, 22, 6);
+        Disk(f, 400, 392, 14);
+    }
+}
+
 void GameScene(MonoFrame& f, const GameView& g) {
     // TuanTuan watches; a correct answer (and only that) gets hearts.
-    const Emotion emotion = g.feedback == GameFeedback::Right      ? Emotion::Happy
+    const Emotion emotion = g.hidden                               ? Emotion::Sleepy
+                            : g.feedback == GameFeedback::Right    ? Emotion::Happy
                             : g.feedback == GameFeedback::TryAgain ? Emotion::Curious
                                                                    : Emotion::Neutral;
-    const Eyes eyes = g.feedback == GameFeedback::Right    ? Eyes::Laugh
+    const Eyes eyes = g.hidden                             ? Eyes::Closed
+                      : g.feedback == GameFeedback::Right  ? Eyes::Laugh
                       : g.feedback == GameFeedback::Reveal ? Eyes::WinkLeft
                                                            : Eyes::ByEmotion;
     CatHead(f, 150, 172, 62, emotion, eyes);
@@ -1127,6 +1204,15 @@ void GameScene(MonoFrame& f, const GameView& g) {
         } else {
             Ring(f, x, y, 9, 9, 3);
         }
+    }
+    // Motion games draw their own rail (no answer cards).
+    if (g.motion == 1) {
+        BallTrack(f, g);
+        return;
+    }
+    if (g.motion == 2) {
+        PeekabooCard(f, g);
+        return;
     }
     // Answer rail.
     const uint8_t n = std::min<uint8_t>(g.option_count, 3);

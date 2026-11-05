@@ -33,6 +33,13 @@ constexpr bool GameArtIsQuestion(uint16_t id) {
     return id == static_cast<uint16_t>(GameArt::Listen) || GameArtIsOption(id);
 }
 
+// V4-08 microphone games: pictures only they use (candles, the clapping
+// hand, the blowing face). Not in kGameArtIds and not for KPG1 packs, which
+// stay limited to the catalogue above; same append-only rule.
+enum class MicArt : uint16_t {
+    CandleLit = 101, CandleOut = 102, Hand = 103, HandHit = 104, Blow = 105,
+};
+constexpr bool MicArtValid(uint16_t id) { return id >= 101 && id <= 105; }
 // How TuanTuan reacts in the question area. Right is the only reward
 // (hearts, happy face) and only follows a correct dial answer.
 enum class GameFeedback : uint8_t { None, Right, TryAgain, Reveal };
@@ -49,15 +56,24 @@ struct GameView {
     GameFeedback feedback = GameFeedback::None;
     uint16_t question_art = 0;  // GameArt id; 0 = Listen
     std::array<uint16_t, 3> options{};
+    // V4-07 motion games (0 = the V4-06 answer cards above).
+    // 1 = tilt ball: the track under the line, `ball` rolls towards `hole`
+    // (cells 0..kBallCells-1). 2 = peekaboo: `hidden` while the board lies
+    // face down.
+    uint8_t motion = 0;
+    uint8_t ball = 0;
+    uint8_t hole = 0;
+    bool hidden = false;
 
     // Changes drawn below kGameRailTop.
     bool RailDiffers(const GameView& o) const {
-        return option_count != o.option_count || highlight != o.highlight || options != o.options;
+        return option_count != o.option_count || highlight != o.highlight || options != o.options ||
+               motion != o.motion || ball != o.ball || hole != o.hole || hidden != o.hidden;
     }
     // Changes drawn above it.
     bool QuestionDiffers(const GameView& o) const {
         return round != o.round || rounds != o.rounds || feedback != o.feedback ||
-               question_art != o.question_art;
+               question_art != o.question_art || motion != o.motion || hidden != o.hidden;
     }
     bool operator==(const GameView& o) const { return !RailDiffers(o) && !QuestionDiffers(o); }
     bool operator!=(const GameView& o) const { return !(*this == o); }

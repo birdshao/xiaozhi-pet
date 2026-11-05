@@ -48,6 +48,9 @@ def expectations(scenario: str) -> dict[str, str]:
         m = re.match(r"\s*#\s*expect\s+(\S+)\s+(\S+)\s*$", line)
         if m:
             found[m.group(1)] = m.group(2)
+        elif re.match(r"\s*#\s*expect(\s|$)", line):
+            # A directive that does not parse must not be silently skipped.
+            raise ValueError(f"malformed expect line: {line.strip()!r} (want: # expect <name> <value>)")
     return found
 
 
@@ -116,6 +119,8 @@ def plan(scenario: str) -> dict:
             t_ms += args[0]
         elif op == "twait":
             t_ms += _scaled(args[0], pct)
+        elif op == "envelope":  # V4-08: the step lasts as long as the sound
+            t_ms += args[0]
         elif op == "waitidle":
             t_ms += min(args[0], READY_EST_S * 1000)
         elif op == "tap":
