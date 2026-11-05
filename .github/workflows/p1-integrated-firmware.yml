@@ -104,10 +104,60 @@ jobs:
           CCACHE_COMPRESS: "1"
         run: |
           source "$IDF_PATH/export.sh"
-          ccache --zero-stats || true
+          # Temporary diagnostics: preserve the existing cache configuration
+          # until two runs identify the input responsible for the misses.
+          export CCACHE_DEBUG=1
+          export CCACHE_DEBUGLEVEL=2
+          export CCACHE_DEBUGDIR="$RUNNER_TEMP/ccache-debug"
+          mkdir -p "$CCACHE_DEBUGDIR" "$GITHUB_WORKSPACE/.ccache-diagnostics"
+          {
+            printf "workspace=%s\ncache_dir=%s\nbase_dir=%s\n" "$GITHUB_WORKSPACE" "$CCACHE_DIR" "$CCACHE_BASEDIR"
+            ccache --version
+            ccache -p
+            ccache --show-stats
+            ccache --print-stats
+            for compiler in xtensa-esp-elf-gcc xtensa-esp-elf-g++; do
+              compiler_path="$(command -v "$compiler")"
+              stat -L --format="%n size=%s mtime=%Y" "$compiler_path"
+              sha256sum "$compiler_path"
+            done
+          } | tee "$GITHUB_WORKSPACE/.ccache-diagnostics/before-build.txt"
+          ccache --zero-stats
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
-          ccache --show-stats || true
+          ccache --show-stats | tee "$GITHUB_WORKSPACE/.ccache-diagnostics/after-build.txt"
+          ccache --print-stats | tee -a "$GITHUB_WORKSPACE/.ccache-diagnostics/after-build.txt"
+      - name: Collect temporary ccache diagnostics
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          debug = Path(os.environ["RUNNER_TEMP"]) / "ccache-debug"
+          output = Path(os.environ["GITHUB_WORKSPACE"]) / ".ccache-diagnostics"
+          output.mkdir(exist_ok=True)
+          # Stable source selection across runs; preserve the directory layout.
+          samples = sorted(debug.rglob("*.ccache-input-text"))[:12]
+          for sample in samples:
+              log = sample.with_name(sample.name.removesuffix(".ccache-input-text") + ".ccache-log")
+              for source in (sample, log):
+                  if source.is_file():
+                      target = output / source.relative_to(debug)
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(source, target)
+          print(f"Collected {len(samples)} ccache input samples")
+          PY
+      - name: Upload temporary ccache diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccache-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ccache-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 3
       - name: Validate and package immutable app-only image + SHA manifest
         shell: bash
         run: |
