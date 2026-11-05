@@ -2,6 +2,7 @@
 
 #include "kid_app/nvs_bridge_blob_store.h"
 #include "kid_app/nvs_parent_settings_store.h"
+#include "kid_app/ledger_persist_policy.h"
 #include "kid_app/nvs_pet_blob_store.h"
 
 #include "esp_log.h"
@@ -126,13 +127,20 @@ bool FreertosAtomicPetService::PrepareLedger() {
             PetDeviceBridge::Storage::Blob q{};
             if (old_outbox.Read(slot,&q)!=BlobReadStatus::NotFound) bridge=true;
         }
-        migration_=PetLedgerMigration::Run(store_,old_pet,old_parent,bridge,marker);
+        NvsLegacyRelease release;
+        LogNvsUsage("boot");
+        migration_=PetLedgerMigration::Run(store_,old_pet,old_parent,bridge,marker,&release);
+        const int err=store_.LastError() ? store_.LastError()
+                      : marker.LastError() ? marker.LastError() : release.LastError();
         ESP_LOGI(kTag,"PET_LEDGER_MIGRATION outcome=%s failure=%s flags=0x%02x "
-                 "legacy_gen=%" PRIu64 " ledger_gen=%" PRIu64,
+                 "legacy_gen=%" PRIu64 " ledger_gen=%" PRIu64 " released=%d err=%s",
                  PetLedgerMigration::OutcomeName(migration_.outcome),
                  PetLedgerMigration::FailureName(migration_.failure),
                  static_cast<unsigned>(migration_.flags),
-                 migration_.legacy_generation,migration_.ledger_generation);
+                 migration_.legacy_generation,migration_.ledger_generation,
+                 migration_.legacy_released ? 1 : 0,NvsErrorName(err));
+        // After the release: what a ledger slot rewrite now has room for.
+        LogNvsUsage("ready");
         if (migration_.outcome==PetLedgerMigration::Outcome::Failed) return false;
         // No server transport on this device: never fill the outbox.
         ledger_.SetProjection(false);
@@ -314,22 +322,47 @@ void FreertosAtomicPetService::Run() {
     NotifyHead(); // after reboot resume the original pending sequence.
     Message pending{};
     bool has_retry=false;
-    uint32_t storage_failures=0;
+    PersistRetry retry;
     for (;;) {
         if (!has_retry && xQueueReceive(messages_,&pending,kPoll)!=pdTRUE) continue;
-        // On a storage failure the message stays at the head; no later
-        // message is processed until it commits.
-        has_retry=Process(pending,&storage_failures);
-        if (has_retry) {
-            vTaskDelay(kRetry);
-            continue;
+        store_.ClearLastError();
+        // On a storage failure the message stays at the head and no later
+        // message runs, but only for PersistRetry::kAttempts tries: then it
+        // is dropped (never committed) so the next one can be tried.
+        if (Process(pending,retry.LastAttempt())) {
+            const bool again=retry.OnFailure();
+            ESP_LOGW(kTag,"PET_LEDGER_PERSIST_FAILED err=%s kind=%u attempt=%u dropped=%d",
+                     NvsErrorName(store_.LastError()),static_cast<unsigned>(pending.kind),
+                     static_cast<unsigned>(retry.failures),again ? 0 : 1);
+            if (again) {
+                has_retry=true;
+                vTaskDelay(kRetry);
+                continue;
+            }
+            LogNvsUsage("persist_failed");
         }
-        storage_failures=0;
-        in_flight_.fetch_sub(1);  // done: committed, duplicate or rejected
+        has_retry=false;
+        retry.OnDone();
+        in_flight_.fetch_sub(1);  // done: committed, duplicate, rejected or dropped
     }
 }
 
-bool FreertosAtomicPetService::Process(const Message& pending, uint32_t* storage_failures) {
+void FreertosAtomicPetService::LogNvsUsage(const char* when) const {
+    NvsUsage usage{};
+    if (!ReadNvsUsage(&usage)) {
+        ESP_LOGW(kTag,"PET_NVS_STATS when=%s unavailable",when);
+        return;
+    }
+    ESP_LOGI(kTag,"PET_NVS_STATS when=%s used=%u free=%u total=%u ns=%u ledger=%u "
+             "legacy_pet=%u legacy_parent=%u slot_entries=%u",when,
+             static_cast<unsigned>(usage.used),static_cast<unsigned>(usage.free),
+             static_cast<unsigned>(usage.total),static_cast<unsigned>(usage.namespaces),
+             static_cast<unsigned>(usage.ledger),static_cast<unsigned>(usage.legacy_pet),
+             static_cast<unsigned>(usage.legacy_parent),
+             static_cast<unsigned>(NvsBlobEntries(PetAtomicLedger::kBytes)));
+}
+
+bool FreertosAtomicPetService::Process(const Message& pending, bool last_attempt) {
     if (pending.kind==Kind::Ack) {
         const PetDeviceBridge::ServerAck ack{
             pending.message_id,pending.seq,pending.version,
@@ -362,6 +395,9 @@ bool FreertosAtomicPetService::Process(const Message& pending, uint32_t* storage
         xSemaphoreGive(reply_);
         xSemaphoreGive(parent_gate_);
         ESP_LOGI(kTag,"PET_LEDGER_PARENT result=%s",ResultName(result));
+        if (result==CommitResult::StorageError)
+            ESP_LOGW(kTag,"PET_LEDGER_PERSIST_FAILED err=%s kind=%u attempt=1 dropped=1",
+                     NvsErrorName(store_.LastError()),static_cast<unsigned>(pending.kind));
         return false;
     }
 
@@ -371,17 +407,13 @@ bool FreertosAtomicPetService::Process(const Message& pending, uint32_t* storage
         if (!memory.day) memory.day=Day();
         const CommitResult result=memory.id ? ledger_.RecordMemory(memory)
                                             : CommitResult::Rejected;
-        if (result==CommitResult::StorageError) {
-            // Same id on retry: the generation did not move.
-            if (++*storage_failures==1 || *storage_failures%60==0)
-                ESP_LOGW(kTag,"Atomic Pet memory persist blocked; retry later");
-            return true;
-        }
+        // Same id on a retry: the generation did not move.
+        if (result==CommitResult::StorageError && !last_attempt) return true;
         if (result==CommitResult::Committed) PublishView();
         ESP_LOGI(kTag,"PET_MEMORY_COMMIT kind=%u src=%u result=%s",
                  static_cast<unsigned>(memory.kind),static_cast<unsigned>(memory.source),
                  ResultName(result));
-        return false;
+        return result==CommitResult::StorageError;
     }
 
     PetEvent event=pending.event;
@@ -396,15 +428,13 @@ bool FreertosAtomicPetService::Process(const Message& pending, uint32_t* storage
     PetEffects effects{};
     const bool was_empty=ledger_.PendingCount()==0;
     const CommitResult result=ledger_.ApplyDurably(event,&effects,Day());
-    if (result==CommitResult::StorageError) {
-        if (++*storage_failures==1 || *storage_failures%60==0)
-            ESP_LOGW(kTag,"Atomic Pet persist blocked; retry later");
-        return true;
-    }
+    if (result==CommitResult::StorageError && !last_attempt) return true;
     if (result==CommitResult::Committed) PublishView();
+    // A dropped action reaches the callback as StorageError (no effects):
+    // the board must not celebrate it, but can still get the child home.
     if (committed_) committed_(event,result,effects,ledger_.Snapshot(),context_);
     if (result==CommitResult::Committed && was_empty) NotifyHead();
-    return false;
+    return result==CommitResult::StorageError;
 }
 
 }  // namespace kid_app

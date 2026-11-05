@@ -19,8 +19,12 @@ namespace kid_app {
 //   read old (never written) -> write the first ledger blob -> read it back
 //   and load it -> only then write the "migrated" marker (own NVS key).
 //
-// The legacy keys are only ever read, never erased or overwritten, so they
-// stay as a rollback copy. Idempotent: every boot runs Run(); with a valid
+// The legacy keys are never overwritten. They are released (erased) only
+// once the marker says the ledger was verified and the ledger still loads:
+// the 16 KiB NVS partition cannot hold the old copy next to the two ledger
+// slots plus the new value of a slot being rewritten (ADR-014 addendum).
+// Until then they are the source a resumed migration verifies against.
+// Idempotent: every boot runs Run(); with a valid
 // marker and a loadable ledger it changes nothing. A power cut before the
 // marker is written leaves either no ledger (start again), our exact first
 // blob (verified, then the marker is written) or a torn/unverified blob in
@@ -46,6 +50,14 @@ public:
         // On Ok, *length is the stored size; any size but kBytes is corrupt.
         virtual BlobReadStatus Read(Blob* out, size_t* length) = 0;
         virtual bool Write(const Blob& value) = 0;
+    };
+    // Erases the legacy keys (kid_pet slots, kid_parent/settings). Called
+    // only after a verified, marked migration; must be idempotent (nothing
+    // left = true) and must not touch any other key.
+    class LegacyRelease {
+    public:
+        virtual ~LegacyRelease() = default;
+        virtual bool Release() = 0;
     };
 
     enum class Outcome : uint8_t {
@@ -75,14 +87,19 @@ public:
         uint8_t flags = 0;
         uint64_t legacy_generation = 0;  // kid_pet generation imported, 0 = none
         uint64_t ledger_generation = 0;  // generation of the first ledger blob
+        // Release() ran (marker + loadable ledger) and reported success.
+        // Not part of the marker; a failed release is retried next boot.
+        bool legacy_released = false;
     };
 
     // legacy_bridge_present: the caller saw (or could not rule out) data in
     // the old kid_bridge outbox. It is never sent or erased here; the flag
     // lets a future server provisioning refuse a silent cursor reset.
+    // release (optional): frees the legacy keys after a verified, marked
+    // migration; never called on a failure path.
     static Report Run(PetAtomicLedger::Store& ledger, PetBlobStore& legacy_pet,
                       ParentSource& legacy_parent, bool legacy_bridge_present,
-                      MarkerStore& marker);
+                      MarkerStore& marker, LegacyRelease* release = nullptr);
 
     // Marker codec: 'K' 'P' 'M' 'G', u16 version 1, u8 flags, u8 0,
     // u64 legacy generation, u64 ledger generation, u32 0, CRC-32 (LE).

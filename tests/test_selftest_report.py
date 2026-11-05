@@ -57,6 +57,16 @@ class SelfTestReportTests(unittest.TestCase):
         report = evaluate(SCENARIO, GOOD_LOG.replace("wdt=0", "wdt=2"))
         self.assertIn("watchdog", report["failed"])
 
+    def test_failed_ledger_commit_always_fails(self):
+        self.assertNotIn("ledger_persist", evaluate(SCENARIO, GOOD_LOG)["failed"])
+        # Even before "mark begin" (e.g. the normalization's StopStory).
+        failed = ("W (9000) kid_pet_atomic: PET_LEDGER_PERSIST_FAILED "
+                  "err=ESP_ERR_NVS_NOT_ENOUGH_SPACE kind=1 attempt=1 dropped=0\n")
+        report = evaluate(SCENARIO, failed + GOOD_LOG)
+        self.assertFalse(report["passed"])
+        self.assertIn("ledger_persist", report["failed"])
+        self.assertEqual(report["observed"]["persist_failures"], 1)
+
     def test_missing_summary_or_crash_text_fails_closed(self):
         no_summary = "\n".join(l for l in GOOD_LOG.splitlines() if not l.startswith("SUMMARY"))
         self.assertIn("summary", evaluate(SCENARIO, no_summary)["failed"])

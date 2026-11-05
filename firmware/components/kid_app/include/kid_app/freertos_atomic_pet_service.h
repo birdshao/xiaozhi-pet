@@ -14,8 +14,10 @@
 namespace kid_app {
 
 // Commit notifications are called only on the dedicated Pet worker and only
-// AFTER the combined Pet+outbox NVS checkpoint has committed. UI/audio
-// callbacks must copy data into their own queues and return promptly.
+// AFTER the combined Pet+outbox NVS checkpoint has committed, except one
+// case: a pet event dropped after PersistRetry::kAttempts failed commits is
+// reported once with CommitResult::StorageError (no effects, nothing saved).
+// UI/audio callbacks must copy data into their own queues and return promptly.
 using AtomicPetCommitCallback = void (*)(
     const PetEvent&, CommitResult, const PetEffects&,
     const PetSnapshot&, void* context);
@@ -107,8 +109,10 @@ private:
     bool NoLegacyPetOrOutbox() const;
     bool PrepareLedger();
     bool Enqueue(const Message& msg);
-    // One message; true = storage failed, keep it at the head and retry.
-    bool Process(const Message& pending, uint32_t* storage_failures);
+    // One message; true = storage failed (on the last attempt: dropped,
+    // and a pet event is reported to the callback as StorageError).
+    bool Process(const Message& pending, bool last_attempt);
+    void LogNvsUsage(const char* when) const;  // PET_NVS_STATS
     void PublishView();
     void NotifyHead();
     uint32_t Day() const { return day_provider_ ? day_provider_(day_context_) : 0; }

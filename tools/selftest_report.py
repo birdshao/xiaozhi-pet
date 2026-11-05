@@ -26,7 +26,8 @@ was ever applied; checked on the whole log),
 ledger_restored (1 = after a sleep power-off the next boot's PET_LEDGER_READY
 restored exactly that power-off's ledger_gen and the last committed fed=).
 Behaviour is counted after the last ``mark begin`` (warm-up excluded).
-Panics, watchdog resets, a PET_SELFTEST_ABORT, or a log without the
+Panics, watchdog resets, a PET_SELFTEST_ABORT, a failed ledger commit
+(PET_LEDGER_PERSIST_FAILED, anywhere in the log) or a log without the
 monitor's SUMMARY line always fail.
 """
 from __future__ import annotations
@@ -211,6 +212,8 @@ def _observe(log: str) -> dict:
         "body": body,
         "panic": panic,
         "watchdog": wdt,
+        # A durable pet commit that failed in NVS: never expected in a trial.
+        "persist_failures": len(re.findall(r"PET_LEDGER_PERSIST_FAILED", log)),
     }
 
 
@@ -245,6 +248,7 @@ def evaluate(scenario: str, log: str) -> dict:
     checks["summary"] = obs["summaries"] > 0
     checks["panic"] = obs["panic"] == 0
     checks["watchdog"] = obs["watchdog"] == 0
+    checks["ledger_persist"] = obs["persist_failures"] == 0
     checks["refresh_errors"] = obs["failed_refreshes"] == 0
     failed = [name for name, ok in checks.items() if not ok]
     return {"passed": not failed, "failed": failed, "checks": checks,
