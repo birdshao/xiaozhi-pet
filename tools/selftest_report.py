@@ -116,6 +116,8 @@ def plan(scenario: str) -> dict:
             t_ms += args[0]
         elif op == "twait":
             t_ms += _scaled(args[0], pct)
+        elif op == "envelope":  # V4-08: the step lasts as long as the sound
+            t_ms += args[0]
         elif op == "waitidle":
             t_ms += min(args[0], READY_EST_S * 1000)
         elif op == "tap":

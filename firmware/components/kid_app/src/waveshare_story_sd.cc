@@ -5,6 +5,14 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "sdkconfig.h"
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 
 namespace kid_app {
 namespace {
@@ -20,6 +28,43 @@ constexpr int kD0 = 15;
 constexpr int kD1 = 7;
 constexpr int kD2 = 8;
 constexpr int kD3 = 18;
+
+// Read-only card diagnostics: what the board actually sees on the card.
+// 2026-11-05: packs were "absent" although the card mounted; this tells a
+// wrong name/folder apart from a file-name support problem.
+void LogDirectory(const char* path) {
+    DIR* dir = opendir(path);
+    if (!dir) {
+        ESP_LOGW(kTag, "SD_DIR path=%s open_errno=%d", path, errno);
+        return;
+    }
+    int shown = 0;
+    while (const dirent* entry = readdir(dir)) {
+        if (++shown > 24) {
+            ESP_LOGI(kTag, "SD_DIR path=%s more=1", path);
+            break;
+        }
+        char full[32 + sizeof(entry->d_name)];  // "/sdcard/books/" + longest name
+        std::snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
+        struct stat info {};
+        const bool ok = stat(full, &info) == 0;
+        ESP_LOGI(kTag, "SD_ENTRY path=%s name=%s dir=%d size=%ld", path, entry->d_name,
+                 ok && S_ISDIR(info.st_mode) ? 1 : 0, ok ? static_cast<long>(info.st_size) : -1L);
+    }
+    closedir(dir);
+}
+
+void LogFileNameSupport() {
+#if defined(CONFIG_FATFS_LFN_NONE)
+    ESP_LOGW(kTag, "SD_LFN mode=none max=0");
+#elif defined(CONFIG_FATFS_LFN_HEAP)
+    ESP_LOGI(kTag, "SD_LFN mode=heap max=%d", CONFIG_FATFS_MAX_LFN);
+#elif defined(CONFIG_FATFS_LFN_STACK)
+    ESP_LOGI(kTag, "SD_LFN mode=stack max=%d", CONFIG_FATFS_MAX_LFN);
+#else
+    ESP_LOGW(kTag, "SD_LFN mode=unknown");
+#endif
+}
 }  // namespace
 
 bool WaveshareStorySd::Initialize(const char* book_id) {
@@ -51,9 +96,18 @@ bool WaveshareStorySd::Initialize(const char* book_id) {
         }
         mounted_ = true;
         ESP_LOGI(kTag, "SD mounted with official 4-bit GPIO mapping");
+        LogFileNameSupport();
+        LogDirectory(kMount);
+        LogDirectory(kBooks);
     }
 
     if (!file_.OpenBook(kBooks, book_id)) {
+        char path[96];
+        std::snprintf(path, sizeof(path), "%s/%s.kpb", kBooks, book_id);
+        struct stat info {};
+        const int found = stat(path, &info);
+        ESP_LOGW(kTag, "SD_BOOK_ABSENT path=%s stat=%d errno=%d size=%ld", path, found,
+                 found == 0 ? 0 : errno, found == 0 ? static_cast<long>(info.st_size) : -1L);
         ESP_LOGW(kTag, "Approved story .kpb absent; using reader placeholder");
         return false;
     }

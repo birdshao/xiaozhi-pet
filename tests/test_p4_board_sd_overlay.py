@@ -8,7 +8,10 @@ from pathlib import Path
 import re
 import unittest
 
-from scripts.p1_integrate import BOARD_WORKER, DISPLAY_IMPL, patch_board, patch_display_h
+import json
+
+from scripts.p1_integrate import (BOARD_WORKER, DISPLAY_IMPL, patch_board, patch_board_config,
+                                  patch_display_h)
 
 ROOT=Path(__file__).resolve().parents[1]
 SD=(ROOT/"firmware/components/kid_app/src/waveshare_story_sd.cc").read_text(encoding="utf-8")
@@ -51,6 +54,30 @@ class WaveshareSdOverlayTests(unittest.TestCase):
         patched=patch_display_h(source)
         self.assertIn("ShowStoryPage(kid_app::StoryPackReader& reader",patched)
         self.assertIn('#include "kid_app/story_pack_reader.h"',patched)
+
+    def test_board_build_enables_fat_long_file_names(self):
+        # 2026-11-05: the card mounted but every pack ("reader_test.kpb",
+        # "forest_friends.kpb") failed to open: FatFs defaulted to 8.3 names.
+        upstream = ('{\n    "manufacturer": "waveshare",\n    "type": "esp32-s3-epaper-3.97",\n'
+                    '    "target": "esp32s3",\n    "builds": [\n        {\n'
+                    '            "name": "esp32-s3-epaper-3.97",\n            "sdkconfig_append": [\n'
+                    '                "CONFIG_USE_WECHAT_MESSAGE_STYLE=n"\n            ]\n        }\n    ]\n}\n')
+        patched = json.loads(patch_board_config(upstream))
+        append = patched["builds"][0]["sdkconfig_append"]
+        self.assertEqual(append[0], "CONFIG_USE_WECHAT_MESSAGE_STYLE=n")  # upstream kept first
+        self.assertIn("CONFIG_FATFS_LFN_HEAP=y", append)
+        self.assertIn("CONFIG_FATFS_MAX_LFN=255", append)
+        self.assertEqual(patched["builds"][0]["name"], "esp32-s3-epaper-3.97")
+        self.assertTrue(patch_board_config(upstream).endswith("}\n"))
+        # Upstream starting to set it itself must be noticed, not silently doubled.
+        twice = json.dumps({"builds": [{"name": "x", "sdkconfig_append": ["CONFIG_FATFS_LFN_HEAP=y"]}]})
+        with self.assertRaises(RuntimeError):
+            patch_board_config(twice)
+        with self.assertRaises(RuntimeError):
+            patch_board_config(json.dumps({"builds": []}))
+        # The integration actually patches the board config file.
+        src = (ROOT / "scripts/p1_integrate.py").read_text(encoding="utf-8")
+        self.assertIn('board_config: patch_board_config(board_config.read_text(encoding="utf-8"))', src)
 
     def test_main_component_lists_sd_deps_and_source(self):
         cmake=(ROOT/"firmware/components/kid_app/CMakeLists.txt").read_text()
