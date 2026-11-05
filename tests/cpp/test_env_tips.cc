@@ -99,6 +99,25 @@ void TestBoardHeatDefaultsAndSetter() {
     assert(q.Take(false, true, 5, 1000) == EnvTip::None);
 }
 
+void TestSelfTestInjectionHotAndBack() {
+    // Field case: the policy is fed every ~100 ms loop with an injected room
+    // temperature (no offset); 33 C held 15 s (scaled hold) reaches hot, and
+    // 22 C held the same returns to normal, whatever the start.
+    assert(SelfTestClock::SetForSelfTest(25));
+    P p;
+    uint32_t now = 1000;
+    for (; now < 2000; now += 100) p.Observe(true, 258, now);  // real sensor: normal
+    EnvTip tip = EnvTip::None;
+    for (uint32_t end = now + 17500; now < end; now += 100) {
+        const EnvTip t = p.Observe(true, 330, now);
+        if (tip == EnvTip::None) tip = t;
+    }
+    assert(tip == EnvTip::Hot && p.Zone() == EnvZone::Hot);
+    for (uint32_t end = now + 17500; now < end; now += 100) p.Observe(true, 220, now);
+    assert(p.Zone() == EnvZone::Normal && p.Pending() == EnvTip::None);
+    assert(SelfTestClock::SetForSelfTest(100));
+}
+
 void TestSensorFailureRestartsTheHold() {
     P p;
     uint32_t now = 1000;
@@ -226,6 +245,7 @@ int main() {
     TestColdAndHysteresis();
     TestBoardHeatOffset();
     TestBoardHeatDefaultsAndSetter();
+    TestSelfTestInjectionHotAndBack();
     TestSensorFailureRestartsTheHold();
     TestQuietHoursAndAllowed();
     TestRecoveredBeforeSpoken();

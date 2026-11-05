@@ -1853,15 +1853,14 @@ BOARD_WORKER = r'''
     }
 
     // ---- V4-03 environment life tips ----
-    // pet_boot_diag publishes the SHTC3 reading (or what a self-test "temp"
-    // step set) next to the status band each heartbeat; pet_input owns the
-    // policy. A tip is the drink / coat thought bubble plus the reviewed
+    // pet_boot_diag publishes the SHTC3 reading next to the status band each
+    // heartbeat; pet_input owns the policy (a self-test "temp" step bypasses
+    // the heartbeat). A tip is the drink / coat thought bubble plus the reviewed
     // Personality line (sound pack clip, else the chime): UI only, nothing
     // durable. Not in quiet hours (the parent plan). The status band shows
     // the raw sensor value; the policy subtracts a conservative board-heat
     // offset (EnvTipPolicy::kUsbHeatC10 / kBatteryHeatC10).
     kid_app::EnvTipPolicy env_tips_;           // pet_input only
-    uint16_t env_seen_ = 0;                    // pet_input: last sample handled
     bool env_pet_ = false;                     // pet_input: Pet mode last loop
     uint32_t env_pet_since_ms_ = 0;            // pet_input: Pet mode opened
     bool env_held_logged_ = false;             // pet_input
@@ -1878,23 +1877,27 @@ BOARD_WORKER = r'''
         const bool pet = pet_mode_.load();
         if (pet && !env_pet_) env_pet_since_ms_ = now;
         env_pet_ = pet;
+        // The policy is time based: every loop it gets the newest reading
+        // (the sensor's last one, republished each heartbeat; or the
+        // self-test's, effective at once), so a hold is timed from when
+        // the room really crossed, not from a 10 s publish tick.
         const uint32_t sample = env_sample_.load();
-        const auto seq = static_cast<uint16_t>(sample >> 17);
-        if (seq != env_seen_) {
-            env_seen_ = seq;
-            const bool ok = ((sample >> 16) & 1u) != 0;
-            const int temp_c10 = static_cast<int16_t>(sample & 0xFFFFu);
+        const int injected = env_inject_c10_.load();
+        const bool injecting = injected != kEnvNoInject;
+        if (injecting || (sample >> 17) != 0) {  // 0: nothing published yet
+            const bool ok = injecting || ((sample >> 16) & 1u) != 0;
+            const int temp_c10 = injecting ? injected : static_cast<int16_t>(sample & 0xFFFFu);
             const auto before = env_tips_.Zone();
             // The board heats the sensor (more on USB power); a self-test
             // "temp" step states the room temperature itself.
-            env_tips_.SetOffsetC10(env_inject_c10_.load() != kEnvNoInject ? 0
+            env_tips_.SetOffsetC10(injecting ? 0
                                    : battery_.External() ? kid_app::EnvTipPolicy::kUsbHeatC10
                                                          : kid_app::EnvTipPolicy::kBatteryHeatC10);
             const auto pending = env_tips_.Observe(ok, temp_c10, now);
             if (env_tips_.Zone() != before)
                 ESP_LOGI(TAG, "PET_ENV zone=%s room_c10=%d src=%s",
                          kid_app::EnvZoneName(env_tips_.Zone()), env_tips_.RoomC10(),
-                         env_inject_c10_.load() != kEnvNoInject ? "selftest" : "shtc3");
+                         injecting ? "selftest" : "shtc3");
             if (pending != kid_app::EnvTip::None)
                 ESP_LOGI(TAG, "PET_ENV_TIP_PENDING kind=%s", kid_app::EnvTipName(pending));
         }

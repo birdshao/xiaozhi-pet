@@ -943,11 +943,15 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(loop.index('UpdateEnvTips(state);'), loop.index('sleep_flow_.Tick(NowMs())'))
         update = self._body(patched, 'void UpdateEnvTips(')
         self.assertIn('env_tips_.Observe(ok, temp_c10, now)', update)
+        # Fed every loop and the injected value used directly (not only on
+        # a 10 s heartbeat publish): a short hold must not miss a reading.
+        self.assertNotIn('env_seen_', update)
+        self.assertIn('injecting ? injected : static_cast<int16_t>', update)
         # Board self-heating: offset set before each reading, none for the
         # self-test (which states the room temperature).
         self.assertLess(update.index('env_tips_.SetOffsetC10('),
                         update.index('env_tips_.Observe(ok, temp_c10, now)'))
-        for needle in ('kEnvNoInject ? 0', 'battery_.External()',
+        for needle in ('injecting ? 0', 'battery_.External()',
                        'EnvTipPolicy::kUsbHeatC10', 'EnvTipPolicy::kBatteryHeatC10'):
             self.assertIn(needle, update)
         # Tips only on the awake Pet home screen and never in quiet hours.
@@ -977,9 +981,9 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
         steps = [line.strip() for line in scenario.splitlines()
                  if line.strip() and not line.lstrip().startswith('#')]
-        for needle in ('temp 22', 'temp 31', 'temp 12', 'temp off', 'mark begin', 'volume 15'):
+        for needle in ('temp 22', 'temp 33', 'temp 12', 'temp off', 'mark begin', 'volume 15'):
             self.assertIn(needle, steps)
-        self.assertLess(steps.index('temp 31'), steps.index('temp 12'))
+        self.assertLess(steps.index('temp 33'), steps.index('temp 12'))
         # The baseline must hold long enough to leave any starting zone,
         # and the scenario expects to have seen "normal" before the test.
         baseline = steps.index('temp 22')

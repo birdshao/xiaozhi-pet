@@ -107,7 +107,7 @@
 - `PET_ENV_TIP kind=.. acted=1 room_c10=.. today=N`（真的说了）、`PET_ENV_TIP_HELD reason=quiet kind=..`（安静时段挂起）
 - 随后 `PET_ANIM_DONE name=tip_hot|tip_cold`、`PET_PHRASE_PLAY id=.. ctx=hot_tip|cold_tip src=pack|chime`
 
-**自测**：`tools/selftest/v4_env_tips.pettest`（25 % 缩放，约 136 s，监视上限 146 s）。开头的基线 `temp 22` 先保持满 60 s（缩放 15 s），保证无论真实传感器开机时在哪个区都先回到 normal。新增 PETSELFTEST1 步骤 `temp <0..60>` / `temp off`：像 `battery` 步骤一样替代 SHTC3（同时驱动状态栏和提醒策略）；缩放后 60 s 保持变 15 s。场景依次 31 °C → 22 °C → 12 °C，期望热提醒、无提醒恢复、冷提醒。**必须在家长安静时段之外运行**，否则会看到 `PET_ENV_TIP_HELD`。原速运行：`--timescale 100`。
+**自测**：`tools/selftest/v4_env_tips.pettest`（25 % 缩放，约 136 s，监视上限 146 s）。开头的基线 `temp 22` 先保持满 60 s（缩放 15 s），保证无论真实传感器开机时在哪个区都先回到 normal。新增 PETSELFTEST1 步骤 `temp <0..60>` / `temp off`：像 `battery` 步骤一样替代 SHTC3（同时驱动状态栏和提醒策略）；缩放后 60 s 保持变 15 s。场景依次 33 °C → 22 °C → 12 °C（注入值不补偿，策略每轮循环直接看到注入值，不等 10 s 心跳），期望热提醒、无提醒恢复、冷提醒。**必须在家长安静时段之外运行**，否则会看到 `PET_ENV_TIP_HELD`。原速运行：`--timescale 100`。
 
 ## 6. 尚未完成
 
