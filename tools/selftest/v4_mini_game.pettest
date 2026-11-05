@@ -1,5 +1,6 @@
 PETSELFTEST1
-# V4-06 mini games with the built-in set: three games, dial steps only.
+# V4-06 mini games with the built-in set: three games, dial steps only
+# (through the V4-07 game menu: its first card is the quiz).
 # Needs no TF pack: take /games/default.kpg off the card (or expect
 # src=pack). Run outside the quiet hours (default 20:30-07:00) and above
 # the low-battery level, or the Game item only says hi (PET_GAME_REFUSED).
@@ -49,9 +50,11 @@ tap up 800
 tap up 800
 tap down 800
 tap down 2000
-# Game 1 (full refresh into the game, then the question tone).
+# Game 1: the Game item opens the V4-07 game menu (full refresh), its first
+# card is the quiz; pressing it starts the questions.
 game 4242
-tap press 8000
+tap press 6000
+tap press 5000
 # Round 1: the heart is the third card: right first time.
 tap down 1500
 tap down 1500
@@ -67,13 +70,15 @@ tap down 1500
 tap press 9000
 # Game 2: a long press goes home at once.
 game 4242
-tap press 8000
+tap press 6000
+tap press 5000
 tap down 1500
 hold press 1500 8000
 # Game 3: nobody plays: the question again after 12 s, home after 60 s
 # (scaled, counted from the question).
 game 4242
-tap press 8000
+tap press 6000
+tap press 5000
 twait 60000
 wait 6000
 end

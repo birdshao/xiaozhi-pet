@@ -1,0 +1,105 @@
+PETSELFTEST1
+# V4-07 motion games: the game menu, the tilt ball (seed 4242) and
+# peekaboo. Tilt and face down/up are injected with "gesture" steps: this
+# checks the board path, the tilt thresholds are host-tested
+# (tests/cpp/test_motion_game.cc). Run outside the quiet hours (default
+# 20:30-07:00) and above the low-battery level, or the Game item only says
+# hi (PET_GAME_REFUSED). Motion must be on in the parent menu (default).
+# Seed 4242 rolls the ball to holes at cell 6, 0 and 5 (start cell 3):
+# three tilts right, three left, two right (checked in test_motion_game.cc).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# Games are UI only: no pet commits.
+# expect commits 0
+# Menu three times: leave by long press; ball; peekaboo.
+# expect min:PET_GAME_MENU highlight 3
+# expect min:PET_GAME_CHOICE 2
+# expect min:src=motion 2
+# expect min:end=home 1
+# Ball: 3 + 3 + 2 rolls, a hole each round.
+# expect min:PET_MOTION_STEP 8
+# expect min:PET_MOTION_HOLE 3
+# Peekaboo: one flip back too early, then three finds (shaking in between
+# is no reward).
+# expect min:PET_MOTION_TOO_SOON 1
+# expect min:PET_MOTION_HIDE 4
+# expect min:PET_MOTION_FOUND 3
+# expect min:end=completed 2
+# expect min:growth=1 2
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_GAME_START_FAILED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Home rail: left end (Chat), then two to the right = Game.
+tap up 800
+tap up 800
+tap up 800
+tap up 800
+tap down 800
+tap down 2000
+# Menu (full refresh into the game screen); a long press goes home.
+game 4242
+tap press 6000
+hold press 1500 8000
+# Menu again: the second card is the ball.
+tap press 6000
+tap down 1500
+tap press 8000
+# Ball round 1: hole at cell 6. Shaking and face down are no part of it.
+gesture hard
+wait 1000
+gesture tiltright
+wait 900
+gesture tiltright
+wait 900
+gesture tiltright
+wait 5500
+# Round 2: hole at cell 0.
+gesture tiltleft
+wait 900
+gesture tiltleft
+wait 900
+gesture tiltleft
+wait 5500
+# Round 3: hole at cell 5, then home (full refresh).
+gesture tiltright
+wait 900
+gesture tiltright
+wait 9000
+# Peekaboo: the third card. Flipping back after 0.6 s is too early.
+tap press 6000
+tap down 1500
+tap down 1500
+tap press 8000
+gesture facedown
+wait 600
+gesture faceup
+wait 3500
+gesture facedown
+wait 3500
+gesture faceup
+wait 5500
+# Round 2: a hard shake is no reward, hiding is.
+gesture hard
+wait 1000
+gesture facedown
+wait 3500
+gesture faceup
+wait 5500
+# Round 3, then home.
+gesture facedown
+wait 3500
+gesture faceup
+wait 9000
+end

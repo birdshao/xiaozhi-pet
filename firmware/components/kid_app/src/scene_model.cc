@@ -1078,12 +1078,45 @@ int GameCardX(uint8_t i, uint8_t n) {
     return centre - kGameCardW / 2;
 }
 
+// V4-07 tilt ball: seven cells on a line; the hole at its end (a ring while
+// the ball sits in it), the ball (the GameBall picture) on its cell.
+constexpr int kBallTrackY = 392, kBallCellPitch = 100, kBallTrackX = 100;
+
+void BallTrack(MonoFrame& f, const GameView& g) {
+    Stroke(f, kBallTrackX - 50, kBallTrackY + 52, kBallTrackX + 6 * kBallCellPitch + 50,
+           kBallTrackY + 52, 5);
+    for (int i = 0; i < 7; ++i) {
+        const int x = kBallTrackX + i * kBallCellPitch;
+        if (i == g.hole) {
+            if (i == g.ball) Ring(f, x, kBallTrackY, 46, 46, 6);
+            else Disk(f, x, kBallTrackY, 44);
+        } else if (i != g.ball) {
+            Disk(f, x, kBallTrackY + 40, 5);
+        }
+    }
+    GameBall(f, kBallTrackX + g.ball * kBallCellPitch, kBallTrackY - (g.ball == g.hole ? 0 : 6),
+             g.ball == g.hole ? 30 : 38);
+}
+
+// V4-07 peekaboo: the board as a phone-sized card, hollow face up, solid
+// while TuanTuan hides (face down).
+void PeekabooCard(MonoFrame& f, const GameView& g) {
+    if (g.hidden) {
+        FillRoundRect(f, 300, 336, 200, 112, 22);
+    } else {
+        RoundRectRing(f, 300, 336, 200, 112, 22, 6);
+        Disk(f, 400, 392, 14);
+    }
+}
+
 void GameScene(MonoFrame& f, const GameView& g) {
     // TuanTuan watches; a correct answer (and only that) gets hearts.
-    const Emotion emotion = g.feedback == GameFeedback::Right      ? Emotion::Happy
+    const Emotion emotion = g.hidden                               ? Emotion::Sleepy
+                            : g.feedback == GameFeedback::Right    ? Emotion::Happy
                             : g.feedback == GameFeedback::TryAgain ? Emotion::Curious
                                                                    : Emotion::Neutral;
-    const Eyes eyes = g.feedback == GameFeedback::Right    ? Eyes::Laugh
+    const Eyes eyes = g.hidden                             ? Eyes::Closed
+                      : g.feedback == GameFeedback::Right  ? Eyes::Laugh
                       : g.feedback == GameFeedback::Reveal ? Eyes::WinkLeft
                                                            : Eyes::ByEmotion;
     CatHead(f, 150, 172, 62, emotion, eyes);
@@ -1112,6 +1145,15 @@ void GameScene(MonoFrame& f, const GameView& g) {
         } else {
             Ring(f, x, y, 9, 9, 3);
         }
+    }
+    // Motion games draw their own rail (no answer cards).
+    if (g.motion == 1) {
+        BallTrack(f, g);
+        return;
+    }
+    if (g.motion == 2) {
+        PeekabooCard(f, g);
+        return;
     }
     // Answer rail.
     const uint8_t n = std::min<uint8_t>(g.option_count, 3);

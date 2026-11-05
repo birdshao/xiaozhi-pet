@@ -106,6 +106,13 @@ int main() {
             assert(script.Steps()[i].op == SelfTestOp::Gesture);
             assert(script.Steps()[i].ms == static_cast<uint32_t>(want[i]));
         }
+        // V4-07: tilt names for the ball game.
+        assert(script.Parse("PETSELFTEST1\ngesture tiltleft\ngesture tiltright\n"
+                            "gesture level\nwait 10\nend\n"));
+        assert(script.Count() == 4 && script.TotalMs() == 10);
+        assert(script.Steps()[0].ms == static_cast<uint32_t>(kid_app::Gesture::TiltLeft));
+        assert(script.Steps()[1].ms == static_cast<uint32_t>(kid_app::Gesture::TiltRight));
+        assert(script.Steps()[2].ms == static_cast<uint32_t>(kid_app::Gesture::Level));
         assert(!script.Parse("PETSELFTEST1\ngesture\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture spin\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture pickup now\nend\n"));

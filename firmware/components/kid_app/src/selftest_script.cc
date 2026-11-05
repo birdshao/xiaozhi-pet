@@ -78,7 +78,8 @@ bool GestureName(const char* name, uint32_t* out) {
     static const Entry kGestures[] = {
         {"pickup", Gesture::Pickup},     {"gentle", Gesture::GentleShake},
         {"hard", Gesture::HardShake},    {"facedown", Gesture::FaceDown},
-        {"faceup", Gesture::FaceUp}};
+        {"faceup", Gesture::FaceUp},     {"tiltleft", Gesture::TiltLeft},
+        {"tiltright", Gesture::TiltRight}, {"level", Gesture::Level}};
     for (const auto& entry : kGestures) {
         if (std::strcmp(name, entry.name) == 0) {
             *out = static_cast<uint32_t>(entry.gesture);
