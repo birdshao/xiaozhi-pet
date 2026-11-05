@@ -11,6 +11,8 @@ const char* PhraseContextName(PhraseContext context) {
         case PhraseContext::StoryInvite: return "story";
         case PhraseContext::Bedtime: return "bedtime";
         case PhraseContext::Giggle: return "giggle";
+        case PhraseContext::HotTip: return "hot_tip";
+        case PhraseContext::ColdTip: return "cold_tip";
     }
     return "none";
 }

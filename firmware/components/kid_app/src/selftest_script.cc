@@ -181,6 +181,13 @@ bool SelfTestScript::Parse(const char* text) {
                     return false;
                 if (charging) step.ms |= kBatteryCharging;
             }
+        } else if (std::strcmp(words[0], "temp") == 0) {
+            step.op = SelfTestOp::Temp;
+            if (n == 2 && std::strcmp(words[1], "off") == 0) {
+                step.ms = kTempOff;
+            } else if (n != 2 || !Number(words[1], &step.ms) || step.ms > kMaxTempC) {
+                return false;
+            }
         } else if (std::strcmp(words[0], "timescale") == 0) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms < kMinTimeScalePct ||
                 step.ms > 100)
@@ -264,13 +271,13 @@ uint64_t SelfTestScript::TotalMs() const {
     uint64_t total = 0;
     for (size_t i = 0; i < count_; ++i) {
         // Alarm seconds, Volume / TimeScale percent, Gesture, Voice and
-        // Battery codes and Game seeds are not delays; WaitIdle counts its
+        // Battery codes, Temp degrees and Game seeds are not delays; WaitIdle counts its
         // timeout and TimerWait its real-time length (an upper bound at any
         // scale).
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
             steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice ||
             steps_[i].op == SelfTestOp::Battery || steps_[i].op == SelfTestOp::Game ||
-            steps_[i].op == SelfTestOp::TimeScale)
+            steps_[i].op == SelfTestOp::TimeScale || steps_[i].op == SelfTestOp::Temp)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

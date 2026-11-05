@@ -14,8 +14,10 @@ namespace kid_app {
 // kept until the child touches the dial or the pet goes back to sleep.
 // Charge / Yawn (V3-05): plugged in, TuanTuan eats electricity; on a low
 // battery it yawns and shows the "charge me" bubble for a while.
+// TipHot / TipCold (V4-03): a drink / coat bubble while the pet says a life tip.
 enum class Animation : uint8_t {
-    None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy, Morning, Charge, Yawn
+    None, Blink, Greet, Feed, SleepIn, Giggle, Dizzy, Morning, Charge, Yawn,
+    TipHot, TipCold
 };
 
 struct AnimationFrame {

@@ -552,11 +552,54 @@ void BatteryBubble(MonoFrame& f, int cx, int cy) {
     FillRoundRect(f, bx - 20, by - 6, 7, 14, 1);  // one last bar
 }
 
+// V4-03 life-tip bubbles (ScenePose::TipHot / TipCold): the thought cloud
+// below the status band holds a glass of water or a coat.
+void TipBubble(MonoFrame& f, int cx, int cy, bool hot) {
+    Ring(f, cx + 128, cy - 50, 7, 7, 4);
+    Ring(f, cx + 148, cy - 72, 10, 10, 4);
+    ThoughtCloud(f, cx + 226, cy - 76, /*dots=*/false);
+    const int bx = cx + 222, by = cy - 74;
+    if (hot) {  // glass with water and a handle
+        Ring(f, bx + 22, by + 2, 9, 9, 4);
+        FillRoundRect(f, bx - 16, by - 20, 36, 40, 5);
+        FillRoundRect(f, bx - 11, by - 16, 26, 32, 3, false);
+        FillRoundRect(f, bx - 11, by - 3, 26, 19, 2);  // the water
+        Sparkle(f, bx + 2, by - 11, 4, false);
+    } else {  // coat: outlined sleeves and body, zip, collar
+        for (int side : {-1, 1}) {
+            Stroke(f, bx + side * 14, by - 8, bx + side * 31, by + 8, 14);
+            Stroke(f, bx + side * 14, by - 8, bx + side * 31, by + 8, 7, false);
+        }
+        FillRoundRect(f, bx - 18, by - 14, 36, 38, 5);
+        FillRoundRect(f, bx - 14, by - 10, 28, 30, 3, false);
+        Stroke(f, bx, by - 4, bx, by + 20, 3);   // zip
+        FillTriangle(f, bx - 11, by - 14, bx + 11, by - 14, bx, by - 1);  // collar
+    }
+}
+
+// Sweat drops (hot) / shiver lines (cold) beside the head.
+void TipFace(MonoFrame& f, int cx, int cy, bool hot) {
+    if (hot) {
+        for (int side : {-1, 1}) {
+            const int dx = cx + side * 128, dy = cy - 46;
+            FillTriangle(f, dx, dy - 22, dx - 9, dy, dx + 9, dy);
+            Disk(f, dx, dy + 2, 9);
+        }
+    } else {
+        for (int side : {-1, 1})
+            for (int i = 0; i < 2; ++i)
+                Arc(f, cx + side * (142 + i * 16), cy - 10, 26, 44, side < 0 ? 150 : -30,
+                    side < 0 ? 210 : 30, 5);
+    }
+}
+
 // Sitting pose for the home screen: tail, body, paws, collar bell, head,
 // plus the animation pose overlays (all above the action rail).
 void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
     // Battery poses bring their own face and no expression ornaments.
     const bool charging = pose == ScenePose::Charging, yawn = pose == ScenePose::Yawn;
+    const bool tip_hot = pose == ScenePose::TipHot, tip_cold = pose == ScenePose::TipCold;
+    if (tip_hot || tip_cold) emotion = Emotion::Neutral;  // the bubble speaks, no ornaments
     if (charging) emotion = Emotion::Happy;
     if (yawn) emotion = Emotion::Neutral;
     // Tail curling up on the right.
@@ -597,6 +640,10 @@ void SittingCat(MonoFrame& f, int cx, int cy, Emotion emotion, ScenePose pose) {
     if (yawn) {
         YawnMouth(f, cx, cy);
         BatteryBubble(f, cx, cy);
+    }
+    if (tip_hot || tip_cold) {
+        TipFace(f, cx, cy, tip_hot);
+        TipBubble(f, cx, cy, tip_hot);
     }
     if (pose == ScenePose::Giggle) {  // wobble lines on both sides of the head
         for (int side : {-1, 1})
@@ -1233,7 +1280,8 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     Sparkle(f, 110, 90, 18);
     Sparkle(f, 160, 150, 9);
     // Not under the thought cloud or the low-battery bubble.
-    if (model.emotion != Emotion::Thinking && model.pose != ScenePose::Yawn)
+    if (model.emotion != Emotion::Thinking && model.pose != ScenePose::Yawn &&
+        model.pose != ScenePose::TipHot && model.pose != ScenePose::TipCold)
         Sparkle(f, 690, 80, 14);
     Sparkle(f, 640, 220, 10);
     Sparkle(f, 96, 280, 8);

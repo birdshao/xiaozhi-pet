@@ -1,4 +1,5 @@
 """Host-side self-test report: expectations from a scenario vs a serial log."""
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -215,7 +216,7 @@ class SelfTestReportTests(unittest.TestCase):
     def test_committed_scenarios_use_known_ops_and_say_their_time_scale(self):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
-                 "morning", "voice", "battery", "book", "game", "timescale", "twait",
+                 "morning", "voice", "battery", "temp", "book", "game", "timescale", "twait",
                  "waitidle", "micgame", "envelope", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
@@ -246,7 +247,16 @@ class SelfTestReportTests(unittest.TestCase):
             self.assertEqual(len(sector_bytes(apply_timescale(text, 100))), 4096, path.name)
         self.assertEqual(sorted(scaled),
                          ["v3_animations", "v3_battery", "v3_morning", "v3_parent_menu",
-                          "v4_mini_game"])
+                          "v4_env_tips", "v4_mini_game"])
+
+    def test_every_expect_line_of_the_env_tips_scenario_is_parsed(self):
+        # "# expect <name> <value>": the name has no spaces. A line the
+        # parser does not match would be silently ignored in the report.
+        path = Path(__file__).resolve().parents[1] / "tools/selftest/v4_env_tips.pettest"
+        text = path.read_text(encoding="ascii")
+        lines = [l for l in text.splitlines() if re.match(r"\s*#\s*expect\b", l)]
+        self.assertGreaterEqual(len(lines), 10)
+        self.assertEqual(len(expectations(text)), len(lines), "duplicate or unparsed expect")
 
     def test_mic_games_scenario_injects_the_microphone(self):
         # The hardware trial feeds synthetic loudness numbers; the real tap

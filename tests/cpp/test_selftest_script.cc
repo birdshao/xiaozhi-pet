@@ -223,6 +223,25 @@ int main() {
         assert(script.Count() == 0);
     }
 
+    // temp <celsius> / temp off (V4-03): SHTC3 readings for the status band
+    // and the life-tip policy; settings, not delays; needs no alarm.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\ntemp 31\ntemp 0\ntemp 60\ntemp off\nwait 10\nend\n"));
+        assert(script.Count() == 5 && script.TotalMs() == 10);
+        for (int i = 0; i < 4; ++i) assert(script.Steps()[i].op == SelfTestOp::Temp);
+        assert(script.Steps()[0].ms == 31 && script.Steps()[1].ms == 0 &&
+               script.Steps()[2].ms == 60);
+        assert(script.Steps()[3].ms == SelfTestScript::kTempOff);
+        assert(!script.Parse("PETSELFTEST1\ntemp 61\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntemp -5\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntemp\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntemp on\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntemp off 1\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\ntemp 20 1\nend\n"));
+        assert(script.Count() == 0);
+    }
+
     // timescale <percent>: test-only feature-timer scale, 10..100 %;
     // waitidle <timeout_ms>: XiaoZhi ready, bounded (counts as a delay).
     {

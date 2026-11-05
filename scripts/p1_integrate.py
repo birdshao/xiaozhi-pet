@@ -1085,6 +1085,7 @@ BOARD_WORKER = r'''
             UpdateGame(state);
             UpdatePower(state);
             UpdateBattery(state);
+            UpdateEnvTips(state);  // V4-03
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -1868,6 +1869,84 @@ BOARD_WORKER = r'''
         }
     }
 
+    // ---- V4-03 environment life tips ----
+    // pet_boot_diag publishes the SHTC3 reading next to the status band each
+    // heartbeat; pet_input owns the policy (a self-test "temp" step bypasses
+    // the heartbeat). A tip is the drink / coat thought bubble plus the reviewed
+    // Personality line (sound pack clip, else the chime): UI only, nothing
+    // durable. Not in quiet hours (the parent plan). The status band shows
+    // the raw sensor value; the policy subtracts a conservative board-heat
+    // offset (EnvTipPolicy::kUsbHeatC10 / kBatteryHeatC10).
+    kid_app::EnvTipPolicy env_tips_;           // pet_input only
+    bool env_pet_ = false;                     // pet_input: Pet mode last loop
+    uint32_t env_pet_since_ms_ = 0;            // pet_input: Pet mode opened
+    bool env_held_logged_ = false;             // pet_input
+    uint16_t env_seq_ = 0;                     // pet_boot_diag only
+    std::atomic<uint32_t> env_sample_{0};      // seq << 17 | ok << 16 | int16 temp_c10
+    static constexpr int kEnvNoInject = 0x7FFFFFFF;
+    std::atomic<int> env_inject_c10_{kEnvNoInject};  // self-test reading
+    std::atomic<bool> env_scripted_{false};          // a script set the temperature
+    static constexpr uint32_t kEnvReactAfterPetMs = 10000;  // greet first
+
+    // pet_input, every loop after UpdateBattery.
+    void UpdateEnvTips(DeviceState state) {
+        const uint32_t now = NowMs();
+        const bool pet = pet_mode_.load();
+        if (pet && !env_pet_) env_pet_since_ms_ = now;
+        env_pet_ = pet;
+        // The policy is time based: every loop it gets the newest reading
+        // (the sensor's last one, republished each heartbeat; or the
+        // self-test's, effective at once), so a hold is timed from when
+        // the room really crossed, not from a 10 s publish tick.
+        const uint32_t sample = env_sample_.load();
+        const int injected = env_inject_c10_.load();
+        const bool injecting = injected != kEnvNoInject;
+        if (injecting || (sample >> 17) != 0) {  // 0: nothing published yet
+            const bool ok = injecting || ((sample >> 16) & 1u) != 0;
+            const int temp_c10 = injecting ? injected : static_cast<int16_t>(sample & 0xFFFFu);
+            const auto before = env_tips_.Zone();
+            // The board heats the sensor (more on USB power); a self-test
+            // "temp" step states the room temperature itself.
+            env_tips_.SetOffsetC10(injecting ? 0
+                                   : battery_.External() ? kid_app::EnvTipPolicy::kUsbHeatC10
+                                                         : kid_app::EnvTipPolicy::kBatteryHeatC10);
+            const auto pending = env_tips_.Observe(ok, temp_c10, now);
+            if (env_tips_.Zone() != before)
+                ESP_LOGI(TAG, "PET_ENV zone=%s room_c10=%d src=%s",
+                         kid_app::EnvZoneName(env_tips_.Zone()), env_tips_.RoomC10(),
+                         injecting ? "selftest" : "shtc3");
+            if (pending != kid_app::EnvTip::None)
+                ESP_LOGI(TAG, "PET_ENV_TIP_PENDING kind=%s", kid_app::EnvTipName(pending));
+        }
+        // Only on the awake Pet home screen, like the battery reactions.
+        const bool allowed =
+            pet &&
+            now - env_pet_since_ms_ >= kid_app::SelfTestClock::Scaled(kEnvReactAfterPetMs) &&
+            !sleep_flow_.Active() && !sleep_active_.load() && !napping_.load() &&
+            !morning_shown_.load() && voice_face_.load() == 0 && state == kDeviceStateIdle &&
+            kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
+            (!selftest_seen_.load() || env_scripted_.load()) &&
+            !ParentMenuOpen() && !GameActive();
+        const bool quiet = quiet_hours_.load();
+        const auto tip = env_tips_.Take(quiet, allowed, local_day_.load(), now);
+        if (tip == kid_app::EnvTip::None) {
+            // Say once why a due tip waits for the night to pass.
+            const bool held = quiet && env_tips_.Pending() != kid_app::EnvTip::None;
+            if (held && !env_held_logged_)
+                ESP_LOGI(TAG, "PET_ENV_TIP_HELD reason=quiet kind=%s",
+                         kid_app::EnvTipName(env_tips_.Pending()));
+            env_held_logged_ = held;
+            return;
+        }
+        env_held_logged_ = false;
+        const bool hot = tip == kid_app::EnvTip::Hot;
+        const bool acted = RequestHomeAnimation(hot ? kid_app::Animation::TipHot
+                                                    : kid_app::Animation::TipCold);
+        PostPhrase(hot ? kid_app::PhraseContext::HotTip : kid_app::PhraseContext::ColdTip);
+        ESP_LOGI(TAG, "PET_ENV_TIP kind=%s acted=%d room_c10=%d today=%u", kid_app::EnvTipName(tip),
+                 acted ? 1 : 0, env_tips_.RoomC10(), static_cast<unsigned>(env_tips_.TodayCount()));
+    }
+
     // V1 read-only hardware acceptance. Probes and reads only: never sets
     // RTC time/alarm, never writes PMIC registers, never stores readings.
     bool DiagI2c(uint8_t address, const uint8_t* tx, size_t tx_len,
@@ -2252,6 +2331,14 @@ BOARD_WORKER = r'''
             env_read_ms_ = now;
             env_ok_ = ReadShtc3TempC10(&env_temp_c10_);
         }
+        // V4-03: a self-test "temp" step stands in for the SHTC3.
+        if (const int injected = env_inject_c10_.load(); injected != kEnvNoInject) {
+            env_ok_ = true;
+            env_temp_c10_ = injected;
+        }
+        if (++env_seq_ > 0x7FFF) env_seq_ = 1;  // 0: nothing published yet
+        env_sample_.store((static_cast<uint32_t>(env_seq_) << 17) | (env_ok_ ? 1u << 16 : 0u) |
+                          static_cast<uint16_t>(static_cast<int16_t>(env_temp_c10_)));
         in.temp_ok = env_ok_;
         in.temp_c10 = env_temp_c10_;
         if (pmic_) {
@@ -3162,6 +3249,16 @@ BOARD_WORKER = r'''
                              reading.charging ? 1 : 0, off ? 1 : 0);
                     break;
                 }
+                case kid_app::SelfTestOp::Temp: {
+                    // V4-03: SHTC3 readings as if from the sensor (status
+                    // band and life-tip policy); "off" hands back the real one.
+                    const bool off = step.ms == kid_app::SelfTestScript::kTempOff;
+                    env_scripted_.store(true);
+                    env_inject_c10_.store(off ? kEnvNoInject : static_cast<int>(step.ms) * 10);
+                    ESP_LOGI(TAG, "PET_SELFTEST_TEMP c=%u off=%d", static_cast<unsigned>(step.ms),
+                             off ? 1 : 0);
+                    break;
+                }
                 case kid_app::SelfTestOp::Volume:
                     prompt_volume_pct_.store(static_cast<uint8_t>(step.ms));
                     ESP_LOGI(TAG, "PET_SELFTEST_VOLUME pct=%u", static_cast<unsigned>(step.ms));
@@ -3367,6 +3464,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/rhythm_scheduler.h"\n'
         '#include "kid_app/power_manager.h"\n'
         '#include "kid_app/battery_policy.h"\n'
+        '#include "kid_app/env_tips.h"\n'
         '#include "kid_app/parent_menu.h"\n'
         '#include "kid_app/mini_game.h"\n'
         '#include "kid_app/mic_game.h"\n'

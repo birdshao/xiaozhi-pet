@@ -54,6 +54,20 @@ constexpr PhraseTemplate kPhrases[] = {
     {362, T::Lively, C::Bedtime, S::None, 1, "电量用光啦，我们去睡觉吧，晚安！"},
     {371, T::Lively, C::Giggle, S::None, 1, "哈哈哈，再摇一下！"},
     {372, T::Lively, C::Giggle, S::None, 1, "咯咯咯，我笑得停不下来啦！"},
+
+    // V4-03 life tips (room too hot / too cold): one fact, one kind action.
+    {181, T::Curious, C::HotTip, S::None, 1, "好热呀！出汗的时候要多喝水，身体才不会渴。"},
+    {182, T::Curious, C::HotTip, S::None, 1, "天气热热的，我们去阴凉的地方歇一歇吧。"},
+    {191, T::Curious, C::ColdTip, S::None, 1, "有点冷哦，穿上外套身体才暖和。"},
+    {192, T::Curious, C::ColdTip, S::None, 1, "冷冷的天，加件衣服再出去玩吧。"},
+    {281, T::Gentle, C::HotTip, S::None, 1, "今天有点热，记得多喝水，别在太阳下玩太久。"},
+    {282, T::Gentle, C::HotTip, S::None, 1, "热的时候要歇一歇，喝口水，我陪着你。"},
+    {291, T::Gentle, C::ColdTip, S::None, 1, "有点冷了，记得加件衣服，别着凉。"},
+    {292, T::Gentle, C::ColdTip, S::None, 1, "手冷不冷？披上外套，暖暖的。"},
+    {381, T::Lively, C::HotTip, S::None, 1, "好热好热！快喝口水，我们去阴凉的地方玩！"},
+    {382, T::Lively, C::HotTip, S::None, 1, "呼，热得冒汗啦！喝水补充能量！"},
+    {391, T::Lively, C::ColdTip, S::None, 1, "好冷呀！快穿上外套，动一动就暖和啦！"},
+    {392, T::Lively, C::ColdTip, S::None, 1, "冷风飕飕！加件衣服再出发！"},
 };
 constexpr size_t kPhraseTotal = sizeof(kPhrases) / sizeof(kPhrases[0]);
 

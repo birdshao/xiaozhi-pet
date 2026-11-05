@@ -24,6 +24,8 @@ constexpr Note kFeed[] = {{784, 90}, {659, 90}, {784, 90}, {1047, 200}};
 constexpr Note kStory[] = {{659, 140}, {784, 140}, {659, 200}};
 constexpr Note kBedtime[] = {{523, 220}, {440, 220}, {392, 360}};
 constexpr Note kGiggle[] = {{1047, 60}, {1175, 60}, {1047, 60}, {1175, 60}, {1319, 120}};
+constexpr Note kHotTip[] = {{880, 100}, {784, 100}, {659, 200}};  // falling: cool down
+constexpr Note kColdTip[] = {{523, 100}, {659, 100}, {784, 200}};  // rising: warm up
 
 template <size_t N>
 constexpr Motif M(const Note (&notes)[N]) {
@@ -31,7 +33,8 @@ constexpr Motif M(const Note (&notes)[N]) {
 }
 // PhraseContext order.
 constexpr Motif kMotifs[] = {M(kGreeting), M(kMorning), M(kFavorite), M(kFeed),
-                             M(kStory),    M(kBedtime), M(kGiggle)};
+                             M(kStory),    M(kBedtime), M(kGiggle),
+                             M(kHotTip),   M(kColdTip)};
 static_assert(sizeof(kMotifs) / sizeof(kMotifs[0]) == kPhraseContextCount,
               "one chime per phrase context");
 

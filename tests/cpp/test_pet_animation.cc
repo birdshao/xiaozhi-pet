@@ -35,7 +35,7 @@ int main() {
     // Every animation ends on the resting picture of its scene.
     for (Animation a : {Animation::Blink, Animation::Greet, Animation::Feed, Animation::SleepIn,
                         Animation::Giggle, Animation::Dizzy, Animation::Charge,
-                        Animation::Yawn}) {
+                        Animation::Yawn, Animation::TipHot, Animation::TipCold}) {
         const AnimationFrame* frames = nullptr;
         const uint8_t n = AnimationFrames(a, &frames);
         assert(n >= 2 && n <= 3 && frames[n - 1].pose == ScenePose::Still);
@@ -55,6 +55,13 @@ int main() {
         assert(frames[0].pose == ScenePose::Yawn && frames[0].hold_ms >= 3000);
         assert(std::string(AnimationName(Animation::Charge)) == "charge");
         assert(std::string(AnimationName(Animation::Yawn)) == "yawn");
+        // V4-03: a life-tip bubble held long enough to read, then rest.
+        assert(AnimationFrames(Animation::TipHot, &frames) == 2);
+        assert(frames[0].pose == ScenePose::TipHot && frames[0].hold_ms >= 4000);
+        assert(AnimationFrames(Animation::TipCold, &frames) == 2);
+        assert(frames[0].pose == ScenePose::TipCold && frames[0].hold_ms >= 4000);
+        assert(std::string(AnimationName(Animation::TipHot)) == "tip_hot");
+        assert(std::string(AnimationName(Animation::TipCold)) == "tip_cold");
     }
 
     // Battery reactions play on the home scene only (never on the reader
