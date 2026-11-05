@@ -74,6 +74,53 @@ class ReaderTestBookTests(unittest.TestCase):
         self.assertEqual(exp["commits"], "2")  # StartStory + StopStory only
 
 
+class BookMissingContractTests(unittest.TestCase):
+    """Reader without a book: reason from the SD layer, picture, home, no memory."""
+
+    def test_sd_layer_reports_why_there_is_no_book(self):
+        sd = (KID_APP / "src" / "waveshare_story_sd.cc").read_text(encoding="utf-8")
+        self.assertNotIn("fopen(", sd)
+        self.assertIn("missing_ = mounted_ ? BookMissing::NoBook : BookMissing::NoCard;", sd)
+        absent = sd[sd.index("SD_BOOK_ABSENT"):]
+        self.assertLess(absent.index("missing_ = BookMissing::NoBook;"), absent.index("return false;"))
+        bad = sd[sd.index("reader_.Open(file_)"):]
+        self.assertLess(bad.index("missing_ = BookMissing::BadBook;"), bad.index("return false;"))
+        self.assertIn("missing_ = BookMissing::None;", sd[sd.index("ready_ = true;"):])
+
+    def test_board_opens_the_reader_with_the_reason_and_goes_home(self):
+        init = _body(BOARD_WORKER, "bool InitializePetRuntime()")
+        self.assertLess(init.index("book_missing_ = story_sd_.Missing();"),
+                        init.index("book_outline_ready_.store(true)"))
+        self.assertIn("book_missing_ = kid_app::BookMissing::BadBook;", init)
+        update = _body(BOARD_WORKER, "void UpdateBook()")
+        self.assertIn("book_.Open(&book_outline_, now, book_missing_);", update)
+        self.assertIn('PET_BOOK_MISSING reason=%s book=%s', update)
+        # The picture is a plain scene: never a card read for "page 0".
+        self.assertIn("kid_app::BookMissingOf(scene) == kid_app::BookMissing::None",
+                      _body(BOARD_WORKER, "bool DrawPetFrameLocked("))
+        # Nothing new reaches the ledger or the speaker from this path.
+        self.assertEqual(BOARD_WORKER.count("RecordBookMemory("), 2)
+        reader = (KID_APP / "src" / "book_reader.cc").read_text(encoding="utf-8")
+        missing = reader[reader.index("case Phase::Missing:"):]
+        missing = missing[:missing.index("return step;")]
+        self.assertIn("step.home = true;", missing)
+        self.assertNotIn("memory", missing)
+
+    def test_scenario(self):
+        text = (ROOT / "tools" / "selftest" / "v4_book_missing.pettest").read_text(encoding="ascii")
+        self.assertEqual(len(sector_bytes(text)), 4096)
+        steps = [line.split() for line in text.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        ops = [s[0] for s in steps]
+        self.assertLess(ops.index("book"), ops.index("pet"))
+        self.assertEqual(steps[ops.index("book")], ["book", "no_such_book"])
+        exp = expectations(text)
+        for name in ("min:PET_BOOK_MISSING", "min:reason=no_book", "min:PET_BOOK_HOME",
+                     "none:PET_BOOK_AUDIO", "none:PET_BOOK_MEMORY"):
+            self.assertIn(name, exp)
+        self.assertEqual(exp["commits"], "4")  # (StartStory + StopStory) x 2
+
+
 class BoardContractTests(unittest.TestCase):
     def test_official_4grey_sequence_and_partial_previous_image(self):
         grey = DISPLAY_IMPL[DISPLAY_IMPL.index("bool CustomEpdDisplay::ShowBookGrey("):]

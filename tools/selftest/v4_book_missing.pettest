@@ -1,0 +1,40 @@
+PETSELFTEST1
+# V4-05 reader without a book: open a book id that is not on the card.
+# Card: any TF card WITH the /books folder contents untouched (the scenario
+# asks for "no_such_book", which is never there). With no card at all the
+# reason is no_card instead: change the expectation below to reason=no_card.
+# Story shows the "no book" picture (TuanTuan with a ?, an open empty book,
+# a home card); a press goes home, and so does a long press. Nothing is
+# read aloud and nothing goes to the memory ledger. Counted from "mark begin".
+# expect min:PET_BOOK_MISSING 2
+# expect min:reason=no_book 2
+# expect min:PET_BOOK_HOME 2
+# expect none:reason=no_card 0
+# expect none:PET_BOOK_AUDIO 0
+# expect none:PET_BOOK_MEMORY 0
+# expect none:PET_BOOK_DRAW_FAILED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect commits 4
+# expect selftest_done 1
+# expect max_full_ms 12000
+volume 15
+book no_such_book
+waitidle 60000
+pet
+wait 7000
+# Normalize to home: press opens the preselected Story, hold returns home.
+tap press 9000
+hold press 1500 7000
+mark begin
+# Story without a book: the picture stays, the dial does nothing.
+tap press 9000
+tap down 2500
+tap up 2500
+# Press goes home.
+tap press 9000
+# Again; this time a long press goes home.
+tap press 9000
+hold press 1500 7000
+pet
+wait 5000
+end
