@@ -269,7 +269,7 @@ class SelfTestReportTests(unittest.TestCase):
                 + "PET_GAME_CHOICE game=ball\nPET_GAME_CHOICE game=peekaboo\n"
                 + "PET_GAME_START src=motion kind=ball\nPET_GAME_START src=motion kind=peekaboo\n"
                 + "PET_GAME_END mode=menu end=home\n"
-                + "PET_MOTION_STEP\n" * 8 + "PET_MOTION_HOLE\n" * 3
+                + "PET_MOTION_STEP\n" * 5 +"PET_MOTION_HOLE\n" * 3
                 + "PET_MOTION_TOO_SOON\n" + "PET_MOTION_HIDE\n" * 4 + "PET_MOTION_FOUND\n" * 3
                 + "PET_GAME_END mode=ball end=completed growth=1\n"
                 + "PET_GAME_END mode=peekaboo end=completed growth=1\n"
@@ -277,6 +277,14 @@ class SelfTestReportTests(unittest.TestCase):
         report_ = evaluate(text, good)
         failed = [k for k in report_["failed"] if k not in ("max_partial_ms",)]
         self.assertEqual(failed, [])
+        # The last roll of each round is a HOLE, not a STEP: 5 steps, not 8.
+        self.assertEqual(expectations(text)["min:PET_MOTION_STEP"], "5")
+        self.assertIn("min:PET_MOTION_STEP",
+                      evaluate(text, good.replace("PET_MOTION_STEP\n", "", 1))["failed"])
+        # Unparseable expect lines are errors, never silently ignored.
+        for bad in ("# expect min:PET_GAME_MENU highlight 3", "# expect commits"):
+            with self.assertRaises(ValueError):
+                expectations("PETSELFTEST1\n" + bad + "\nend\n")
         # A missed reward or a refused start fails the scenario.
         self.assertIn("min:PET_MOTION_FOUND",
                       evaluate(text, good.replace("PET_MOTION_FOUND\n", "", 1))["failed"])

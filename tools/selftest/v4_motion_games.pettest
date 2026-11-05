@@ -11,12 +11,13 @@ PETSELFTEST1
 # Games are UI only: no pet commits.
 # expect commits 0
 # Menu three times: leave by long press; ball; peekaboo.
-# expect min:PET_GAME_MENU highlight 3
+# expect min:PET_GAME_MENU 3
 # expect min:PET_GAME_CHOICE 2
 # expect min:src=motion 2
 # expect min:end=home 1
-# Ball: 3 + 3 + 2 rolls, a hole each round.
-# expect min:PET_MOTION_STEP 8
+# Ball: 3 + 3 + 2 rolls, a hole each round. The last roll of a round is
+# logged as PET_MOTION_HOLE, not STEP: 2 + 2 + 1 steps.
+# expect min:PET_MOTION_STEP 5
 # expect min:PET_MOTION_HOLE 3
 # Peekaboo: one flip back too early, then three finds (shaking in between
 # is no reward).
