@@ -3035,6 +3035,28 @@ def patch_power_save_timer(text: str) -> str:
         "board PowerSaveTimer takeover")
 
 
+# Story / sound / game packs are named like "forest_friends.kpb". ESP-IDF's
+# default FatFs has no long file names (8.3 only), so fopen() of any such
+# pack failed on the board ("Approved story .kpb absent") while the reader
+# placeholder hid it. Same setting as Waveshare's own SD example.
+SD_LONG_FILENAMES = ("CONFIG_FATFS_LFN_HEAP=y", "CONFIG_FATFS_MAX_LFN=255")
+
+
+def patch_board_config(text: str) -> str:
+    """Append the Pet SD settings to the board's build (config.json)."""
+    config = json.loads(text)
+    builds = config.get("builds") or []
+    if len(builds) != 1:
+        raise RuntimeError(f"Expected one board build in config.json, found {len(builds)}")
+    append = builds[0].setdefault("sdkconfig_append", [])
+    for line in SD_LONG_FILENAMES:
+        key = line.split("=", 1)[0]
+        if any(item.split("=", 1)[0] == key for item in append):
+            raise RuntimeError(f"Upstream board config already sets {key}")
+        append.append(line)
+    return json.dumps(config, indent=4, ensure_ascii=False) + "\n"
+
+
 def run(source: Path) -> None:
     git_head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if git_head != MANIFEST["firmware"]["commit"]:
@@ -3053,6 +3075,7 @@ def run(source: Path) -> None:
     header = source / BOARD_REL / "custom_lcd_display.h"
     impl = source / BOARD_REL / "custom_lcd_display.cc"
     board = source / BOARD_REL / "waveshare-s3-epaper-3.97.cc"
+    board_config = source / BOARD_REL / "config.json"
     audio_h = source / "main/audio/audio_service.h"
     audio_cc = source / "main/audio/audio_service.cc"
     application_cc = source / "main/application.cc"
@@ -3063,6 +3086,7 @@ def run(source: Path) -> None:
         header: patch_display_voice_h(patch_display_h(header.read_text(encoding="utf-8"))),
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
+        board_config: patch_board_config(board_config.read_text(encoding="utf-8")),
         audio_h: patch_audio_h(audio_h.read_text(encoding="utf-8")),
         audio_cc: patch_audio_cc(audio_cc.read_text(encoding="utf-8")),
         application_cc: patch_application_cc(application_cc.read_text(encoding="utf-8")),
