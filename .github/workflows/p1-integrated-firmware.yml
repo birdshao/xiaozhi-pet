@@ -84,12 +84,33 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           git diff --check
+      # build.py already enables ccache. Keep a cache per upstream + IDF
+      # version, restoring the latest entry when this commit has no cache.
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-v2-idf6.1-${{ hashFiles('version-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v2-idf6.1-${{ hashFiles('version-lock.json') }}-
       - name: Compile official Waveshare board with Pet adapter
         shell: bash
+        env:
+          # IDF regenerates build/specs/picolibc.specs in each clean build.
+          # ccache also applies compiler_check to -specs files: hash their
+          # contents, since their fresh mtime otherwise invalidates every TU.
+          CCACHE_COMPILERCHECK: content
+          CCACHE_MAXSIZE: 1G
+          CCACHE_COMPRESS: "1"
         run: |
           source "$IDF_PATH/export.sh"
+          # Use the runtime container workspace for both ccache paths.
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
+          ccache --zero-stats
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
+          ccache --show-stats
       - name: Validate and package immutable app-only image + SHA manifest
         shell: bash
         run: |
