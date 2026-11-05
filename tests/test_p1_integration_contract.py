@@ -985,8 +985,8 @@ class DisplayOverlayTest(unittest.TestCase):
         baseline = steps.index('temp 22')
         self.assertEqual(steps[baseline + 1], 'twait 70000')
         self.assertLess(baseline, steps.index('mark begin'))
-        self.assertIn('# expect min:PET_ENV zone=normal', scenario)
-        for expect in ('min:PET_ENV_TIP kind=hot', 'min:PET_ENV_TIP kind=cold',
+        self.assertIn('# expect min:zone=normal', scenario)
+        for expect in ('min:kind=hot', 'min:kind=cold',
                        'min:name=tip_hot', 'min:name=tip_cold', 'min:ctx=hot_tip',
                        'min:ctx=cold_tip', 'none:PET_ENV_TIP_HELD', 'selftest_done'):
             self.assertIn('# expect ' + expect, scenario)

@@ -1,4 +1,5 @@
 """Host-side self-test report: expectations from a scenario vs a serial log."""
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -247,6 +248,15 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertEqual(sorted(scaled),
                          ["v3_animations", "v3_battery", "v3_morning", "v3_parent_menu",
                           "v4_env_tips", "v4_mini_game"])
+
+    def test_every_expect_line_of_the_env_tips_scenario_is_parsed(self):
+        # "# expect <name> <value>": the name has no spaces. A line the
+        # parser does not match would be silently ignored in the report.
+        path = Path(__file__).resolve().parents[1] / "tools/selftest/v4_env_tips.pettest"
+        text = path.read_text(encoding="ascii")
+        lines = [l for l in text.splitlines() if re.match(r"\s*#\s*expect\b", l)]
+        self.assertGreaterEqual(len(lines), 10)
+        self.assertEqual(len(expectations(text)), len(lines), "duplicate or unparsed expect")
 
     def test_apply_timescale(self):
         text = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\ntwait 8000\nend\n"

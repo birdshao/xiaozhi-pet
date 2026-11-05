@@ -3,7 +3,7 @@ PETSELFTEST1
 # band + tip policy; the board publishes a reading every 10 s):
 # The sensor may boot in any zone (the real board reads hot on USB), so
 # the baseline holds 22 C for the whole 60 s first, so the log shows
-# "PET_ENV zone=normal" before "mark begin" (if the sensor started normal
+# "zone=normal" before "mark begin" (if the sensor started normal
 # there is simply no transition line there).
 # 1) 31 C held for 60 s: "so hot" bubble (a glass of water) and the pet's
 #    tip line (drink water); 2) back to 22 C: the room is normal again, no
@@ -12,13 +12,13 @@ PETSELFTEST1
 # outside them. Gentle default temperament; ids per temperament are fixed,
 # so the log names the context (ctx=hot_tip / cold_tip), not the id.
 # Counted from "mark begin" (see tools/selftest_report.py).
-# expect min:PET_ENV zone=hot 1
-# expect min:PET_ENV_TIP kind=hot 1
+# expect min:zone=hot 1
+# expect min:kind=hot 1
 # expect min:name=tip_hot 1
 # expect min:ctx=hot_tip 1
-# expect min:PET_ENV zone=normal 1
-# expect min:PET_ENV zone=cold 1
-# expect min:PET_ENV_TIP kind=cold 1
+# expect min:zone=normal 1
+# expect min:zone=cold 1
+# expect min:kind=cold 1
 # expect min:name=tip_cold 1
 # expect min:ctx=cold_tip 1
 # expect min:temp_c=31 1
