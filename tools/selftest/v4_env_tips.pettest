@@ -1,0 +1,61 @@
+PETSELFTEST1
+# V4-03 environment life tips. "temp" steps stand in for the SHTC3 (status
+# band + tip policy; the board publishes a reading every 10 s):
+# 1) 31 C held for 60 s: "so hot" bubble (a glass of water) and the pet's
+#    tip line (drink water); 2) back to 22 C: the room is normal again, no
+#    tip; 3) 12 C held for 60 s: "so cold" bubble (a coat) and its line.
+# Tips stay silent in the parent's quiet hours (PET_ENV_TIP_HELD): run this
+# outside them. Gentle default temperament; ids per temperament are fixed,
+# so the log names the context (ctx=hot_tip / cold_tip), not the id.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:PET_ENV zone=hot 1
+# expect min:PET_ENV_TIP kind=hot 1
+# expect min:name=tip_hot 1
+# expect min:ctx=hot_tip 1
+# expect min:PET_ENV zone=normal 1
+# expect min:PET_ENV zone=cold 1
+# expect min:PET_ENV_TIP kind=cold 1
+# expect min:name=tip_cold 1
+# expect min:ctx=cold_tip 1
+# expect min:temp_c=31 1
+# expect min:temp_c=12 1
+# expect none:PET_ENV_TIP_HELD 0
+# expect none:PET_PHRASE_FAILED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect timescale 25
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+# TEST ONLY: the 60 s hold and the reaction delay at 25 %. "twait" scales
+# with it; the animations, the status band and the audio stay real ("wait").
+# Real speed: timescale 100 (selftest_report.py --timescale 100).
+timescale 25
+# Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
+# fixed 20 s; the pet toggle below still retries.
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+# Baseline: a comfortable room (sets the zone silently).
+temp 22
+twait 12000
+wait 3000
+mark begin
+# 1) Hot: the reading has to hold for 60 s (15 s at 25 %).
+temp 31
+twait 70000
+wait 9000
+# 2) Back to comfortable (needs the same hold): no tip.
+temp 22
+twait 70000
+wait 3000
+# 3) Cold.
+temp 12
+twait 70000
+wait 9000
+# Hand the sensor back.
+temp off
+wait 2000
+end

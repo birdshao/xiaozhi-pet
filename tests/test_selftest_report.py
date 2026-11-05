@@ -215,7 +215,7 @@ class SelfTestReportTests(unittest.TestCase):
     def test_committed_scenarios_use_known_ops_and_say_their_time_scale(self):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
-                 "morning", "voice", "battery", "book", "game", "timescale", "twait",
+                 "morning", "voice", "battery", "temp", "book", "game", "timescale", "twait",
                  "waitidle", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
@@ -246,7 +246,7 @@ class SelfTestReportTests(unittest.TestCase):
             self.assertEqual(len(sector_bytes(apply_timescale(text, 100))), 4096, path.name)
         self.assertEqual(sorted(scaled),
                          ["v3_animations", "v3_battery", "v3_morning", "v3_parent_menu",
-                          "v4_mini_game"])
+                          "v4_env_tips", "v4_mini_game"])
 
     def test_apply_timescale(self):
         text = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\ntwait 8000\nend\n"

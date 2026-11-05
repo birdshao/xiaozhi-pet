@@ -15,9 +15,10 @@ namespace kid_app {
 // per temperament, so selection never fails.
 enum class PhraseContext : uint8_t {
     Greeting, MorningRecap, FavoriteMention, Feed, StoryInvite, Bedtime,
-    Giggle  // V5-04: gentle shake
+    Giggle,  // V5-04: gentle shake
+    HotTip, ColdTip  // V4-03: room too hot / too cold (life tips)
 };
-constexpr size_t kPhraseContextCount = 7;
+constexpr size_t kPhraseContextCount = 9;
 
 // Memory slot a template needs; filled later from MemoryStore, never from
 // free text. {book} = a recent book title, {like} = a chosen option name.

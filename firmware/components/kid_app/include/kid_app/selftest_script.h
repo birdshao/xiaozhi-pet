@@ -37,6 +37,10 @@ namespace kid_app {
 //                           level on battery (< 8 %) powers off, so it is
 //                           only accepted after an "alarm" step.
 //   battery off             back to the real PMIC readings
+//   temp <celsius>          V4-03: SHTC3 readings from now on: 0..60 whole
+//                           degrees; drives the status band and the life-tip
+//                           policy (hot >= 28, cold <= 16, held for 60 s)
+//   temp off                back to the real SHTC3
 //   timescale <percent>     TEST ONLY: feature timers (idle blink, cleanup,
 //                           power idle/nap, morning window, parent idle exit,
 //                           battery sampling/reactions) run at 10..100 % of
@@ -59,7 +63,7 @@ namespace kid_app {
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo, Book, Game, TimeScale, WaitIdle, TimerWait
+    Combo, Book, Game, TimeScale, WaitIdle, TimerWait, Temp
 };
 
 struct SelfTestStep {
@@ -71,7 +75,7 @@ struct SelfTestStep {
                           // kid_app::Gesture value for Gesture;
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff;
-                          // Game: the seed
+                          // Game: the seed; Temp: whole degrees or kTempOff
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark; Book: book id
 };
@@ -84,6 +88,8 @@ public:
     static constexpr uint32_t kMaxMs = 600000;
     static constexpr uint32_t kBatteryCharging = 0x100;
     static constexpr uint32_t kBatteryOff = 0x200;
+    static constexpr uint32_t kTempOff = 0x100;
+    static constexpr uint32_t kMaxTempC = 60;
     static constexpr uint32_t kMinTimeScalePct = 10;  // SelfTestClock::kMinPct
     static constexpr uint32_t kIdleSettleMs = 1000;   // WaitIdle: idle this long
 

@@ -37,7 +37,8 @@ enum class Emotion : uint8_t {
 // Packed in 4 bits (PackScene): at most 16 poses.
 enum class ScenePose : uint8_t {
     Still, Blink, Wave, Hearts1, Hearts2, Zzz1, Zzz2, Giggle, Dizzy1, Dizzy2,
-    Sunrise, Morning, Charging, Yawn
+    Sunrise, Morning, Charging, Yawn,
+    TipHot, TipCold  // V4-03: room too hot / cold, life-tip bubble (last value 15)
 };
 
 struct SceneModel {

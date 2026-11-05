@@ -319,7 +319,8 @@ void TestChimes() {
 
 const PhraseContext kPlayed[] = {PhraseContext::Greeting, PhraseContext::MorningRecap,
                                  PhraseContext::Feed, PhraseContext::Bedtime,
-                                 PhraseContext::Giggle};
+                                 PhraseContext::Giggle, PhraseContext::HotTip,
+                                 PhraseContext::ColdTip};
 
 void TestPlannerIsDeterministicPerTemperament() {
     for (Temperament t : {Temperament::Curious, Temperament::Gentle, Temperament::Lively}) {

@@ -72,7 +72,8 @@ OPTIONS = (("chat", "聊天"), ("story", "故事"), ("game", "游戏"),
            ("feed", "喂食"), ("sleep", "睡觉"))
 TEMPERAMENTS = ("curious", "gentle", "lively")  # Temperament order
 TEMPERAMENT_ZH = {"curious": "好奇型", "gentle": "温柔型", "lively": "活泼型"}
-CONTEXTS = ("greeting", "morning", "favorite", "feed", "story", "bedtime", "giggle")
+CONTEXTS = ("greeting", "morning", "favorite", "feed", "story", "bedtime", "giggle",
+            "hot_tip", "cold_tip")
 # Contexts the firmware speaks today (V5-04 first half) and when.
 PLAYED = {
     "greeting": "拿起团团 / 选聊天、游戏时打招呼",
@@ -80,12 +81,15 @@ PLAYED = {
     "feed": "喂食后",
     "bedtime": "哄睡时（睡觉画面）",
     "giggle": "轻轻摇团团",
+    "hot_tip": "房间太热时的小常识（多喝水）",
+    "cold_tip": "房间太冷时的小常识（加衣服）",
 }
 _PHRASE_RE = re.compile(
     r'\{(\d+),\s*T::(\w+),\s*C::(\w+),\s*S::(\w+),\s*(\d+),\s*"([^"]*)"\}')
 _CONTEXT_OF = {"Greeting": "greeting", "MorningRecap": "morning",
                "FavoriteMention": "favorite", "Feed": "feed",
-               "StoryInvite": "story", "Bedtime": "bedtime", "Giggle": "giggle"}
+               "StoryInvite": "story", "Bedtime": "bedtime", "Giggle": "giggle",
+               "HotTip": "hot_tip", "ColdTip": "cold_tip"}
 
 
 @dataclass(frozen=True)
@@ -298,7 +302,8 @@ def _tone(freqs: list[int], note_s: float) -> bytes:
 
 DEMO_TONES = {"greeting": [880, 1175], "morning": [523, 784, 1047],
               "feed": [784, 1047, 784], "bedtime": [392, 330],
-              "giggle": [1319, 1568, 1319, 1568]}
+              "giggle": [1319, 1568, 1319, 1568],
+              "hot_tip": [880, 784, 659], "cold_tip": [523, 659, 784]}
 
 
 def demo(out_dir: Path) -> dict:

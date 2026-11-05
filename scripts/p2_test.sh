@@ -281,6 +281,18 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   -o "$BUILD/test_battery_policy"
 "$BUILD/test_battery_policy"
 
+# V4-03 environment life tips: hot/cold bands with hysteresis and a hold,
+# board-heat offset, quiet hours, daily limit, reviewed tip phrases.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/env_tips.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_env_tips.cc" \
+  -o "$BUILD/test_env_tips"
+"$BUILD/test_env_tips"
+
 # V3-06 parent menu: settings validation and codec, volume cap, dial-driven
 # menu (edit/save/long-press/30 s exit), ledger v3 with v2 migration.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

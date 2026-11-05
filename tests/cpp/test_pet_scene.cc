@@ -102,7 +102,8 @@ int main() {
                   kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
                   kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
                   kid_app::ScenePose::Morning, kid_app::ScenePose::Charging,
-                  kid_app::ScenePose::Yawn}) {
+                  kid_app::ScenePose::Yawn, kid_app::ScenePose::TipHot,
+                  kid_app::ScenePose::TipCold}) {
                 MonoFrame other;
                 SceneComposer::Render(SceneModel{SceneKind::Home, emotion, 1, 2, pose}, other);
                 for (int y = SceneComposer::kRailTop - 2; y < MonoFrame::kHeight; ++y)
@@ -116,7 +117,8 @@ int main() {
               kid_app::ScenePose::Hearts2, kid_app::ScenePose::Giggle, kid_app::ScenePose::Dizzy1,
               kid_app::ScenePose::Dizzy2, kid_app::ScenePose::Sunrise,
               kid_app::ScenePose::Morning, kid_app::ScenePose::Charging,
-              kid_app::ScenePose::Yawn}) {
+              kid_app::ScenePose::Yawn, kid_app::ScenePose::TipHot,
+              kid_app::ScenePose::TipCold}) {
             MonoFrame other;
             SceneComposer::Render(SceneModel{SceneKind::Home, Emotion::Neutral, 1, 2, pose}, other);
             assert(other.Data() != still.Data());
@@ -302,7 +304,8 @@ int main() {
             for (ScenePose pose : {ScenePose::Still, ScenePose::Blink, ScenePose::Wave,
                                    ScenePose::Hearts1, ScenePose::Hearts2, ScenePose::Giggle,
                                    ScenePose::Dizzy1, ScenePose::Dizzy2, ScenePose::Sunrise,
-                                   ScenePose::Morning, ScenePose::Charging, ScenePose::Yawn}) {
+                                   ScenePose::Morning, ScenePose::Charging, ScenePose::Yawn,
+                                   ScenePose::TipHot, ScenePose::TipCold}) {
                 MonoFrame f;
                 SceneComposer::Render(home(StatusBar{}, emotion, pose), f);
                 for (int y = 0; y < SceneComposer::kStatusBottom; ++y)
@@ -400,7 +403,7 @@ int main() {
                                     Emotion::Thinking, Emotion::Speaking}) {
                 for (uint16_t page : {uint16_t{1}, uint16_t{2}, uint16_t{65535}}) {
                     for (uint8_t sel = 0; sel < 5; ++sel) {
-                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::Yawn);
+                        for (uint8_t pose = 0; pose <= static_cast<uint8_t>(kid_app::ScenePose::TipCold);
                              ++pose) {
                             const SceneModel in{kind, emotion, page, sel,
                                                 static_cast<kid_app::ScenePose>(pose)};

@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|parent|parent_edit|game|game_right|game_count> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|tip_hot|tip_cold|parent|parent_edit|game|game_right|game_count> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -28,6 +28,10 @@ int main(int argc, char** argv) {
         model.pose = mode == "charging" ? kid_app::ScenePose::Charging : kid_app::ScenePose::Yawn;
         model.status.battery_bars = mode == "charging" ? 2 : 0;
         model.status.charging = mode == "charging";
+    }
+    else if (mode == "tip_hot" || mode == "tip_cold") {  // V4-03 life tips
+        model.pose = mode == "tip_hot" ? kid_app::ScenePose::TipHot : kid_app::ScenePose::TipCold;
+        model.status.temp_c = mode == "tip_hot" ? 31 : 12;
     }
     else if (mode == "status") {  // V2-05 status band with every field shown
         model.status.hour = 7;

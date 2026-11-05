@@ -22,6 +22,7 @@ idf_component_register(
          "src/content_pack_reader.cc"
          "src/book_reader.cc" "src/icon_choice.cc"
          "src/battery_policy.cc"
+         "src/env_tips.cc"
          "src/parent_settings.cc" "src/parent_menu.cc" "src/nvs_parent_settings_store.cc"
          "src/pet_ledger_migration.cc"
          "src/mini_game.cc" "src/game_pack_reader.cc"

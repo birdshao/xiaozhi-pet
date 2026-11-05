@@ -927,6 +927,57 @@ class DisplayOverlayTest(unittest.TestCase):
                        'min:wake=selftest', 'min:battery=1', 'none:PET_SLEEP_POWEROFF_RETURNED'):
             self.assertIn('# expect ' + expect, scenario)
 
+    def test_v4_env_tips_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/env_tips.h"', patched)
+        self.assertIn('kid_app::EnvTipPolicy env_tips_;', patched)
+        # pet_boot_diag publishes the reading (the self-test value replaces
+        # the sensor) before the status band uses it; pet_input owns the policy.
+        status = self._body(patched, 'void UpdateStatusBar()')
+        self.assertLess(status.index('ReadShtc3TempC10(&env_temp_c10_)'),
+                        status.index('env_inject_c10_.load()'))
+        self.assertLess(status.index('env_inject_c10_.load()'), status.index('env_sample_.store('))
+        self.assertLess(status.index('env_sample_.store('), status.index('in.temp_ok = env_ok_;'))
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdateBattery(state);'), loop.index('UpdateEnvTips(state);'))
+        self.assertLess(loop.index('UpdateEnvTips(state);'), loop.index('sleep_flow_.Tick(NowMs())'))
+        update = self._body(patched, 'void UpdateEnvTips(')
+        self.assertIn('env_tips_.Observe(ok, temp_c10, now)', update)
+        # Tips only on the awake Pet home screen and never in quiet hours.
+        allowed = update[update.index('const bool allowed'):update.index('env_tips_.Take(')]
+        for needle in ('!sleep_flow_.Active()', '!sleep_active_.load()', '!napping_.load()',
+                       '!morning_shown_.load()', 'voice_face_.load() == 0',
+                       'state == kDeviceStateIdle', 'PetInputRouter::IsHomeRail(',
+                       'kEnvReactAfterPetMs', 'env_scripted_.load()', '!ParentMenuOpen()',
+                       '!GameActive()', 'quiet_hours_.load()'):
+            self.assertIn(needle, allowed)
+        self.assertIn('env_tips_.Take(quiet, allowed, local_day_.load(), now)', update)
+        for needle in ('kid_app::Animation::TipHot', 'kid_app::Animation::TipCold',
+                       'kid_app::PhraseContext::HotTip', 'kid_app::PhraseContext::ColdTip',
+                       'RequestHomeAnimation(', 'PostPhrase(', 'PET_ENV_TIP kind=%s',
+                       'PET_ENV_TIP_HELD reason=quiet'):
+            self.assertIn(needle, update)
+        self.assertNotIn('PostLocal', update)  # UI only, nothing durable
+        self.assertNotIn('last_pet_scene_.store', update)
+        # The self-test step injects tenths of a degree, "off" hands back.
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        step = run[run.index('case kid_app::SelfTestOp::Temp:'):]
+        step = step[:step.index('break;')]
+        self.assertIn('kid_app::SelfTestScript::kTempOff', step)
+        self.assertIn('env_scripted_.store(true)', step)
+        self.assertIn('static_cast<int>(step.ms) * 10', step)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v4_env_tips.pettest').read_text(encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        steps = [line.strip() for line in scenario.splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        for needle in ('temp 22', 'temp 31', 'temp 12', 'temp off', 'mark begin', 'volume 15'):
+            self.assertIn(needle, steps)
+        self.assertLess(steps.index('temp 31'), steps.index('temp 12'))
+        for expect in ('min:PET_ENV_TIP kind=hot', 'min:PET_ENV_TIP kind=cold',
+                       'min:name=tip_hot', 'min:name=tip_cold', 'min:ctx=hot_tip',
+                       'min:ctx=cold_tip', 'none:PET_ENV_TIP_HELD', 'selftest_done'):
+            self.assertIn('# expect ' + expect, scenario)
+
     def test_v3_parent_menu_wiring(self):
         patched = self._board()
         for header in ('parent_menu.h', 'freertos_atomic_pet_service.h'):
@@ -1101,6 +1152,7 @@ class DisplayOverlayTest(unittest.TestCase):
             'mini_game.cc': ('Scaled(kIdleExitMs)', 'Scaled(kRepeatPromptMs)'),
             'battery_policy.cc': ('Scaled(kCriticalRetryMs)', 'Scaled(kEatEveryMs)',
                                   'Scaled(kYawnEveryMs)'),
+            'env_tips.cc': ('Scaled(kRepeatMs)', 'Scaled(kHoldMs)', 'Scaled(kPendingMs)'),
         }
         for name, needles in scaled.items():
             text = (src / name).read_text(encoding='utf-8')
@@ -1116,6 +1168,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = self._board()
         self.assertIn('kid_app::SelfTestClock::Scaled(kBatterySampleMs)', patched)
         self.assertIn('kid_app::SelfTestClock::Scaled(kBatteryReactAfterPetMs)', patched)
+        self.assertIn('kid_app::SelfTestClock::Scaled(kEnvReactAfterPetMs)', patched)
         # EPD and audio waits in the board never go through the scale.
         for body in ('void PowerOffForSleep()', 'void MorningFallbackPowerOff()'):
             self.assertNotIn('SelfTestClock', self._body(patched, body), body)
