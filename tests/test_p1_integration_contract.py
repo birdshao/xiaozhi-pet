@@ -943,6 +943,13 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(loop.index('UpdateEnvTips(state);'), loop.index('sleep_flow_.Tick(NowMs())'))
         update = self._body(patched, 'void UpdateEnvTips(')
         self.assertIn('env_tips_.Observe(ok, temp_c10, now)', update)
+        # Board self-heating: offset set before each reading, none for the
+        # self-test (which states the room temperature).
+        self.assertLess(update.index('env_tips_.SetOffsetC10('),
+                        update.index('env_tips_.Observe(ok, temp_c10, now)'))
+        for needle in ('kEnvNoInject ? 0', 'battery_.External()',
+                       'EnvTipPolicy::kUsbHeatC10', 'EnvTipPolicy::kBatteryHeatC10'):
+            self.assertIn(needle, update)
         # Tips only on the awake Pet home screen and never in quiet hours.
         allowed = update[update.index('const bool allowed'):update.index('env_tips_.Take(')]
         for needle in ('!sleep_flow_.Active()', '!sleep_active_.load()', '!napping_.load()',
@@ -973,6 +980,12 @@ class DisplayOverlayTest(unittest.TestCase):
         for needle in ('temp 22', 'temp 31', 'temp 12', 'temp off', 'mark begin', 'volume 15'):
             self.assertIn(needle, steps)
         self.assertLess(steps.index('temp 31'), steps.index('temp 12'))
+        # The baseline must hold long enough to leave any starting zone,
+        # and the scenario expects to have seen "normal" before the test.
+        baseline = steps.index('temp 22')
+        self.assertEqual(steps[baseline + 1], 'twait 70000')
+        self.assertLess(baseline, steps.index('mark begin'))
+        self.assertIn('# expect min:PET_ENV zone=normal', scenario)
         for expect in ('min:PET_ENV_TIP kind=hot', 'min:PET_ENV_TIP kind=cold',
                        'min:name=tip_hot', 'min:name=tip_cold', 'min:ctx=hot_tip',
                        'min:ctx=cold_tip', 'none:PET_ENV_TIP_HELD', 'selftest_done'):

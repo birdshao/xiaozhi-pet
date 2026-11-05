@@ -14,9 +14,17 @@ namespace kid_app {
 //
 // The bands overlap (hysteresis) and a crossing must hold for kHoldMs of
 // readings, so sensor noise and a warm hand on the board never trigger a
-// tip. The reading is the room temperature: the SHTC3 sits next to a
-// charging board, so `offset_c10` (default 0: the V1-07 warm-up deviation
-// table is still to be measured) is subtracted before the bands apply.
+// tip. The SHTC3 sits next to the board and its charging circuit, so it
+// reads above the room (V1-07: 28.4 C on USB in a normal room, hot band
+// without compensation). The board sets `SetOffsetC10()` before each
+// reading and the bands apply to reading - offset. There is no measured
+// warm-up table yet (V1-07 "deviation to be measured"), so the defaults
+// are deliberately conservative guesses that err toward staying quiet:
+// kUsbHeatC10 on USB power, kBatteryHeatC10 on battery. Replace them with
+// the measured 0/10/30-minute table when it exists.
+//
+// The first reading after boot only sets the zone (no tip): a child who
+// just woke the pet does not get a tip about the room it was already in.
 //
 // A tip is due once on entering a zone and again every kRepeatMs while the
 // zone lasts; never in quiet hours (a tip that waited longer than
@@ -39,8 +47,12 @@ public:
     static constexpr uint32_t kRepeatMs = 2u * 60 * 60 * 1000;
     static constexpr uint32_t kPendingMs = 30u * 60 * 1000;
     static constexpr uint8_t kDailyLimit = 3;
+    static constexpr int kUsbHeatC10 = 30;      // board self-heating while on USB power
+    static constexpr int kBatteryHeatC10 = 10;  // on battery
 
     explicit EnvTipPolicy(int offset_c10 = 0) : offset_c10_(offset_c10) {}
+    // Board heating to subtract from the next readings (0.1 C).
+    void SetOffsetC10(int offset_c10) { offset_c10_ = offset_c10; }
 
     // One reading (ok=false: the sensor failed; the candidate restarts).
     // Returns the tip that became pending, if any.

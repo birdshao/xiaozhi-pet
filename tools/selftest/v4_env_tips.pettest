@@ -1,6 +1,10 @@
 PETSELFTEST1
 # V4-03 environment life tips. "temp" steps stand in for the SHTC3 (status
 # band + tip policy; the board publishes a reading every 10 s):
+# The sensor may boot in any zone (the real board reads hot on USB), so
+# the baseline holds 22 C for the whole 60 s first, so the log shows
+# "PET_ENV zone=normal" before "mark begin" (if the sensor started normal
+# there is simply no transition line there).
 # 1) 31 C held for 60 s: "so hot" bubble (a glass of water) and the pet's
 #    tip line (drink water); 2) back to 22 C: the room is normal again, no
 #    tip; 3) 12 C held for 60 s: "so cold" bubble (a coat) and its line.
@@ -38,9 +42,10 @@ wait 6000
 # Normalize restored pet state to "home, neutral".
 tap press 6000
 hold press 1500 6000
-# Baseline: a comfortable room (sets the zone silently).
+# Baseline: a comfortable room, held long enough (60 s, 15 s at 25 %) to
+# leave whatever zone the real sensor started in.
 temp 22
-twait 12000
+twait 70000
 wait 3000
 mark begin
 # 1) Hot: the reading has to hold for 60 s (15 s at 25 %).

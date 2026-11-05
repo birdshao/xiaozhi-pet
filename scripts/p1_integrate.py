@@ -1857,8 +1857,9 @@ BOARD_WORKER = r'''
     // step set) next to the status band each heartbeat; pet_input owns the
     // policy. A tip is the drink / coat thought bubble plus the reviewed
     // Personality line (sound pack clip, else the chime): UI only, nothing
-    // durable. Not in quiet hours (the parent plan). The reading is the raw
-    // sensor value (EnvTipPolicy has the board-heat offset, still 0).
+    // durable. Not in quiet hours (the parent plan). The status band shows
+    // the raw sensor value; the policy subtracts a conservative board-heat
+    // offset (EnvTipPolicy::kUsbHeatC10 / kBatteryHeatC10).
     kid_app::EnvTipPolicy env_tips_;           // pet_input only
     uint16_t env_seen_ = 0;                    // pet_input: last sample handled
     bool env_pet_ = false;                     // pet_input: Pet mode last loop
@@ -1884,6 +1885,11 @@ BOARD_WORKER = r'''
             const bool ok = ((sample >> 16) & 1u) != 0;
             const int temp_c10 = static_cast<int16_t>(sample & 0xFFFFu);
             const auto before = env_tips_.Zone();
+            // The board heats the sensor (more on USB power); a self-test
+            // "temp" step states the room temperature itself.
+            env_tips_.SetOffsetC10(env_inject_c10_.load() != kEnvNoInject ? 0
+                                   : battery_.External() ? kid_app::EnvTipPolicy::kUsbHeatC10
+                                                         : kid_app::EnvTipPolicy::kBatteryHeatC10);
             const auto pending = env_tips_.Observe(ok, temp_c10, now);
             if (env_tips_.Zone() != before)
                 ESP_LOGI(TAG, "PET_ENV zone=%s room_c10=%d src=%s",

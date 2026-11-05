@@ -74,6 +74,31 @@ void TestBoardHeatOffset() {
     assert(Feed(p, &now, 330, P::kHoldMs) == EnvTip::Hot);       // 29.0 room: hot
 }
 
+void TestBoardHeatDefaultsAndSetter() {
+    // V1-07 field reading: 28.4 C on USB in a normal room must not be "hot".
+    P p;
+    p.SetOffsetC10(P::kUsbHeatC10);
+    uint32_t now = 1000;
+    assert(p.Observe(true, 284, now) == EnvTip::None);
+    assert(p.Zone() == EnvZone::Normal && p.RoomC10() == 254);
+    assert(Feed(p, &now, 284, 3 * P::kHoldMs) == EnvTip::None && p.Zone() == EnvZone::Normal);
+    // The same room on battery (less self-heating): 25.0 reads 26.0.
+    p.SetOffsetC10(P::kBatteryHeatC10);
+    assert(Feed(p, &now, 260, P::kHoldMs) == EnvTip::None && p.RoomC10() == 250);
+    // A genuinely hot room still tips on USB: 31.5 reads as 28.5.
+    p.SetOffsetC10(P::kUsbHeatC10);
+    assert(Feed(p, &now, 315, P::kHoldMs) == EnvTip::Hot);
+    // Conservative both ways: defaults never exceed the observed heating.
+    assert(P::kBatteryHeatC10 < P::kUsbHeatC10 && P::kUsbHeatC10 <= 40);
+
+    // A first reading inside the hot band only sets the zone: no tip for a
+    // room the pet woke up in.
+    P q;
+    assert(q.Observe(true, 300, 1000) == EnvTip::None);
+    assert(q.Zone() == EnvZone::Hot && q.Pending() == EnvTip::None);
+    assert(q.Take(false, true, 5, 1000) == EnvTip::None);
+}
+
 void TestSensorFailureRestartsTheHold() {
     P p;
     uint32_t now = 1000;
@@ -200,6 +225,7 @@ int main() {
     TestHotNeedsToHold();
     TestColdAndHysteresis();
     TestBoardHeatOffset();
+    TestBoardHeatDefaultsAndSetter();
     TestSensorFailureRestartsTheHold();
     TestQuietHoursAndAllowed();
     TestRecoveredBeforeSpoken();
