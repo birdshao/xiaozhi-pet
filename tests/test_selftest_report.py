@@ -217,7 +217,7 @@ class SelfTestReportTests(unittest.TestCase):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
                  "morning", "voice", "battery", "temp", "book", "game", "timescale", "twait",
-                 "waitidle", "end"}
+                 "waitidle", "micgame", "envelope", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
         for path in sorted(root.glob("*.pettest")):
@@ -257,6 +257,70 @@ class SelfTestReportTests(unittest.TestCase):
         lines = [l for l in text.splitlines() if re.match(r"\s*#\s*expect\b", l)]
         self.assertGreaterEqual(len(lines), 10)
         self.assertEqual(len(expectations(text)), len(lines), "duplicate or unparsed expect")
+
+    def test_mic_games_scenario_injects_the_microphone(self):
+        # The hardware trial feeds synthetic loudness numbers; the real tap
+        # must stay off for the whole run and nothing may be recorded.
+        text = (Path(__file__).resolve().parents[1] / "tools/selftest/v4_mic_games.pettest"
+                ).read_text(encoding="ascii")
+        want = expectations(text)
+        self.assertEqual(want["none:src=audio"], "0")
+        self.assertEqual(want["commits"], "0")
+        steps = [line.split() for line in text.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        # Every game is started with a micgame step first, so the script owns the "microphone".
+        starts = [i for i, w in enumerate(steps) if w[0] == "micgame"]
+        self.assertEqual(len(starts), 3)
+        for i in starts:
+            self.assertEqual(steps[i + 1][:2], ["tap", "press"])
+        kinds = {w[1] for w in steps if w[0] == "envelope"}
+        self.assertEqual(kinds, {"clap", "speech", "noise", "blow"})
+        self.assertNotIn("timescale", {w[0] for w in steps})  # real-time games
+        self.assertGreater(plan(text)["monitor_s"], plan(text)["expect_s"])
+        self.assertIn("none:src=audio", evaluate(text, GOOD_LOG)["checks"])
+
+    def test_motion_games_scenario_plan_and_expectations(self):
+        # V4-07: gesture steps cost no time themselves; the waits around them do.
+        path = Path(__file__).resolve().parents[1] / "tools/selftest/v4_motion_games.pettest"
+        text = path.read_text(encoding="ascii")
+        steps = [line.split() for line in text.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        gestures = [w[1] for w in steps if w[0] == "gesture"]
+        self.assertEqual(gestures.count("tiltright"), 5)  # 3 + 2 rolls to holes 6 and 5
+        self.assertEqual(gestures.count("tiltleft"), 3)   # to hole 0
+        self.assertEqual(gestures.count("facedown"), 4)
+        self.assertEqual(gestures.count("faceup"), 4)
+        p = plan(text)
+        waits = sum(int(w[1]) for w in steps if w[0] == "wait")
+        self.assertGreater(p["script_s"] * 1000, waits)
+        self.assertFalse(p["power_off"])
+        self.assertEqual(p["until"], "PET_SELFTEST_DONE")
+        self.assertEqual(expectations(text)["commits"], "0")
+        good = ("PET_SELFTEST_MARK name=begin\n" + "PET_GAME_MENU highlight=0\n" * 3
+                + "PET_GAME_CHOICE game=ball\nPET_GAME_CHOICE game=peekaboo\n"
+                + "PET_GAME_START src=motion kind=ball\nPET_GAME_START src=motion kind=peekaboo\n"
+                + "PET_GAME_END mode=menu end=home\n"
+                + "PET_MOTION_STEP\n" * 5 +"PET_MOTION_HOLE\n" * 3
+                + "PET_MOTION_TOO_SOON\n" + "PET_MOTION_HIDE\n" * 4 + "PET_MOTION_FOUND\n" * 3
+                + "PET_GAME_END mode=ball end=completed growth=1\n"
+                + "PET_GAME_END mode=peekaboo end=completed growth=1\n"
+                + "PET_SELFTEST_DONE\nSUMMARY panic=0 wdt=0\n")
+        report_ = evaluate(text, good)
+        failed = [k for k in report_["failed"] if k not in ("max_partial_ms",)]
+        self.assertEqual(failed, [])
+        # The last roll of each round is a HOLE, not a STEP: 5 steps, not 8.
+        self.assertEqual(expectations(text)["min:PET_MOTION_STEP"], "5")
+        self.assertIn("min:PET_MOTION_STEP",
+                      evaluate(text, good.replace("PET_MOTION_STEP\n", "", 1))["failed"])
+        # Unparseable expect lines are errors, never silently ignored.
+        for bad in ("# expect min:PET_GAME_MENU highlight 3", "# expect commits"):
+            with self.assertRaises(ValueError):
+                expectations("PETSELFTEST1\n" + bad + "\nend\n")
+        # A missed reward or a refused start fails the scenario.
+        self.assertIn("min:PET_MOTION_FOUND",
+                      evaluate(text, good.replace("PET_MOTION_FOUND\n", "", 1))["failed"])
+        self.assertIn("none:PET_GAME_REFUSED",
+                      evaluate(text, good + "PET_GAME_REFUSED reason=motion_off\n")["failed"])
 
     def test_apply_timescale(self):
         text = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\ntwait 8000\nend\n"
@@ -312,6 +376,10 @@ class SelfTestReportTests(unittest.TestCase):
         self.assertFalse(plan(stays)["power_off"])
         sleeps = stays.replace("end\n", "morning\ntimescale 50\ntwait 60000\nend\n")
         self.assertEqual(plan(sleeps)["until"], "PET_SELFTEST_NONE reason=alarm_wake")
+        # V4-08: an injected sound takes as long as it plays; picking the game is free.
+        mic = plan("PETSELFTEST1\nmicgame clap\nenvelope clap 700\nenvelope blow 5000\nend\n")
+        self.assertEqual(mic["script_s"], 6)
+        self.assertFalse(mic["power_off"])
         critical = "PETSELFTEST1\nalarm 30\nbattery 5 0\nwait 1000\nend\n"
         self.assertTrue(plan(critical)["power_off"])
         self.assertFalse(plan(critical.replace("battery 5 0", "battery 5 1"))["power_off"])

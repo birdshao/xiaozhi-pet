@@ -70,6 +70,7 @@ void LogFileNameSupport() {
 bool WaveshareStorySd::Initialize(const char* book_id) {
     if (ready_) return true;
     if (!book_id) return false;
+    missing_ = mounted_ ? BookMissing::NoBook : BookMissing::NoCard;
     if (!mounted_) {
         esp_vfs_fat_sdmmc_mount_config_t config{};
         config.format_if_mount_failed = false;
@@ -109,14 +110,17 @@ bool WaveshareStorySd::Initialize(const char* book_id) {
         ESP_LOGW(kTag, "SD_BOOK_ABSENT path=%s stat=%d errno=%d size=%ld", path, found,
                  found == 0 ? 0 : errno, found == 0 ? static_cast<long>(info.st_size) : -1L);
         ESP_LOGW(kTag, "Approved story .kpb absent; using reader placeholder");
+        missing_ = BookMissing::NoBook;
         return false;
     }
     if (!reader_.Open(file_)) {
         file_.Close();
         ESP_LOGW(kTag, "Story package validation failed; no SD content displayed");
+        missing_ = BookMissing::BadBook;
         return false;
     }
     ready_ = true;
+    missing_ = BookMissing::None;
     ESP_LOGI(kTag, "Offline story ready; pages=%u",
              static_cast<unsigned>(reader_.PageCount()));
     return true;

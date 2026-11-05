@@ -89,12 +89,27 @@ BookView BookViewOf(const SceneModel& scene) {
     return view;
 }
 
-void BookReader::Open(const BookOutline* outline, uint32_t now_ms) {
+void BookReader::Open(const BookOutline* outline, uint32_t now_ms, BookMissing missing) {
     (void)now_ms;
     *this = BookReader{};
     outline_ = outline;
     phase_ = Phase::Page;
     view_ = BookView{};
+    if (!outline || outline->pages == 0) {
+        phase_ = Phase::Missing;
+        missing_ = missing == BookMissing::None ? BookMissing::NoBook : missing;
+        view_.page = 0;
+    }
+}
+
+const char* BookMissingName(BookMissing reason) {
+    switch (reason) {
+        case BookMissing::NoCard: return "no_card";
+        case BookMissing::NoBook: return "no_book";
+        case BookMissing::BadBook: return "bad_book";
+        case BookMissing::None: break;
+    }
+    return "none";
 }
 
 void BookReader::Close() { *this = BookReader{}; }
@@ -150,6 +165,12 @@ BookStep BookReader::OnInput(InputKind kind, uint32_t now_ms) {
     switch (phase_) {
         case Phase::Closed:
         case Phase::Reaction:  // the answer is being shown: wait for it
+            return step;
+        case Phase::Missing:  // nothing to read: a press also goes home
+            if (kind == InputKind::DialPress) {
+                step.home = true;
+                step.clip.kind = BookClipKind::Stop;
+            }
             return step;
         case Phase::End:
             if (kind == InputKind::DialUp && pages) return GoTo(pages);

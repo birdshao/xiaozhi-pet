@@ -106,6 +106,13 @@ int main() {
             assert(script.Steps()[i].op == SelfTestOp::Gesture);
             assert(script.Steps()[i].ms == static_cast<uint32_t>(want[i]));
         }
+        // V4-07: tilt names for the ball game.
+        assert(script.Parse("PETSELFTEST1\ngesture tiltleft\ngesture tiltright\n"
+                            "gesture level\nwait 10\nend\n"));
+        assert(script.Count() == 4 && script.TotalMs() == 10);
+        assert(script.Steps()[0].ms == static_cast<uint32_t>(kid_app::Gesture::TiltLeft));
+        assert(script.Steps()[1].ms == static_cast<uint32_t>(kid_app::Gesture::TiltRight));
+        assert(script.Steps()[2].ms == static_cast<uint32_t>(kid_app::Gesture::Level));
         assert(!script.Parse("PETSELFTEST1\ngesture\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture spin\nend\n"));
         assert(!script.Parse("PETSELFTEST1\ngesture pickup now\nend\n"));
@@ -287,6 +294,30 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nbook a b\nend\n"));                  // two ids
         assert(!script.Parse("PETSELFTEST1\nbook ../secret\nend\n"));            // no paths
         assert(!script.Parse("PETSELFTEST1\nbook book_id_far_too_long\nend\n")); // > 15
+    }
+
+    // V4-08: microphone games get synthetic loudness numbers (never audio) and a
+    // way to pick the game.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nmicgame clap\nenvelope blow 1500\nenvelope clap 300\n"
+                            "envelope speech 3000\nenvelope noise 10\nend\n"));
+        assert(script.Count() == 5);
+        assert(script.Steps()[0].op == SelfTestOp::MicGame &&
+               std::strcmp(script.Steps()[0].name, "clap") == 0);
+        assert(script.Steps()[1].op == SelfTestOp::Envelope && script.Steps()[1].ms == 1500 &&
+               std::strcmp(script.Steps()[1].name, "blow") == 0);
+        assert(script.Steps()[3].ms == 3000 && std::strcmp(script.Steps()[3].name, "speech") == 0);
+        assert(script.TotalMs() == 1500 + 300 + 3000 + 10);  // micgame is no delay
+        assert(!script.Parse("PETSELFTEST1\nenvelope shout 100\nend\n"));    // unknown sound
+        assert(!script.Parse("PETSELFTEST1\nenvelope silence 100\nend\n"));  // not a step
+        assert(!script.Parse("PETSELFTEST1\nenvelope blow\nend\n"));         // no duration
+        assert(!script.Parse("PETSELFTEST1\nenvelope blow 5\nend\n"));       // under one frame
+        assert(!script.Parse("PETSELFTEST1\nenvelope blow 600001\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nenvelope blow 100 1\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nmicgame\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nmicgame blow\nend\n"));  // candle or clap
+        assert(!script.Parse("PETSELFTEST1\nmicgame candle clap\nend\n"));
     }
 
     std::cout << "PASS: self-test script parser (ops, keys, bounds, sector, rejection)\n";

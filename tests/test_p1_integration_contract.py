@@ -1311,7 +1311,7 @@ class DisplayOverlayTest(unittest.TestCase):
                         handle.index('HandleGameInput(event.kind)'))
         self.assertLess(handle.index('OpenParentMenu();'), handle.index('HandleGameInput(event.kind)'))
         self.assertLess(handle.index('if (game_requested_)'), handle.index('pet_service_.PostLocal('))
-        start = self._body(patched, 'void StartGame()')
+        start = self._body(patched, 'void StartQuiz()')
         self.assertIn('kid_app::BuiltinGameRounds()', start)  # works without a TF card
         self.assertIn('game_seed_.exchange(0)', start)
         self.assertIn('pet_mailbox_.game_only.store(true)', start)
@@ -1357,12 +1357,87 @@ class DisplayOverlayTest(unittest.TestCase):
         run = self._body(patched, 'void MaybeRunSelfTest()')
         self.assertIn('case kid_app::SelfTestOp::Game:', run)
         self.assertIn('game_seed_.store(step.ms)', run)
+        # V4-07: the rail item opens the menu, not the quiz.
+        self.assertIn('OpenGameMenu(0);', self._body(patched, 'void StartGame()'))
         scenario = (ROOT / 'tools' / 'selftest' / 'v4_mini_game.pettest').read_text(
             encoding='ascii')
         self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
         self.assertIn('\ngame 4242\n', scenario)
         self.assertIn('# expect commits 0', scenario)
         self.assertIn('# expect min:end=completed 1', scenario)
+
+    def test_v4_motion_games_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/motion_game.h"', patched)
+        # The menu owns the screen first, then the chosen game; pet_input owns all of it.
+        menu = self._body(patched, 'void OpenGameMenu(uint8_t start)')
+        self.assertIn('game_mode_ = GameMode::Menu;', menu)
+        self.assertIn('pet_mailbox_.game_only.store(true)', menu)
+        self.assertNotIn('pet_service_', menu)
+        choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')
+        self.assertIn('StartQuiz();', choice)
+        self.assertIn('StartMotion(', choice)
+        # Parents switching motion off keeps the child in the menu.
+        self.assertIn('!motion_enabled_.load()', choice)
+        self.assertIn('PET_GAME_REFUSED reason=motion_off', choice)
+        start = self._body(patched, 'void StartMotion(kid_app::MotionKind kind)')
+        self.assertIn('game_seed_.exchange(0)', start)  # the self-test "game" step
+        self.assertIn('motion_active_.store(true)', start)
+        self.assertIn('motion_tilt_.store(kind == kid_app::MotionKind::Ball)', start)
+        self.assertNotIn('pet_service_', start)
+        self.assertIn('src=motion', start)
+        # Gestures reach the game through one atomic word, applied on pet_input
+        # in UpdateGame; HandleGesture only forwards the five game gestures.
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertLess(gesture.index('motion_active_.load()'),
+                        gesture.index('face_down_.store(true)'))
+        self.assertIn('motion_gesture_.store(static_cast<uint8_t>(gesture))', gesture)
+        for name in ('FaceDown', 'FaceUp', 'TiltLeft', 'TiltRight', 'Level'):
+            self.assertIn(f'kid_app::Gesture::{name}', gesture[:gesture.index('face_down_.store')])
+        self.assertNotIn('HardShake', gesture[:gesture.index('face_down_.store')])
+        update = self._body(patched, 'void UpdateGame(DeviceState state)')
+        self.assertIn('motion_gesture_.exchange(0)', update)
+        self.assertIn('motion_.OnGesture(', update)
+        self.assertIn('motion_.Tick(NowMs())', update)
+        self.assertIn('game_menu_.Tick(NowMs())', update)
+        self.assertLess(update.index('EndGame("voice")'), update.index('motion_.OnGesture('))
+        # Tilt is only derived from the IMU windows while the ball game runs
+        # and motion is switched on; otherwise the tracker is reset.
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertIn('motion_tilt_.load() && motion_enabled_.load()', diag)
+        self.assertIn('tilt_tracker_.OnWindow(s)', diag)
+        self.assertIn('tilt_tracker_.Reset();', diag)
+        self.assertLess(diag.index('gesture_detector_.OnWindow(s, now)'),
+                        diag.index('tilt_tracker_.OnWindow(s)'))
+        # Every owner of the screen ends it the same way and clears the flags.
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
+        self.assertIn('motion_active_.store(false)', end)
+        self.assertIn('motion_tilt_.store(false)', end)
+        self.assertIn('game_mode_ = GameMode::None;', end)
+        self.assertIn('posted = RecordMemory(memory);', end)
+        self.assertNotIn('pet_service_', end)
+        # Nothing about motion games is stored or uploaded.
+        for body in (menu, choice, start, update, end):
+            self.assertNotIn('nvs_', body)
+            self.assertNotIn('Upload', body)
+        # The dial in a motion game or the menu goes through HandleGameInput.
+        dial = self._body(patched, 'void HandleGameInput(kid_app::InputKind kind)')
+        self.assertIn('HandleQuizInput(kind)', dial)
+        self.assertIn('game_menu_.Input(input, NowMs())', dial)
+        self.assertIn('motion_.Input(input, NowMs())', dial)
+        # Self-test gestures use the same HandleGesture() path as the IMU.
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        self.assertIn('HandleGesture(static_cast<kid_app::Gesture>(step.ms), "selftest")', run)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v4_motion_games.pettest').read_text(
+            encoding='ascii')
+        self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
+        self.assertIn('\ngame 4242\n', scenario)
+        for name in ('tiltleft', 'tiltright', 'facedown', 'faceup', 'hard'):
+            self.assertIn(f'\ngesture {name}\n', scenario)
+        self.assertIn('# expect min:PET_MOTION_HOLE 3', scenario)
+        self.assertIn('# expect min:PET_MOTION_FOUND 3', scenario)
+        self.assertIn('# expect commits 0', scenario)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,15 @@ struct SceneModel {
     GameView game{};
 };
 
+// Why the reader has no book to show: no card mounted, the book file is not
+// on the card, or it is there but does not validate. A Reader scene with
+// book_page bits 0-7 = 0 and bits 8-15 = the reason draws the "no book"
+// picture (icons only: card + slot arrow, or an empty book) instead of a
+// page; BadBook looks like NoBook. Pages start at 1, so nothing collides.
+enum class BookMissing : uint8_t { None, NoCard, NoBook, BadBook };
+SceneModel BookMissingScene(BookMissing reason);
+BookMissing BookMissingOf(const SceneModel& scene);
+
 // One-word scene snapshot shared between board tasks (atomic<uint32_t>):
 // bits 0-3 kind, 4-7 home selection, 8-11 emotion, 12-15 pose,
 // 16-31 book page. The status band is not packed (UnpackScene leaves it
