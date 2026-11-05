@@ -1,0 +1,84 @@
+PETSELFTEST1
+# V4-08 microphone games: clap the rhythm back, blow out the candles. The
+# script is the "microphone": synthetic loudness numbers (never audio) are
+# fed to the real classifier, and the real microphone tap stays off for the
+# whole run (expect none:src=audio). Needs no TF pack; run outside the quiet
+# hours (default 20:30-07:00) and above the low-battery level, or the Game
+# item only says hi (PET_GAME_REFUSED).
+# Game 1 (clap): the demo plays three beats (700/700 ms), then "your turn"
+#   and 0.8 s later the board listens; claps 700/700 right, then round 2
+#   (500/1000) right: completed, growth.
+# Game 2 (candles): speech, a clap and room noise do nothing; a 5 s blow
+#   puts out the three candles (0.7 s steady blow each): completed, growth.
+# Game 3 (candles): the same distractors, then a long press goes home: no
+#   candle, no growth.
+# Counted from "mark begin" (see tools/selftest_report.py). Games are UI
+# only: no pet commits.
+# expect commits 0
+# expect min:PET_GAME_START 3
+# expect min:src=mic 3
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_MIC_GAME_START_FAILED 0
+# expect none:src=audio 0
+# expect min:src=script 4
+# expect min:PET_MIC_TAP 8
+# expect min:feedback=right 2
+# expect min:kind=clap 6
+# expect min:kind=blow 1
+# expect min:PET_MIC_CANDLE 3
+# expect min:end=completed 2
+# expect min:end=home 1
+# expect min:correct=2 1
+# expect min:growth=1 2
+# expect min:growth=0 1
+# expect min:PET_GAME_QUEUED 10
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+# Start as soon as XiaoZhi is idle, not after a fixed 20 s.
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Home rail: left end (Chat), then two to the right = Game.
+tap up 800
+tap up 800
+tap up 800
+tap up 800
+tap down 800
+tap down 2000
+# Game 1: clap the rhythm back (the first clap comes ~5.6 s after the
+# press, the board listens from ~4.6 s).
+micgame clap
+tap press 5500
+envelope clap 700
+envelope clap 700
+envelope clap 700
+# Round 2 starts 2.5 s after the third clap and listens from 4.7 s on.
+wait 6900
+envelope clap 500
+envelope clap 1000
+envelope clap 300
+# 2.5 s of happy TuanTuan, then the game says goodbye and goes home.
+wait 8000
+# Game 2: candles. Distractors first (guarded start tone, then listening).
+micgame candle
+tap press 5000
+envelope speech 3000
+envelope clap 400
+envelope noise 2000
+envelope blow 5000
+wait 8000
+# Game 3: the same distractors, nobody blows: a long press goes home.
+micgame candle
+tap press 5000
+envelope speech 3000
+envelope clap 400
+envelope noise 2000
+hold press 1500 8000
+end
