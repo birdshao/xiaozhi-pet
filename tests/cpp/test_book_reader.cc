@@ -143,7 +143,7 @@ void TestWalk(const BookOutline& o) {
           s.memory.question == 0 && s.memory.option == 1);
     CHECK(Clip(s, BookClipKind::Option, 1, 0, 1) && r.View() == View(1, 1, 1, true));
     // While the answer is shown the dial does nothing (and never writes).
-    for (InputKind k : {InputKind::DialUp, InputKind::DialDown, InputKind::DialPress}) {
+    for (InputKind k : {InputKind::DialUp, InputKind::DialDown}) {  // press goes home (TestBookMissing)
         s = r.OnInput(k, 4100);
         CHECK(!s.publish && NoMemory(s) && s.answer == BookAnswer::None);
     }
@@ -227,7 +227,7 @@ void TestNoBookAndKpb1(const BookOutline& kpb1) {
     BookOutline none{};
     BookReader r;
     r.Open(&none, 0);
-    for (InputKind k : {InputKind::DialUp, InputKind::DialDown, InputKind::DialPress}) {
+    for (InputKind k : {InputKind::DialUp, InputKind::DialDown}) {  // press goes home (TestBookMissing)
         const BookStep s = r.OnInput(k, 10);
         CHECK(!s.publish && s.clip.kind == BookClipKind::None && NoMemory(s));
     }
@@ -238,6 +238,61 @@ void TestNoBookAndKpb1(const BookOutline& kpb1) {
     CHECK(Clip(r.OnShown(View(1), 0), BookClipKind::Page, 1));
     const BookStep s = r.OnInput(InputKind::DialDown, 100);
     CHECK(r.AtEnd() && NoMemory(s));  // KPB1 has no numeric id: nothing to remember
+}
+
+void TestBookMissing() {
+    BookOutline none{};
+    for (BookMissing why : {BookMissing::NoCard, BookMissing::NoBook, BookMissing::BadBook}) {
+        BookReader r;
+        r.Open(&none, 0, why);
+        CHECK(r.Active() && r.Missing() == why && !r.AtEnd() && !r.Asking());
+        const SceneModel scene = r.Scene();
+        CHECK(scene.kind == SceneKind::Reader && BookMissingOf(scene) == why);
+        CHECK(BookMissingOf(UnpackScene(PackScene(scene))) == why);
+        // The dial does nothing, the reader never speaks or asks to remember.
+        for (InputKind k : {InputKind::DialUp, InputKind::DialDown, InputKind::Talk}) {
+            const BookStep s = r.OnInput(k, 10);
+            CHECK(!s.publish && !s.home && s.clip.kind == BookClipKind::None && NoMemory(s));
+        }
+        CHECK(r.OnShown(BookViewOf(scene), 20).clip.kind == BookClipKind::None);
+        CHECK(r.Tick(100000).clip.kind == BookClipKind::None && !r.Tick(100000).publish);
+        // Press and long press both go home, quietly, without memory.
+        for (InputKind k : {InputKind::DialPress, InputKind::DialLong}) {
+            BookReader again;
+            again.Open(&none, 0, why);
+            const BookStep s = again.OnInput(k, 30);
+            CHECK(s.home && s.clip.kind == BookClipKind::Stop && NoMemory(s) && !s.publish);
+        }
+    }
+    // No reason given (or a book that is simply absent) reads as "no book".
+    BookReader plain;
+    plain.Open(&none, 0);
+    CHECK(plain.Missing() == BookMissing::NoBook);
+    CHECK(std::string(BookMissingName(BookMissing::NoCard)) == "no_card");
+    CHECK(std::string(BookMissingName(BookMissing::NoBook)) == "no_book");
+
+    // Scene codec: a real page (number >= 1) is never mistaken for it.
+    CHECK(BookMissingOf(BookScene(View(1), false)) == BookMissing::None);
+    CHECK(BookMissingOf(BookScene(View(3, 1, 1), true)) == BookMissing::None);
+    CHECK(BookMissingOf(SceneModel{}) == BookMissing::None);  // home
+
+    // The three pictures differ from each other and from the placeholder,
+    // and are not blank.
+    auto render = [](const SceneModel& m) {
+        auto f = std::make_unique<MonoFrame>();
+        SceneComposer::Render(m, *f);
+        return f;
+    };
+    auto card = render(BookMissingScene(BookMissing::NoCard));
+    auto book = render(BookMissingScene(BookMissing::NoBook));
+    auto bad = render(BookMissingScene(BookMissing::BadBook));
+    auto reader = render(BookScene(View(1), false));
+    CHECK(card->Data() != book->Data() && book->Data() == bad->Data());
+    CHECK(card->Data() != reader->Data() && book->Data() != reader->Data());
+    int black = 0;
+    for (int y = 0; y < MonoFrame::kHeight; ++y)
+        for (int x = 0; x < MonoFrame::kWidth; ++x) black += card->IsBlack(x, y) ? 1 : 0;
+    CHECK(black > 5000 && black < MonoFrame::kWidth * MonoFrame::kHeight / 2);
 }
 
 void TestMemoryGuard(const BookOutline& o) {
@@ -480,6 +535,7 @@ int main(int argc, char** argv) {
     TestWalk(book->outline);
     TestSkipAndRevisit(book->outline);
     TestNoBookAndKpb1(kpb1->outline);
+    TestBookMissing();
     TestMemoryGuard(book->outline);
     TestOverlayFrames(*book);
     TestGreyPlanes(*book);

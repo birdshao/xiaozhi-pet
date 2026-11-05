@@ -397,7 +397,10 @@ BOARD_WORKER = r'''
         // next book frame starts with a full page again.
         if (scene.kind != kid_app::SceneKind::Reader || planner_reset_.load())
             book_panel_valid_ = false;
-        if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready()) {
+        // No book (no card / no such book): the "no book" picture is a
+        // plain scene (ShowPetScene), never a card read.
+        if (scene.kind == kid_app::SceneKind::Reader && story_sd_.Ready() &&
+            kid_app::BookMissingOf(scene) == kid_app::BookMissing::None) {
             // V4-05: grey / 1-bit page and the question cards from the card.
             // Only speak after EPD shows a validated book page: book_shown_
             // tells the reader on pet_input (BookReader::OnShown), which
@@ -666,9 +669,12 @@ BOARD_WORKER = r'''
             sound_sd_.store(story_sd_.Mounted() ? kSoundSdMounted : kSoundSdAbsent);
             // V4-05: what the dial needs, read once here (pet_input never
             // reads the card); no book = an empty outline (placeholder).
+            book_missing_ = story_sd_.Missing();
             if (story_sd_.Ready() &&
-                !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_))
+                !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_)) {
                 ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
+                book_missing_ = kid_app::BookMissing::BadBook;
+            }
             book_outline_ready_.store(true);
             // Restored in Story without a readable book (no card, empty or
             // broken pack): go home instead of opening an empty reader. If
@@ -1111,6 +1117,7 @@ BOARD_WORKER = r'''
     static constexpr bool kBookGreyEnabled = true;
     char story_book_[16] = "forest_friends";  // self-test "book" may change it
     kid_app::BookOutline book_outline_;        // written once before ready
+    kid_app::BookMissing book_missing_ = kid_app::BookMissing::NoCard;  // with it
     std::atomic<bool> book_outline_ready_{false};
     kid_app::BookReader book_;                 // pet_input task only
     std::atomic<uint32_t> book_scene_{0};      // packed; scene_state_mutex_
@@ -1125,7 +1132,12 @@ BOARD_WORKER = r'''
     // Caller holds scene_state_mutex_.
     kid_app::SceneModel BookSceneLocked() const {
         const uint32_t packed = book_scene_.load();
-        return packed ? UnpackPetScene(packed) : kid_app::BookScene({}, false);
+        if (packed) return UnpackPetScene(packed);
+        // Already known to be empty: the first reader frame is the "no
+        // book" picture, not the placeholder followed by a second refresh.
+        if (book_outline_ready_.load() && book_outline_.pages == 0)
+            return kid_app::BookMissingScene(book_missing_);
+        return kid_app::BookScene({}, false);
     }
 
     void UpdateBook() {
@@ -1145,13 +1157,18 @@ BOARD_WORKER = r'''
             return;
         if (!book_.Active()) {
             if (!book_outline_ready_.load()) return;
-            book_.Open(&book_outline_, now);
+            book_.Open(&book_outline_, now, book_missing_);
             book_shown_.store(0);
             ESP_LOGI(TAG, "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d",
                      story_book_, static_cast<unsigned>(book_outline_.pages),
                      static_cast<unsigned>(book_outline_.GreyPages()),
                      static_cast<unsigned>(book_outline_.QuestionTotal()),
                      book_outline_.kpb2 ? 1 : 0);
+            // No book: the picture says why (card / book), a press or long
+            // press goes home; nothing is read aloud or remembered.
+            if (book_.Missing() != kid_app::BookMissing::None)
+                ESP_LOGW(TAG, "PET_BOOK_MISSING reason=%s book=%s",
+                         kid_app::BookMissingName(book_.Missing()), story_book_);
             kid_app::BookStep open{};
             open.publish = true;
             ApplyBookStep(open, "open");

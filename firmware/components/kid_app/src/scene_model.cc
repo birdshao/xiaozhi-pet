@@ -25,6 +25,21 @@ SceneModel UnpackScene(uint32_t bits) {
     return scene;
 }
 
+SceneModel BookMissingScene(BookMissing reason) {
+    SceneModel scene{};
+    scene.kind = SceneKind::Reader;
+    scene.emotion = Emotion::Curious;
+    scene.book_page = static_cast<uint16_t>(static_cast<uint16_t>(reason) << 8);
+    return scene;
+}
+
+BookMissing BookMissingOf(const SceneModel& scene) {
+    if (scene.kind != SceneKind::Reader || (scene.book_page & 0xFF) != 0) return BookMissing::None;
+    const uint16_t reason = static_cast<uint16_t>(scene.book_page >> 8);
+    return reason <= static_cast<uint16_t>(BookMissing::BadBook) ? static_cast<BookMissing>(reason)
+                                                                 : BookMissing::None;
+}
+
 void MonoFrame::Clear() { pixels_.fill(0xFF); }
 
 void MonoFrame::SetPixel(int x, int y, bool black) {
@@ -1264,6 +1279,45 @@ void ReaderScene(MonoFrame& f, const SceneModel& model) {
     }
 }
 
+// No book to read (no fonts: the child reads the icons). TuanTuan wonders
+// on the left; on the right a memory card with an arrow into the slot (no
+// card) or an open book with blank pages (no book); at the bottom the home
+// card that a press / long press goes back to.
+void BookMissingPicture(MonoFrame& f, BookMissing reason) {
+    CatHead(f, 190, 200, 82, Emotion::Curious);
+    QuestionMark(f, 318, 82, 26, 10);
+    const int cx = 560;
+    if (reason == BookMissing::NoCard) {
+        // Card with a clipped corner and contacts, an arrow down into a slot.
+        const int x = 490, y = 40, w = 140, h = 180, cut = 40;
+        FillRoundRect(f, x, y, w, h, 14);
+        FillRoundRect(f, x + 10, y + 10, w - 20, h - 20, 8, false);
+        FillTriangle(f, x + w - cut - 1, y - 1, x + w + 1, y - 1, x + w + 1, y + cut + 1, false);
+        Stroke(f, x + w - cut, y + 2, x + w - 2, y + cut, 10);
+        for (int i = 0; i < 4; ++i) FillRoundRect(f, x + 24 + i * 22, y + 26, 12, 40, 4);
+        Stroke(f, cx, y + h + 14, cx, 300, 16);
+        FillTriangle(f, cx - 40, 290, cx + 40, 290, cx, 336);
+        FillRoundRect(f, cx - 110, 344, 220, 16, 8);
+    } else {
+        // Open book, both pages left blank.
+        for (int side : {-1, 1}) {
+            Stroke(f, cx, 96, cx + side * 90, 66, 10);
+            Stroke(f, cx + side * 90, 66, cx + side * 170, 84, 10);
+            Stroke(f, cx + side * 170, 84, cx + side * 170, 290, 10);
+            Stroke(f, cx + side * 170, 290, cx + side * 90, 272, 10);
+            Stroke(f, cx + side * 90, 272, cx, 302, 10);
+        }
+        Stroke(f, cx, 96, cx, 302, 10);
+        for (int i = 0; i < 3; ++i) Disk(f, cx - 40 + i * 40, 336, 7);  // "nothing here"
+    }
+    // Home: the inverted rail card with the cat's house.
+    const int hx = 400, hy = 420;
+    FillRoundRect(f, hx - 72, hy - 46, 144, 92, 20);
+    FillTriangle(f, hx - 40, hy - 4, hx + 40, hy - 4, hx, hy - 36, false);
+    FillRoundRect(f, hx - 28, hy - 6, 56, 38, 4, false);
+    FillRoundRect(f, hx - 9, hy + 10, 18, 22, 3);
+}
+
 // Fixed picture kept on the unpowered ePaper: night sky, moon, and TuanTuan
 // curled up asleep on a cushion.
 void SleepScene(MonoFrame& f, ScenePose pose) {
@@ -1325,7 +1379,9 @@ void SleepScene(MonoFrame& f, ScenePose pose) {
 
 void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
     output.Clear();
-    if (model.kind == SceneKind::Reader) {
+    if (BookMissingOf(model) != BookMissing::None) {
+        BookMissingPicture(output, BookMissingOf(model));
+    } else if (model.kind == SceneKind::Reader) {
         ReaderScene(output, model);
     } else if (model.kind == SceneKind::Sleep) {
         SleepScene(output, model.pose);

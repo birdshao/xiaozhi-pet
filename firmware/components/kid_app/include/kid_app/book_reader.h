@@ -106,13 +106,19 @@ struct BookStep {
 // "chosen" ring: the child's pick, or the right one for a quiz, never a
 // "wrong" sound), then the next question or the plain page comes back.
 // Turning the page skips the questions; coming back asks them again. Past
-// the last page is the end picture (press starts again, up goes back).
+// Past the last page is the end picture (press starts again, up goes back).
+// Without a book (empty outline) it shows the "no book" picture of
+// `missing`: press or long press goes home, the dial does nothing, and it
+// never speaks or asks for a memory.
 class BookReader {
 public:
     static constexpr uint32_t kQuestionDelayMs = 1500;  // after narration
     static constexpr uint32_t kReactionMs = 3000;
 
-    void Open(const BookOutline* outline, uint32_t now_ms);
+    // missing: why there is no book when the outline is empty (None counts
+    // as NoBook); ignored for a readable book.
+    void Open(const BookOutline* outline, uint32_t now_ms,
+              BookMissing missing = BookMissing::None);
     void Close();
     bool Active() const { return phase_ != Phase::Closed; }
 
@@ -124,10 +130,14 @@ public:
     const BookView& View() const { return view_; }
     bool AtEnd() const { return phase_ == Phase::End; }
     bool Asking() const { return phase_ == Phase::Question; }
-    SceneModel Scene() const { return BookScene(view_, AtEnd()); }
+    // None while a readable book is open (or closed).
+    BookMissing Missing() const { return missing_; }
+    SceneModel Scene() const {
+        return phase_ == Phase::Missing ? BookMissingScene(missing_) : BookScene(view_, AtEnd());
+    }
 
 private:
-    enum class Phase : uint8_t { Closed, Page, Question, Reaction, End };
+    enum class Phase : uint8_t { Closed, Page, Question, Reaction, End, Missing };
 
     const BookPageInfo* PageInfo() const;
     BookStep GoTo(uint16_t page);
@@ -145,7 +155,11 @@ private:
     uint32_t question_at_ms_ = 0;
     uint32_t reaction_until_ms_ = 0;
     bool finished_ = false;       // BookFinished asked for once per Open
+    BookMissing missing_ = BookMissing::None;
 };
+
+// Log name of a missing-book reason: none, no_card, no_book, bad_book.
+const char* BookMissingName(BookMissing reason);
 
 // ADR-012 / V5-03: turns a reader memory request into the ledger event. A
 // like goes ONLY through ChoiceMemoryEvent (source DialChoice), and only for

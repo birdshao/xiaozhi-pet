@@ -17,6 +17,22 @@
 - 出题前翻页就跳过本页的题；再翻回来是新的一次阅读，题目会再出。
 - 不支持语音回答（`voice_answer` 位现在被忽略）；BOOT 键在阅读器里的旧行为（单击 = 持久化 NextPage）没有改动，但它不再改变画面上的页。
 
+### 没有书的时候
+
+TF 卡没插、卡里没有这本书、或书文件打不开时，进入故事不再是一本翻不动的 0 页书，而是一屏只靠图标的提示（不识字也看得懂）：
+
+| 原因 | 画面 | 日志 |
+|---|---|---|
+| 没插卡（`no_card`） | 团团头上一个“？”，右边一张存储卡 + 向下箭头指向卡槽，下方一个“小房子”卡片 | `PET_BOOK_MISSING reason=no_card` |
+| 卡里没有书（`no_book`） | 同样的团团，右边一本翻开的空白书 + 三个点，下方“小房子”卡片 | `PET_BOOK_MISSING reason=no_book` |
+| 书文件坏了（`bad_book`，格式校验失败） | 与 `no_book` 同一幅画 | `PET_BOOK_MISSING reason=bad_book` |
+
+- 拨轮 **按下** 或 **长按** 都回首页（`PET_BOOK_HOME`，走与回家相同的持久化 `StopStory`）；上/下转动什么也不做。
+- 不朗读、不出题，不产生任何阅读记忆/喜好（`BookStep.memory` 恒为空，也没有 `BookFinished`）。可选的语音短句本批未加，需要时由 `PlayBookClip` 同路径加一个提示音。
+- 逻辑在 `kid_app`：`BookMissing`（`scene_model.h`，编码在 Reader 场景的 `book_page`：低 8 位 = 0，高 8 位 = 原因，页码从 1 开始所以不会冲突）、`BookReader::Open(outline, now, missing)` 的 `Phase::Missing`、`SceneComposer` 的 `BookMissingPicture`。画面是普通场景（`ShowPetScene` 全刷），不读卡。
+- 原因来自 `WaveshareStorySd::Missing()`：挂载失败 = `NoCard`；挂载成功但 `SD_BOOK_ABSENT` = `NoBook`；包校验失败 = `BadBook`（板端另在摘要生成失败时置 `BadBook`）。该文件仍不出现 `fopen(`。
+- 板端启动时若上次停在故事里而没有书，原有的 `PET_STORY_RESTORE_HOME reason=no_book` 直接回首页，不变。
+
 ## 2. 结构
 
 ```
@@ -75,3 +91,4 @@ pet_input 任务                       kid_epd 任务
 2. 把 `build/reader-test/books/reader_test.kpb` 复制到 TF 卡 `/books/reader_test.kpb`，**保留** `/books/forest_friends.kpb`。设备平时仍读 `forest_friends`；只有自测脚本里的 `book reader_test`（必须在第一个 `pet` 之前）才改读测试书。
 3. 场景 `tools/selftest/v4_book_reader.pettest`（约 2.5 分钟）：打开书 → 第 1 页灰度 → 出题 → 移动高亮 → 选蓝色（喜好 2:3）→ 第 2 题答错 → 恢复本页 → 再读一遍 → 第 2、3 页来回 → 读完 → 回到第 3 页 → 回家。重点看：灰度是否正确（4 条横带由黑到白）、卡片局刷是否干净、灰度残影、`PET_DIAG_EPD` 的全刷耗时（含读卡）。
 4. `tools/selftest/v2_home_rail.pettest` 的 `commits` 期望从 4 改为 3（阅读器翻页不再提交）。
+5. 无书场景 `tools/selftest/v4_book_missing.pettest`（约 1.5 分钟，监视 ≈ 100 s）：`book no_such_book`（卡上不存在的 id，必须在第一个 `pet` 之前）→ 打开故事看到“没有书”画面 → 拨轮转动无反应 → 按下回家 → 再进一次 → 长按回家。期望 `PET_BOOK_MISSING` ×2、`reason=no_book`、`PET_BOOK_HOME` ×2、无 `PET_BOOK_AUDIO`/`PET_BOOK_MEMORY`、提交数 4。需要卡已插好；没卡时原因是 `no_card`，改期望即可。`v4_book_reader` 的期望不变。

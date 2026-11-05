@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/scene_model.h"
 #include "kid_app/story_pack_file_port.h"
 #include "kid_app/story_pack_reader.h"
 
@@ -23,10 +24,15 @@ public:
     // The card itself is mounted at /sdcard (also when no book is on it).
     bool Mounted() const { return mounted_; }
     StoryPackReader* Reader() { return ready_ ? &reader_ : nullptr; }
+    // Why Initialize() did not produce a book: NoCard (mount failed),
+    // NoBook (card mounted, no such .kpb) or BadBook (file does not
+    // validate). None once Ready().
+    BookMissing Missing() const { return missing_; }
 
 private:
     bool mounted_ = false;
     bool ready_ = false;
+    BookMissing missing_ = BookMissing::NoCard;
     StoryPackFilePort file_{};
     StoryPackReader reader_{};
 };
