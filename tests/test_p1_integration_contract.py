@@ -1180,6 +1180,48 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertTrue(scenario.startswith('PETSELFTEST1\n'))
         self.assertIn('# expect ledger_restored 1', scenario)
         self.assertLess(scenario.index('\nalarm '), scenario.index('\ntap pwr'))
+        self.assertIn('# expect none:PET_LEDGER_PERSIST_FAILED 0', scenario)
+        self.assertIn('# expect min:released=1 1', scenario)
+
+    def test_reader_never_traps_the_child_when_ledger_writes_fail(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/ledger_persist_policy.h"', patched)
+        # A dropped StopStory (persist failed) still shows the home rail.
+        committed = self._body(patched, 'static void PetCommitted(')
+        self.assertLess(committed.index('kid_app::StoryEscapeNeeded(event.action, outcome)'),
+                        committed.index('outcome != kid_app::CommitResult::Committed) return;'))
+        self.assertIn('self->EscapeStoryHome("persist")', committed)
+        escape = self._body(patched, 'void EscapeStoryHome(')
+        self.assertIn('SceneStateLock lock(scene_state_mutex_)', escape)
+        self.assertIn('PetScenePresenter::Present(kid_app::PetSnapshot{})', escape)
+        self.assertLess(escape.index('last_pet_scene_.store('),
+                        escape.index('pet_event_mode_.store(kid_app::PetMode::Idle)'))
+        self.assertIn('PET_STORY_ESCAPE reason=%s', escape)
+        self.assertNotIn('PostLocal', escape)  # UI only, nothing durable
+        # "Home" that cannot even be queued escapes too.
+        step = self._body(patched, 'void ApplyBookStep(')
+        home = step[step.index('PET_BOOK_HOME'):]
+        self.assertLess(home.index('PostLocal(kid_app::PetAction::StopStory)'),
+                        home.index('EscapeStoryHome("rejected")'))
+        # Restored Story without a readable book goes home at start.
+        init = self._body(patched, 'bool InitializePetRuntime()')
+        restore = init[init.index('book_outline_ready_.store(true);'):]
+        self.assertIn('kid_app::RestoredStoryNeedsHome(pet_event_mode_.load(),', restore)
+        self.assertIn('story_sd_.Ready() && book_outline_.pages > 0', restore)
+        self.assertLess(restore.index('PET_STORY_RESTORE_HOME reason=no_book'),
+                        restore.index('PostLocal(kid_app::PetAction::StopStory)'))
+        self.assertIn('EscapeStoryHome("no_book")', restore)
+        # The ledger worker logs the real NVS error and partition usage.
+        service = (ROOT / 'firmware/components/kid_app/src/freertos_atomic_pet_service.cc'
+                   ).read_text(encoding='utf-8')
+        self.assertIn('PET_LEDGER_PERSIST_FAILED err=%s kind=%u attempt=%u dropped=%d', service)
+        self.assertIn('NvsErrorName(store_.LastError())', service)
+        self.assertIn('PET_NVS_STATS when=%s used=%u free=%u total=%u', service)
+        self.assertIn('LogNvsUsage("boot")', service)
+        self.assertIn('LogNvsUsage("persist_failed")', service)
+        self.assertNotIn('persist blocked', service)
+        self.assertIn('Run(store_,old_pet,old_parent,bridge,marker,&release)', service)
+
     def test_v4_mini_game_wiring(self):
         patched = self._board()
         self.assertIn('#include "kid_app/mini_game.h"', patched)

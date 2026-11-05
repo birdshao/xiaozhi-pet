@@ -507,6 +507,10 @@ BOARD_WORKER = r'''
                               const kid_app::PetEffects& effects,
                               const kid_app::PetSnapshot& snapshot, void* context) {
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        // "Home" from the reader could not be saved (dropped after retries):
+        // still show home, or the dial would stay in a dead reader.
+        if (self && kid_app::StoryEscapeNeeded(event.action, outcome))
+            self->EscapeStoryHome("persist");
         if (!self || outcome != kid_app::CommitResult::Committed) return;
         // Suspend the old page immediately when a new page/scene is
         // committed. The new page starts only after the slow EPD refresh.
@@ -553,8 +557,9 @@ BOARD_WORKER = r'''
     // Started once, by pet_boot_diag (the parent settings are needed before
     // Pet mode: rhythm, alarm) or by the first Pet-mode toggle, whichever
     // comes first. MigrateLegacyLocal: the one-time verified migration from
-    // the old kid_pet checkpoint and kid_parent/settings (both only read,
-    // kept as rollback copy), then no outbox (no server on this board yet).
+    // the old kid_pet checkpoint and kid_parent/settings (released once the
+    // ledger is verified: 16 KiB NVS has no room for both), then no outbox
+    // (no server on this board yet).
     // A refused start erases nothing; the next toggle tries again.
     std::mutex pet_ledger_mutex_;
     bool pet_ledger_ready_ = false;                // under pet_ledger_mutex_
@@ -595,6 +600,25 @@ BOARD_WORKER = r'''
         }
         if (pet_ledger_ready_ && restored) *restored = pet_ledger_restored_;
         return pet_ledger_ready_;
+    }
+
+    // UI-only way out of the reader when "home" cannot be saved (pet worker,
+    // dropped StopStory) or posted (pet_toggle, full inbox). The durable
+    // state still says Story; the next committed action (e.g. a feed)
+    // brings it in line, and a reboot without a book goes home again.
+    void EscapeStoryHome(const char* reason) {
+        if (story_pcm_.Ready()) {
+            StoryAudioCancel(this);
+            story_pcm_.Stop();
+        }
+        SceneStateLock lock(scene_state_mutex_);
+        auto scene = kid_app::PetScenePresenter::Present(kid_app::PetSnapshot{});
+        scene.home_selection = home_selection_.load();
+        last_pet_scene_.store(PackPetScene(scene));
+        if (!sleep_active_.load()) pet_mailbox_.Publish(WithVoiceFace(scene));
+        // pet_input closes the book (UpdateBook) once the mode is not Story.
+        pet_event_mode_.store(kid_app::PetMode::Idle);
+        ESP_LOGW(TAG, "PET_STORY_ESCAPE reason=%s", reason);
     }
 
     // V5: structured memory from trusted on-device rules only (a like from a
@@ -646,6 +670,15 @@ BOARD_WORKER = r'''
                 !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_))
                 ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
             book_outline_ready_.store(true);
+            // Restored in Story without a readable book (no card, empty or
+            // broken pack): go home instead of opening an empty reader. If
+            // even that cannot be saved, PetCommitted escapes to home.
+            if (kid_app::RestoredStoryNeedsHome(pet_event_mode_.load(),
+                                                story_sd_.Ready() && book_outline_.pages > 0)) {
+                ESP_LOGI(TAG, "PET_STORY_RESTORE_HOME reason=no_book");
+                if (!pet_service_.PostLocal(kid_app::PetAction::StopStory))
+                    EscapeStoryHome("no_book");
+            }
         }
         if (story_sd_.Ready() && !story_pcm_.Ready() &&
             !story_pcm_.Start("/sdcard/books", story_book_,
@@ -1154,8 +1187,10 @@ BOARD_WORKER = r'''
         if (step.memory.kind != kid_app::BookMemoryKind::None) RecordBookMemory(step.memory);
         if (step.home) {
             ESP_LOGI(TAG, "PET_BOOK_HOME");
-            if (!pet_service_.PostLocal(kid_app::PetAction::StopStory))
+            if (!pet_service_.PostLocal(kid_app::PetAction::StopStory)) {
                 ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+                EscapeStoryHome("rejected");  // a long press always gets home
+            }
         }
     }
 
@@ -2847,6 +2882,7 @@ def patch_board(text: str) -> str:
     text = once(text, "#include <stdio.h>",
         '#include <stdio.h>\n#include <atomic>\n'
         '#include "kid_app/freertos_atomic_pet_service.h"\n'
+        '#include "kid_app/ledger_persist_policy.h"\n'
         '#include "kid_app/freertos_pet_scene_mailbox.h"\n'
         '#include "kid_app/freertos_pet_display_worker.h"\n'
         '#include "kid_app/pet_scene_presenter.h"\n'

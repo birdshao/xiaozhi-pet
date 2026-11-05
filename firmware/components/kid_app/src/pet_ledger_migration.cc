@@ -108,7 +108,8 @@ PetLedgerMigration::Report PetLedgerMigration::Run(PetAtomicLedger::Store& ledge
                                                    PetBlobStore& legacy_pet,
                                                    ParentSource& legacy_parent,
                                                    bool legacy_bridge_present,
-                                                   MarkerStore& marker) {
+                                                   MarkerStore& marker,
+                                                   LegacyRelease* release) {
     Report report{};
     std::unique_ptr<Work> work(new (std::nothrow) Work(ledger));
     if (!work) return Fail(report, Failure::LedgerUnreadable);
@@ -128,6 +129,8 @@ PetLedgerMigration::Report PetLedgerMigration::Run(PetAtomicLedger::Store& ledge
     if (has_marker) {
         if (loaded == PetAtomicLedger::LoadResult::Ready) {
             report.outcome = Outcome::AlreadyMigrated;
+            // Verified earlier and still loadable: the old copy can go.
+            if (release) report.legacy_released = release->Release();
             return report;
         }
         // The ledger was verified once; never rebuild it from older data.
@@ -203,6 +206,8 @@ PetLedgerMigration::Report PetLedgerMigration::Run(PetAtomicLedger::Store& ledge
     // 6. Only now: the marker. A cut before it repeats steps 1-5 (Resumed).
     if (!EncodeMarker(report, &marker_blob) || !marker.Write(marker_blob))
         return Fail(report, Failure::MarkerWriteFailed);
+    // 7. Marked: the legacy keys are no longer needed to verify anything.
+    if (release) report.legacy_released = release->Release();
     return report;
 }
 

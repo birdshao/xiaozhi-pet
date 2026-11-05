@@ -1,6 +1,7 @@
 // Board switch to the atomic ledger: one-time migration from the legacy
 // kid_pet checkpoint and the V3-06 kid_parent/settings key, with simulated
 // NVS (power loss at every step) and the local-only (no outbox) mode.
+#include "kid_app/ledger_persist_policy.h"
 #include "kid_app/pet_ledger_migration.h"
 #include "kid_app/pet_local_event_id.h"
 
@@ -95,14 +96,42 @@ public:
     int writes = 0;
 };
 
+struct Device;
+
+// Erases the legacy fakes; records whether the ledger was verified and
+// marked at the moment it ran.
+class FakeRelease : public Migration::LegacyRelease {
+public:
+    explicit FakeRelease(Device& device) : d(device) {}
+    bool Release() override;
+    Device& d;
+    int calls = 0;
+    bool fail = false;
+    bool saw_marker_and_ledger = true;
+};
+
 struct Device {
     FakeLedgerNvs ledger;
     FakeLegacyPet pet;
     FakeParent parent;
     FakeMarker marker;
     bool bridge = false;
-    Migration::Report Run() { return Migration::Run(ledger, pet, parent, bridge, marker); }
+    FakeRelease* release = nullptr;
+    Migration::Report Run() {
+        return Migration::Run(ledger, pet, parent, bridge, marker, release);
+    }
 };
+
+bool FakeRelease::Release() {
+    ++calls;
+    Ledger probe(d.ledger);
+    if (!d.marker.present || probe.Load() != Ledger::LoadResult::Ready)
+        saw_marker_and_ledger = false;
+    if (fail) return false;
+    d.pet.present[0] = d.pet.present[1] = false;
+    d.parent.result = Migration::ParentSource::Result::NotFound;
+    return true;
+}
 
 // A real legacy history: feeds and a greeting saved by PetPersistence, as
 // the old FreertosPetService did (generation 3, three replay ids).
@@ -495,6 +524,178 @@ void TestImportLegacyLocalPreconditions() {
     assert(!ledger.ImportLegacyLocal(PetController{}.ExportCheckpoint(), 7, CustomParent()));
 }
 
+// ---- Legacy release (the 2026-11-04 board regression) ----
+
+void TestReleaseOnlyAfterVerifiedMarker() {
+    Device d;
+    FakeRelease release(d);
+    d.release = &release;
+    SeedLegacyPet(d.pet);
+    d.parent.result = Migration::ParentSource::Result::Loaded;
+    d.parent.settings = CustomParent();
+    const auto first = d.Run();
+    assert(first.outcome == Migration::Outcome::Migrated && first.legacy_released);
+    assert(release.calls == 1 && release.saw_marker_and_ledger);
+    assert(!d.pet.present[0] && !d.pet.present[1]);
+    // Later boots: idempotent, the ledger is all that is left and enough.
+    for (int boot = 0; boot < 3; ++boot) {
+        const auto again = d.Run();
+        assert(again.outcome == Migration::Outcome::AlreadyMigrated && again.legacy_released);
+    }
+    assert(release.calls == 4 && release.saw_marker_and_ledger);
+    Ledger ledger(d.ledger);
+    assert(ledger.Load() == Ledger::LoadResult::Ready);
+    assert(ledger.Snapshot().interaction_count == 2 && ledger.Parent() == CustomParent());
+}
+
+void TestNoReleaseOnAnyFailurePath() {
+    for (int failure = 0; failure < 6; ++failure) {
+        Device d;
+        FakeRelease release(d);
+        d.release = &release;
+        SeedLegacyPet(d.pet);
+        if (failure == 0) d.ledger.write_error = true;
+        if (failure == 1) d.ledger.tear_writes = true;
+        if (failure == 2) d.ledger.flip_on_read = true;
+        if (failure == 3) d.marker.write_error = true;
+        if (failure == 4) {
+            d.pet.slots[0][20] ^= 1;
+            d.pet.slots[1][20] ^= 1;
+        }
+        if (failure == 5) d.parent.result = Migration::ParentSource::Result::StorageError;
+        const auto report = d.Run();
+        assert(report.outcome == Migration::Outcome::Failed && !report.legacy_released);
+        assert(release.calls == 0);
+        assert(d.pet.present[0] && d.pet.present[1]);  // still the source
+    }
+    {
+        // Marker without a ledger: fail closed, keep everything.
+        Device d;
+        FakeRelease release(d);
+        SeedLegacyPet(d.pet);
+        assert(d.Run().outcome == Migration::Outcome::Migrated);
+        d.release = &release;
+        d.ledger.present[0] = false;
+        assert(d.Run().failure == Migration::Failure::MarkerWithoutLedger);
+        assert(release.calls == 0 && d.pet.present[0]);
+    }
+}
+
+void TestFailedReleaseIsRetriedAndNotFatal() {
+    Device d;
+    FakeRelease release(d);
+    d.release = &release;
+    SeedLegacyPet(d.pet);
+    release.fail = true;
+    const auto first = d.Run();
+    assert(first.outcome == Migration::Outcome::Migrated && !first.legacy_released);
+    assert(d.pet.present[0]);
+    release.fail = false;
+    const auto next = d.Run();
+    assert(next.outcome == Migration::Outcome::AlreadyMigrated && next.legacy_released);
+    assert(!d.pet.present[0] && release.calls == 2);
+}
+
+// NVS entry model of the 16 KiB partition: a slot rewrite needs the new
+// value's entries free while the old value still exists.
+struct NvsBudget {
+    size_t capacity = 0;
+    size_t used = 0;
+    size_t Free() const { return capacity - used; }
+};
+
+class BudgetLedgerNvs : public FakeLedgerNvs {
+public:
+    explicit BudgetLedgerNvs(NvsBudget& b) : budget(b) {}
+    bool Write(unsigned slot, const Blob& data) override {
+        const size_t need = NvsBlobEntries(Ledger::kBytes);
+        if (slot > 1 || budget.Free() < need) {
+            ++writes;
+            return false;  // ESP_ERR_NVS_NOT_ENOUGH_SPACE
+        }
+        if (!present[slot]) budget.used += need;  // else the old value is freed
+        return FakeLedgerNvs::Write(slot, data);
+    }
+    NvsBudget& budget;
+};
+
+void TestNvsSpaceRegressionAndFix() {
+    const size_t slot = NvsBlobEntries(Ledger::kBytes);
+    const size_t legacy = 2 * NvsBlobEntries(PetCheckpointCodec::kBytes);
+    for (int fixed = 0; fixed < 2; ++fixed) {
+        NvsBudget budget;
+        // Room for both ledger slots, the legacy copy and the small keys,
+        // but not for one more ledger value (as on the board).
+        budget.capacity = 2 * slot + legacy + 6 + 30;
+        budget.used = legacy + 6;
+        BudgetLedgerNvs disk(budget);
+        FakeLegacyPet pet;
+        SeedLegacyPet(pet);
+        FakeParent parent;
+        FakeMarker marker;
+        struct BudgetRelease : Migration::LegacyRelease {
+            NvsBudget* b;
+            size_t entries;
+            bool Release() override {
+                b->used -= entries;
+                entries = 0;
+                return true;
+            }
+        } release;
+        release.b = &budget;
+        release.entries = legacy;
+        const auto report = Migration::Run(disk, pet, parent, false, marker,
+                                           fixed ? &release : nullptr);
+        assert(report.outcome == Migration::Outcome::Migrated);
+        Ledger ledger(disk);
+        assert(ledger.Load() == Ledger::LoadResult::Ready);
+        ledger.SetProjection(false);
+        PetEffects effects{};
+        // Slot 1 is new: fits. Then slot 0 must be rewritten.
+        assert(ledger.ApplyDurably({NextLocalEventId(ledger.Generation()), PetAction::StartStory},
+                                   &effects) == CommitResult::Committed);
+        const uint64_t gen = ledger.Generation();
+        const auto stop = ledger.ApplyDurably({NextLocalEventId(gen), PetAction::StopStory},
+                                              &effects);
+        if (!fixed) {
+            // The board regression: every later commit fails, state unchanged.
+            assert(stop == CommitResult::StorageError);
+            assert(ledger.Snapshot().mode == PetMode::Story && ledger.Generation() == gen);
+            continue;
+        }
+        assert(stop == CommitResult::Committed);
+        for (int i = 0; i < 20; ++i)
+            assert(ledger.ApplyDurably({NextLocalEventId(ledger.Generation()), PetAction::Feed},
+                                       &effects) == CommitResult::Committed);
+        assert(ledger.Snapshot().interaction_count == 22);
+    }
+}
+
+void TestPersistPolicy() {
+    PersistRetry retry;
+    for (uint32_t i = 1; i < PersistRetry::kAttempts; ++i) {
+        assert(!retry.LastAttempt());
+        assert(retry.OnFailure());
+    }
+    assert(retry.LastAttempt());
+    assert(!retry.OnFailure());  // dropped after kAttempts tries
+    retry.OnDone();
+    assert(retry.failures == 0 && !retry.LastAttempt());
+
+    assert(StoryEscapeNeeded(PetAction::StopStory, CommitResult::StorageError));
+    assert(!StoryEscapeNeeded(PetAction::StopStory, CommitResult::Committed));
+    assert(!StoryEscapeNeeded(PetAction::StopStory, CommitResult::Rejected));
+    assert(!StoryEscapeNeeded(PetAction::Feed, CommitResult::StorageError));
+
+    assert(RestoredStoryNeedsHome(PetMode::Story, false));
+    assert(!RestoredStoryNeedsHome(PetMode::Story, true));
+    assert(!RestoredStoryNeedsHome(PetMode::Idle, false));
+
+    assert(NvsBlobEntries(Ledger::kBytes) == 59);
+    assert(NvsBlobEntries(PetCheckpointCodec::kBytes) == 36);
+    assert(NvsBlobEntries(32) == 3);
+}
+
 }  // namespace
 
 int main() {
@@ -514,6 +715,11 @@ int main() {
     TestMarkerCodec();
     TestLocalOnlyNeverFillsTheOutbox();
     TestImportLegacyLocalPreconditions();
+    TestReleaseOnlyAfterVerifiedMarker();
+    TestNoReleaseOnAnyFailurePath();
+    TestFailedReleaseIsRetriedAndNotFatal();
+    TestNvsSpaceRegressionAndFix();
+    TestPersistPolicy();
     std::cout << "pet ledger migration tests passed\n";
     return 0;
 }

@@ -10,6 +10,9 @@ PETSELFTEST1
 # expect ledger_restored 1
 # expect min:migration=already 1
 # expect none:migration=failed 0
+# expect min:released=1 1
+# expect none:PET_LEDGER_PERSIST_FAILED 0
+# expect none:PET_STORY_ESCAPE 0
 # expect min:PET_SLEEP_SHOWN 1
 # expect min:settled=1 1
 # expect min:alarm_s=30 1

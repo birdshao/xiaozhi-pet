@@ -9,7 +9,8 @@ namespace kid_app {
 // V3-06 parent settings key ('kid_parent'/'settings') the board used before
 // it switched to the atomic ledger (schema v3, same ParentSettingsCodec
 // bytes). The board now only reads it, once, as a PetLedgerMigration source
-// and leaves it as a rollback copy; Save is kept for older tools/tests. NVS
+// and erases it once the ledger is verified (NvsLegacyRelease); Save is
+// kept for older tools/tests. NVS
 // keeps the previous value of a key if power fails during set+commit.
 // Never reads or writes XiaoZhi's keys; never erases. Requires nvs_flash_init().
 class NvsParentSettingsStore {
