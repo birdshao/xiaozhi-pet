@@ -56,15 +56,24 @@ struct GameView {
     GameFeedback feedback = GameFeedback::None;
     uint16_t question_art = 0;  // GameArt id; 0 = Listen
     std::array<uint16_t, 3> options{};
+    // V4-07 motion games (0 = the V4-06 answer cards above).
+    // 1 = tilt ball: the track under the line, `ball` rolls towards `hole`
+    // (cells 0..kBallCells-1). 2 = peekaboo: `hidden` while the board lies
+    // face down.
+    uint8_t motion = 0;
+    uint8_t ball = 0;
+    uint8_t hole = 0;
+    bool hidden = false;
 
     // Changes drawn below kGameRailTop.
     bool RailDiffers(const GameView& o) const {
-        return option_count != o.option_count || highlight != o.highlight || options != o.options;
+        return option_count != o.option_count || highlight != o.highlight || options != o.options ||
+               motion != o.motion || ball != o.ball || hole != o.hole || hidden != o.hidden;
     }
     // Changes drawn above it.
     bool QuestionDiffers(const GameView& o) const {
         return round != o.round || rounds != o.rounds || feedback != o.feedback ||
-               question_art != o.question_art;
+               question_art != o.question_art || motion != o.motion || hidden != o.hidden;
     }
     bool operator==(const GameView& o) const { return !RailDiffers(o) && !QuestionDiffers(o); }
     bool operator!=(const GameView& o) const { return !(*this == o); }

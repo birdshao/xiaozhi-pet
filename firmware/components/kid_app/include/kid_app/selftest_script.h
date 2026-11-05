@@ -24,7 +24,9 @@ namespace kid_app {
 //   alarm <seconds>         RTC wake-up 10..600 s after the next sleep power-off
 //   volume <percent>        prompt volume 0..100 for the rest of this boot (RAM only)
 //   gesture <name>          as if the IMU detected it: pickup, gentle, hard,
-//                           facedown, faceup (tests the wiring, not the thresholds)
+//                           facedown, faceup (tests the wiring, not the thresholds);
+//                           tiltleft, tiltright, level as the V4-07 TiltTracker
+//                           would report them (only the motion games listen)
 //   morning                 as after an RTC-alarm power-on (V3-04): Pet mode,
 //                           good-morning picture, back to sleep after 60 s
 //                           without input. Only after an "alarm" step, so the

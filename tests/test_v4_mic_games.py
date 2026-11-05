@@ -185,18 +185,24 @@ class BoardWiring(unittest.TestCase):
         for needle in ("game_active_.store(true)", "pet_mailbox_.game_only.store(true)",
                        "PublishGameSceneLocked()", "PostGameClip(out.clip)"):
             self.assertIn(needle, start)
-        self.assertIn("mic_session_ ? mic_game_.View() : game_.View()", BOARD_WORKER)
-        self.assertIn("const kid_app::GameResult result = mic_session_ ? mic_game_.Result() : game_.Result();",
-                      BOARD_WORKER)
+        self.assertIn("mic_session_                   ? mic_game_.View()", BOARD_WORKER)
+        self.assertIn("result = mic_game_.Result();", BOARD_WORKER)
         self.assertIn("GameCompletedMemoryEvent(result", BOARD_WORKER)  # the one growth path
 
-    def test_game_selection_keeps_the_quiz_for_scripted_seeds(self):
+    def test_game_selection_goes_through_the_menu(self):
+        # V4-07: the game menu replaces the quiz/candle/quiz/clap rotation; only the
+        # self-test `micgame` step still starts a mic game straight away.
         pick = MIC_BOARD[MIC_BOARD.index("bool PickMicGame("):MIC_BOARD.index("void StartMicGame(")]
-        self.assertIn("if (game_seed_.load() != 0) return false;", pick)
-        self.assertIn("launch % 4 == 1", pick)
-        self.assertIn("launch % 4 == 3", pick)
-        self.assertLess(BOARD_WORKER.index("PickMicGame(&mic_kind)"),
-                        BOARD_WORKER.index("kid_app::GamePackReader* pack = GamePackNow();\n        const kid_app::GameRound* pool"))
+        self.assertIn("mic_force_.exchange(0)", pick)
+        self.assertNotIn("launch %", pick)
+        start = BOARD_WORKER[BOARD_WORKER.index("void StartGame() {"):]
+        start = start[:start.index("void OpenGameMenu(")]
+        self.assertLess(start.index("PickMicGame(&mic_kind)"), start.index("OpenGameMenu(0)"))
+        choice = BOARD_WORKER[BOARD_WORKER.index("void HandleMenuOutput("):]
+        choice = choice[:choice.index("void LogMotionRound()")]
+        self.assertIn("GameChoice::Candle", choice)
+        self.assertIn("MicGameKind::ClapRhythm", choice)
+        self.assertIn("StartMicGame(", choice)
 
     def test_selftest_steps_take_over_the_microphone(self):
         self.assertIn("case kid_app::SelfTestOp::MicGame:", BOARD_WORKER)

@@ -48,6 +48,9 @@ def expectations(scenario: str) -> dict[str, str]:
         m = re.match(r"\s*#\s*expect\s+(\S+)\s+(\S+)\s*$", line)
         if m:
             found[m.group(1)] = m.group(2)
+        elif re.match(r"\s*#\s*expect(\s|$)", line):
+            # A directive that does not parse must not be silently skipped.
+            raise ValueError(f"malformed expect line: {line.strip()!r} (want: # expect <name> <value>)")
     return found
 
 

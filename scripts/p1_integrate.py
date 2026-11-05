@@ -1938,6 +1938,9 @@ BOARD_WORKER = r'''
             case kid_app::Gesture::HardShake: return "hard";
             case kid_app::Gesture::FaceDown: return "facedown";
             case kid_app::Gesture::FaceUp: return "faceup";
+            case kid_app::Gesture::TiltLeft: return "tiltleft";
+            case kid_app::Gesture::TiltRight: return "tiltright";
+            case kid_app::Gesture::Level: return "level";
             case kid_app::Gesture::None: break;
         }
         return "none";
@@ -1967,6 +1970,19 @@ BOARD_WORKER = r'''
     // from PetCommitted); shakes and peekaboo are reactions only.
     void HandleGesture(kid_app::Gesture gesture, const char* source) {
         if (gesture == kid_app::Gesture::None) return;
+        // V4-07: a running motion game takes tilt and face down/up (the
+        // latest one; pet_input applies it). Everything else, shaking
+        // included, is no part of the game: never a reward.
+        if (motion_active_.load() &&
+            (gesture == kid_app::Gesture::FaceDown || gesture == kid_app::Gesture::FaceUp ||
+             gesture == kid_app::Gesture::TiltLeft || gesture == kid_app::Gesture::TiltRight ||
+             gesture == kid_app::Gesture::Level)) {
+            motion_gesture_.store(static_cast<uint8_t>(gesture));
+            if (power_save_timer_) power_save_timer_->WakeUp();
+            power_poke_.store(true);
+            ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=1 game=1", GestureName(gesture), source);
+            return;
+        }
         if (gesture == kid_app::Gesture::FaceDown) face_down_.store(true);
         bool acted = false;
         // V3-06: parents can switch motion off; the parent menu ignores it.
@@ -1993,6 +2009,9 @@ BOARD_WORKER = r'''
                             RequestHomeAnimation(kid_app::Animation::Greet);
                     break;
                 case kid_app::Gesture::FaceDown:
+                case kid_app::Gesture::TiltLeft:  // V4-07: only the ball game listens
+                case kid_app::Gesture::TiltRight:
+                case kid_app::Gesture::Level:
                 case kid_app::Gesture::None:
                     break;
             }
@@ -2420,6 +2439,18 @@ BOARD_WORKER = r'''
     // plays every game clip (PromptRequest::game) under the same volume
     // rules (parent cap, quiet ceiling) as the other pet sounds.
     kid_app::GameSession game_;                // pet_input only
+    // V4-07: the Game rail item first opens game_menu_ (quiz / tilt ball /
+    // peekaboo); the quiz is game_, the other two are motion_. game_mode_
+    // says which one owns the dial and the screen.
+    enum class GameMode : uint8_t { None, Menu, Quiz, Motion };
+    kid_app::GameMenu game_menu_;              // pet_input only
+    kid_app::MotionGameSession motion_;        // pet_input only
+    GameMode game_mode_ = GameMode::None;      // pet_input only
+    uint8_t motion_round_logged_ = 0;          // pet_input
+    std::atomic<bool> motion_active_{false};   // pet_boot_diag / gesture sources read
+    std::atomic<bool> motion_tilt_{false};     // the ball game: pet_boot_diag feeds tilt
+    std::atomic<uint8_t> motion_gesture_{0};   // latest gesture for motion_, 0 = none
+    kid_app::TiltTracker tilt_tracker_;        // pet_boot_diag only
     std::atomic<bool> game_active_{false};     // read by the other tasks
     bool game_requested_ = false;              // pet_input: rail press seen
     uint8_t game_round_logged_ = 0;            // pet_input
@@ -2481,7 +2512,10 @@ BOARD_WORKER = r'''
     void PublishGameSceneLocked() {
         kid_app::SceneModel scene{};
         scene.kind = kid_app::SceneKind::Game;
-        scene.game = mic_session_ ? mic_game_.View() : game_.View();  // V4-08
+        scene.game = game_mode_ == GameMode::Menu     ? game_menu_.View()
+                     : game_mode_ == GameMode::Motion ? motion_.View()
+                     : mic_session_                   ? mic_game_.View()  // V4-08
+                                                      : game_.View();
         pet_mailbox_.Publish(scene);
     }
 
@@ -2495,13 +2529,138 @@ BOARD_WORKER = r'''
                  static_cast<unsigned>(round.correct));
     }
 
-    // pet_input, after the rail press (scene_state_mutex_ released).
+    // pet_input, after the rail press (scene_state_mutex_ released): the
+    // game menu comes first.
     void StartGame() {
         kid_app::MicGameKind mic_kind{};
-        if (PickMicGame(&mic_kind)) {  // V4-08: blow the candles / clap the rhythm
+        if (PickMicGame(&mic_kind)) {  // self-test `micgame` only: straight into the game
             StartMicGame(mic_kind);
             return;
         }
+        OpenGameMenu(0);
+    }
+
+    void OpenGameMenu(uint8_t start) {
+        const auto out = game_menu_.Start(NowMs(), start);
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            game_mode_ = GameMode::Menu;
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_MENU highlight=%u", static_cast<unsigned>(start));
+        PostGameClip(out.clip);
+    }
+
+    void HandleMenuOutput(const kid_app::GameMenuOutput& out) {
+        PostGameClip(out.clip);
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(game_menu_.End()));
+            return;
+        }
+        if (out.chosen != kid_app::GameChoice::None) {
+            ESP_LOGI(TAG, "PET_GAME_CHOICE game=%s", kid_app::GameChoiceName(out.chosen));
+            if (out.chosen == kid_app::GameChoice::Quiz) {
+                StartQuiz();
+            } else if (out.chosen == kid_app::GameChoice::Candle ||
+                       out.chosen == kid_app::GameChoice::Clap) {  // V4-08
+                StartMicGame(out.chosen == kid_app::GameChoice::Candle
+                                 ? kid_app::MicGameKind::Candle
+                                 : kid_app::MicGameKind::ClapRhythm);
+            } else if (!motion_enabled_.load()) {  // parents switched motion off
+                ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
+                OpenGameMenu(static_cast<uint8_t>(static_cast<uint8_t>(out.chosen) - 1));
+            } else {
+                StartMotion(out.chosen == kid_app::GameChoice::Ball
+                                ? kid_app::MotionKind::Ball
+                                : kid_app::MotionKind::Peekaboo);
+            }
+            return;
+        }
+        if (!out.redraw) return;
+        ESP_LOGI(TAG, "PET_GAME_MENU_SELECT index=%u",
+                 static_cast<unsigned>(game_menu_.View().highlight));
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    void LogMotionRound() {
+        const auto view = motion_.View();
+        motion_round_logged_ = view.round;
+        ESP_LOGI(TAG, "PET_MOTION_ROUND n=%u/%u kind=%s ball=%u hole=%u",
+                 static_cast<unsigned>(view.round), static_cast<unsigned>(view.rounds),
+                 kid_app::MotionKindName(motion_.Kind()), static_cast<unsigned>(view.ball),
+                 static_cast<unsigned>(view.hole));
+    }
+
+    // pet_input, after the menu choice. Nothing is recorded: the IMU only
+    // feeds window means to the pure game logic.
+    void StartMotion(kid_app::MotionKind kind) {
+        uint32_t seed = game_seed_.exchange(0);
+        if (!seed) seed = esp_random();
+        kid_app::GameOutput out{};
+        if (!motion_.Start(kind, seed, kid_app::MotionGameSession::kDefaultRounds, NowMs(),
+                           &out)) {
+            ESP_LOGW(TAG, "PET_GAME_START_FAILED src=motion");
+            EndGame("start_failed");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_mode_ = GameMode::Motion;
+            motion_gesture_.store(0);
+            motion_tilt_.store(kind == kid_app::MotionKind::Ball);
+            motion_active_.store(true);
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_START src=motion kind=%s id=%u seed=%u rounds=%u",
+                 kid_app::MotionKindName(kind), static_cast<unsigned>(motion_.Result().game_id),
+                 static_cast<unsigned>(seed), static_cast<unsigned>(motion_.Result().rounds));
+        LogMotionRound();
+        PostGameClip(out.clip);
+    }
+
+    void LogMotionEvent(const kid_app::GameView& before, const kid_app::GameOutput& out) {
+        const auto view = motion_.View();
+        if (out.right) {
+            if (motion_.Kind() == kid_app::MotionKind::Ball)
+                ESP_LOGI(TAG, "PET_MOTION_HOLE n=%u hole=%u correct=%u",
+                         static_cast<unsigned>(view.round), static_cast<unsigned>(view.hole),
+                         static_cast<unsigned>(motion_.Result().correct));
+            else
+                ESP_LOGI(TAG, "PET_MOTION_FOUND n=%u correct=%u",
+                         static_cast<unsigned>(view.round),
+                         static_cast<unsigned>(motion_.Result().correct));
+        } else if (view.feedback == kid_app::GameFeedback::TryAgain &&
+                   before.feedback != view.feedback) {
+            ESP_LOGI(TAG, "PET_MOTION_TOO_SOON n=%u", static_cast<unsigned>(view.round));
+        } else if (out.redraw && view.motion == 1) {
+            ESP_LOGI(TAG, "PET_MOTION_STEP ball=%u hole=%u", static_cast<unsigned>(view.ball),
+                     static_cast<unsigned>(view.hole));
+        } else if (out.redraw && view.hidden) {
+            ESP_LOGI(TAG, "PET_MOTION_HIDE n=%u", static_cast<unsigned>(view.round));
+        }
+    }
+
+    void ApplyMotionOutput(const kid_app::GameOutput& out) {
+        PostGameClip(out.clip);
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(motion_.Result().end));
+            return;
+        }
+        if (!out.redraw) return;
+        if (motion_.View().round != motion_round_logged_) LogMotionRound();
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    // pet_input, after the menu choice (scene_state_mutex_ released).
+    void StartQuiz() {
         kid_app::GamePackReader* pack = GamePackNow();
         const kid_app::GameRound* pool = pack ? pack->Rounds() : kid_app::BuiltinGameRounds();
         const size_t count = pack ? pack->RoundCount() : kid_app::BuiltinGameRoundCount();
@@ -2512,11 +2671,13 @@ BOARD_WORKER = r'''
         if (!game_.Start(pool, count, id, seed, kid_app::GameSession::kDefaultRounds, NowMs(),
                          &out)) {
             ESP_LOGW(TAG, "PET_GAME_START_FAILED src=%s", pack ? "pack" : "builtin");
+            EndGame("start_failed");
             return;
         }
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(true);
+            game_mode_ = GameMode::Quiz;
             pet_mailbox_.game_only.store(true);
             {
                 SceneStateLock anim_lock(anim_mutex_);
@@ -2546,6 +2707,23 @@ BOARD_WORKER = r'''
     // pet_input: the dial while a game runs. BOOT and PWR keep their own
     // handlers (talking or sleeping ends the game).
     void HandleGameInput(kid_app::InputKind kind) {
+        if (game_mode_ == GameMode::Quiz) {
+            HandleQuizInput(kind);
+            return;
+        }
+        kid_app::GameInput input = kid_app::GameInput::Press;
+        switch (kind) {
+            case kid_app::InputKind::DialUp: input = kid_app::GameInput::Up; break;
+            case kid_app::InputKind::DialDown: input = kid_app::GameInput::Down; break;
+            case kid_app::InputKind::DialPress: input = kid_app::GameInput::Press; break;
+            case kid_app::InputKind::DialLong: input = kid_app::GameInput::Long; break;
+            default: return;
+        }
+        if (game_mode_ == GameMode::Menu) HandleMenuOutput(game_menu_.Input(input, NowMs()));
+        else if (game_mode_ == GameMode::Motion) ApplyMotionOutput(motion_.Input(input, NowMs()));
+    }
+
+    void HandleQuizInput(kid_app::InputKind kind) {
         kid_app::GameInput input = kid_app::GameInput::Press;
         switch (kind) {
             case kid_app::InputKind::DialUp: input = kid_app::GameInput::Up; break;
@@ -2583,11 +2761,29 @@ BOARD_WORKER = r'''
             EndGame("voice");
             return;
         }
-        if (mic_session_) {
-            UpdateMicGame(state);
-            return;
+        switch (game_mode_) {
+            case GameMode::Menu:
+                HandleMenuOutput(game_menu_.Tick(NowMs()));
+                break;
+            case GameMode::Quiz:
+                if (mic_session_) UpdateMicGame(state);  // V4-08
+                else ApplyGameOutput(game_.Tick(NowMs()));
+                break;
+            case GameMode::Motion: {
+                const uint8_t pending = motion_gesture_.exchange(0);
+                if (pending) {
+                    const auto before = motion_.View();
+                    const auto out =
+                        motion_.OnGesture(static_cast<kid_app::Gesture>(pending), NowMs());
+                    LogMotionEvent(before, out);
+                    ApplyMotionOutput(out);
+                }
+                if (game_active_.load()) ApplyMotionOutput(motion_.Tick(NowMs()));
+                break;
+            }
+            case GameMode::None:
+                break;
         }
-        ApplyGameOutput(game_.Tick(NowMs()));
     }
 
     // pet_input. Back to the pet's own (durable) home picture, as it is now;
@@ -2596,13 +2792,39 @@ BOARD_WORKER = r'''
     void EndGame(const char* reason, bool publish_home = true) {
         if (!game_active_.load()) return;
         DisarmMic();  // V4-08: the microphone is off as soon as a game ends, whatever the reason
-        if (mic_session_) mic_game_.Interrupt();  // no-op when it already finished
-        else game_.Interrupt();  // no-op when the game already finished by itself
-        const kid_app::GameResult result = mic_session_ ? mic_game_.Result() : game_.Result();
+        // Interrupt is a no-op for a game that already finished by itself.
+        kid_app::GameResult result{};
+        const char* mode = "quiz";
+        switch (game_mode_) {
+            case GameMode::Menu:
+                game_menu_.Interrupt();
+                result.end = game_menu_.End();
+                mode = "menu";
+                break;
+            case GameMode::Motion:
+                motion_.Interrupt();
+                result = motion_.Result();
+                mode = kid_app::MotionKindName(motion_.Kind());
+                break;
+            case GameMode::Quiz:
+            case GameMode::None:
+                if (mic_session_) {
+                    mic_game_.Interrupt();
+                    result = mic_game_.Result();
+                    mode = "mic";
+                } else {
+                    game_.Interrupt();
+                    result = game_.Result();
+                }
+                break;
+        }
         mic_session_ = false;
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(false);
+            game_mode_ = GameMode::None;
+            motion_active_.store(false);
+            motion_tilt_.store(false);
             pet_mailbox_.game_only.store(false);
             if (publish_home && pet_mode_.load() && !sleep_active_.load())
                 pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
@@ -2620,9 +2842,9 @@ BOARD_WORKER = r'''
             memory.id = 0;
             posted = RecordMemory(memory);
         }
-        ESP_LOGI(TAG, "PET_GAME_END end=%s reason=%s played=%u/%u correct=%u id=%u growth=%d "
-                 "posted=%d",
-                 kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
+        ESP_LOGI(TAG, "PET_GAME_END mode=%s end=%s reason=%s played=%u/%u correct=%u id=%u "
+                 "growth=%d posted=%d",
+                 mode, kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
                  static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
                  static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
     }
@@ -2641,7 +2863,6 @@ BOARD_WORKER = r'''
     kid_app::MicGameSession mic_game_;      // pet_input only
     bool mic_session_ = false;              // pet_input: the running game is a mic game
     bool mic_armed_ = false;                // pet_input: tap/injection on
-    uint32_t game_launches_ = 0;            // pet_input: rotation quiz, candle, quiz, clap
     std::atomic<uint8_t> mic_force_{0};     // self-test "micgame": 1 candle, 2 clap
     kid_app::MicClassifier mic_classifier_;  // under mic_mutex_
     std::mutex mic_mutex_;
@@ -2677,23 +2898,20 @@ BOARD_WORKER = r'''
             *kind = forced == 1 ? kid_app::MicGameKind::Candle : kid_app::MicGameKind::ClapRhythm;
             return true;
         }
-        if (game_seed_.load() != 0) return false;
-        const uint32_t launch = game_launches_++;
-        if (launch % 4 == 1) *kind = kid_app::MicGameKind::Candle;
-        else if (launch % 4 == 3) *kind = kid_app::MicGameKind::ClapRhythm;
-        else return false;
-        return true;
+        return false;  // children pick in the game menu (V4-07); no rotation any more
     }
 
     void StartMicGame(kid_app::MicGameKind kind) {
         kid_app::GameOutput out{};
         if (!mic_game_.Start(kind, NowMs(), &out)) {
             ESP_LOGW(TAG, "PET_MIC_GAME_START_FAILED kind=%s", kid_app::MicGameKindName(kind));
+            EndGame("start_failed");
             return;
         }
         {
             SceneStateLock lock(scene_state_mutex_);
             mic_session_ = true;
+            game_mode_ = GameMode::Quiz;  // the quiz dispatch routes mic games too
             game_active_.store(true);
             pet_mailbox_.game_only.store(true);
             {
@@ -3059,6 +3277,13 @@ BOARD_WORKER = r'''
                     gestures_on = want;
                 }
                 HandleGesture(gesture_detector_.OnWindow(s, now), "imu");
+                // V4-07: the ball game rolls with the board's tilt.
+                if (motion_tilt_.load() && motion_enabled_.load()) {
+                    const auto tilt = tilt_tracker_.OnWindow(s);
+                    if (tilt != kid_app::Gesture::None) HandleGesture(tilt, "imu");
+                } else {
+                    tilt_tracker_.Reset();
+                }
             }
             SampleBattery(now);
             if (now - last_heartbeat_ms >= 10000) {
@@ -3130,6 +3355,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/mic_game.h"\n'
         '#include "kid_app/mic_envelope.h"\n'
         '#include "kid_app/game_pack_reader.h"\n'
+        '#include "kid_app/motion_game.h"\n'
         '#include "kid_app/memory_store.h"\n'
         '#include "esp_random.h"\n'
         '#include <mutex>\n'
