@@ -14,6 +14,7 @@ from pathlib import Path
 
 from content_pipeline.assets import fetch_bookdash_images, combine_book_assets
 from content_pipeline.packaging import stage_book
+from content_pipeline.review_packet import make_review_packet
 from content_pipeline.pilot import PILOT_REF, PILOT_SOURCE, prepare_cat_pilot
 from content_pipeline.schema import ContentError, write_json
 from content_pipeline.source_snapshots import fetch_bookdash_source
@@ -71,6 +72,9 @@ def build_research_preview(workdir: Path, *, narration: str = "synthetic") -> di
     candidate = stage_book(lcir, assets_dir / "assets.json", staged_dir)
     if len(candidate["preview_files"]) != 24 or len(candidate["stage_files"]) != 24:
         raise ContentError("live source: expected 12 images, 12 tones and 24 previews")
+    review_packet = make_review_packet(staged_dir)
+    if review_packet["pages"] != 12:
+        raise ContentError("live source: reviewer page count mismatch")
     if list(workdir.rglob("*.kpb")):
         raise ContentError("live source: unexpected child-facing package")
     report = {
@@ -87,6 +91,8 @@ def build_research_preview(workdir: Path, *, narration: str = "synthetic") -> di
         "audio_provider": audio["provider"],
         "audio_status": audio["status"],
         "epaper_previews": len(candidate["preview_files"]),
+        "review_contact_sheets": 2,
+        "review_html_local": "staged/review/index.html",
         "preview_sha256": candidate["checked_hash"],
         "license": "CC-BY-4.0",
         "credits": {
