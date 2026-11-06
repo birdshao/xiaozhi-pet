@@ -16,8 +16,9 @@ from unittest.mock import patch
 
 from content_pipeline.cli import main
 from content_pipeline.audio_qc import analyze_wav
-from content_pipeline.game_packaging import _manifest
+from content_pipeline.game_packaging import _manifest, build_reviewed_game
 from content_pipeline.game_review import make_game_review_packet
+from content_pipeline.review_templates import make_review_template
 from content_pipeline.schema import ContentError, write_json
 from tools.learning_live_math_pilot import build_math_research, _tone_fixture
 
@@ -133,6 +134,23 @@ class MathLivePilot(unittest.TestCase):
             out.writeframes(b"\x00\x00" * 4800)
         with self.assertRaisesRegex(ContentError, "all-silent"):
             make_game_review_packet(stage)
+
+    def test_review_template_is_unapproved_and_cannot_build_game(self):
+        build_math_research(self.root / "smoke")
+        stage = self.root / "smoke/staged"
+        metadata = make_review_template(stage, kind="game")
+        self.assertEqual(metadata["status"], "review_pending")
+        template = stage / "review.template.json"
+        self.assertTrue(template.is_file())
+        value = json.loads(template.read_text(encoding="utf-8"))
+        self.assertEqual(value["reviewer"], "")
+        self.assertEqual(value["checked_hash"], metadata["checked_hash"])
+        self.assertTrue(all(v is False for v in value["attestations"].values()))
+        with self.assertRaisesRegex(ContentError, "explicit reviewed status"):
+            build_reviewed_game(stage, template,
+                                self.root / "out/default.kpg", smoke_only=True)
+        with self.assertRaisesRegex(ContentError, "refusing to overwrite"):
+            make_review_template(stage, kind="game")
 
     def test_cli_review_game_generated_from_synthetic_assets(self):
         """The CLI must only render a review file; never approve staged game."""
