@@ -81,3 +81,49 @@ jobs:
         run: |
           echo "One-line Edge TTS external connectivity result: ${OUTCOME}." >> "$GITHUB_STEP_SUMMARY"
           echo "Success verifies connectivity/PCM format only; voice quality and license still need manual checks." >> "$GITHUB_STEP_SUMMARY"
+
+  full-story-chinese-tts:
+    name: Full 12-page Book Dash Chinese TTS staged preview (unreviewed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    # External voice services are not a reliable required PR gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Pillow and optional Chinese voice provider
+        run: |
+          python -m pip install -r tools/story_pack_requirements.txt
+          python -m pip install 'edge-tts>=7.3.0,<8.0'
+      - name: Install ffmpeg to produce exact PCM16 WAV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Download full source and synthesize 12 Chinese pages, no approval
+        id: fulltts
+        run: |
+          python -m tools.learning_live_bookdash_pilot \
+            --output-dir research_content/live_bookdash_voice \
+            --narration edge
+      - name: Record accurate limitations
+        if: always()
+        env:
+          OUTCOME: ${{ steps.fulltts.outcome }}
+        run: |
+          echo "12-page real Chinese online TTS stage outcome: ${OUTCOME}." >> "$GITHUB_STEP_SUMMARY"
+          echo "No KPB2 approved pack is published; every page's text, image and audio needs adult review." >> "$GITHUB_STEP_SUMMARY"
+          echo "No externally synthesized WAV is uploaded from this job." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload research-only manifests and EPD previews (no audio)
+        if: steps.fulltts.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cat-book-real-chinese-tts-metadata-and-epaper-previews
+          path: |
+            research_content/live_bookdash_voice/live-report.json
+            research_content/live_bookdash_voice/README-RESEARCH-ONLY.txt
+            research_content/live_bookdash_voice/pilot/attribution.json
+            research_content/live_bookdash_voice/staged/preview/*.png
+          if-no-files-found: error
+          retention-days: 7
