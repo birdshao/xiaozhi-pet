@@ -115,6 +115,8 @@ python -m content_pipeline.cli stage-book \
 
 `prepare-book-assets` 将检查图片和口播清单是否来自同一 LCIR1 摘要，页次、源路径、每页文字 SHA256 与实际文件字节匹配，否则拒绝。它只生成 `assets.json`；正式 KPB2 构建继续按 `docs/LEARNING_CONTENT_PIPELINE_QUICKSTART.md` 的人工审核门禁执行。
 
+**审核重点：** `stage-book` 额外生成 `preview/page_01_mono.png` 与 `preview/page_01_grey.png` 等文件，调用的是原有 `tools.kpb2` 量化和抖动函数，因此与最终包的黑白回退及四级灰度显示规则一致。家长应逐页观看这两组预览，重点检查主角轮廓、文字可读性、手势和背景是否被黑白抖动吞掉。预览也计入 `candidate.json` 的受审核哈希；任何预览被改写都会让原审核签署失效。
+
 如果是 CI 的合成音调，语音 `status=test_only`：正常 `prepare-book-assets` 和正式 `build-book` 都会拒绝，禁止把音调样例当成适龄绘本。
 
 ## 6. 自动生成数学游戏中文语音
