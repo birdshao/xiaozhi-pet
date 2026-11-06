@@ -101,7 +101,7 @@ class PinnedBookDashPilot(unittest.TestCase):
     def test_reject_unpinned_paths_invalid_utf8_and_empty(self):
         with self.assertRaisesRegex(ContentError, "full 40"):
             pinned_markdown_url(PILOT_SOURCE, "gh-pages")
-        with self.assertRaisesRegex(ContentError, "expected book-slug"):
+        with self.assertRaisesRegex(ContentError, "unsafe relative path|expected book-slug"):
             pinned_markdown_url("any/../index.md", PILOT_REF)
         with self.assertRaisesRegex(ContentError, "invalid UTF-8"):
             self._source(override=b"\xff")
