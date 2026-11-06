@@ -102,9 +102,9 @@ def make_preview_report(source: Path, output: Path, lesson_file: Path,
         '<p>此图由原版 C++ SceneComposer 在 PC 上绘制，是 GameArt 实际像素，'
         '不是 ESP32 或电子纸面板拍摄的画面。</p>'
         '<p>展示的是 KPG1 原始选项顺序，真实游戏会随机打乱。'
-        ('对应 KPG1 音频为纯测试音调。</p>' if narration == "synthetic" else
-         '对应 KPG1 音频为未经成人试听审核的在线中文 TTS。</p>')
-        '<p>以下正确答案仅供成人审阅，不是儿童屏幕的一部分。</p></div>' +
+        + ('对应 KPG1 音频为纯测试音调。</p>' if narration == "synthetic" else
+           '对应 KPG1 音频为未经成人试听审核的在线中文 TTS。</p>')
+        + '<p>以下正确答案仅供成人审阅，不是儿童屏幕的一部分。</p></div>' +
         ''.join(cards) + '</body></html>'
     )
     (output / "index.html").write_text(html, encoding="utf-8")
