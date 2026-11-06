@@ -5,6 +5,8 @@ Each device can resume a validated page across a Python service restart.
 """
 from __future__ import annotations
 
+from .db import migrate
+
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -33,17 +35,7 @@ def _reply(text: str, *, state: str, kind: str = "approved_content",
 class StoryReader:
     def __init__(self, filename: str | Path) -> None:
         self.filename = str(filename)
-        if self.filename != ":memory:":
-            Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS story_reader_sessions(
-                    device_id TEXT PRIMARY KEY,
-                    current_book TEXT,
-                    current_page INTEGER NOT NULL DEFAULT 1,
-                    next_cursor INTEGER NOT NULL DEFAULT 0
-                )
-            """)
+        migrate(self.filename)
 
     @contextmanager
     def _db(self):

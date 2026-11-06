@@ -7,77 +7,54 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import FastAPI, HTTPException
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 
-from .intent import resolve
+from .config import Settings
+from .auth import ParentAuth
+from .routers import device, voice, parent
 from .quiz import QuizEngine
 from .story_reader import StoryReader
 from .store import PetStore
 
 
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class EventPayload(StrictModel):
-    event: str = Field(min_length=1, max_length=64)
-    book_id: str | None = Field(default=None, max_length=64)
-
-
-class EventEnvelope(StrictModel):
-    schema_version: Literal["1.0"]
-    message_id: str = Field(min_length=3, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")
-    device_id: str = Field(min_length=3, max_length=64)
-    seq: int = Field(ge=1, le=9223372036854775807)
-    type: Literal["pet.event"]
-    payload: EventPayload
-    session_id: str | None = Field(default=None, max_length=80)
-    sent_at_ms: int | None = Field(default=None, ge=0)
-
-
-class EventBatch(StrictModel):
-    events: list[EventEnvelope] = Field(min_length=1, max_length=32)
-
-
-class VoiceQuery(StrictModel):
-    text: str = Field(min_length=1, max_length=120)
-
-
-class QuizAnswer(StrictModel):
-    choice: Literal[1, 2]
-
-
-def create_app(filename: str | Path | None = None) -> FastAPI:
-    database = filename or os.environ.get("KID_PET_DB", "data/pet_learning.sqlite3")
+def create_app(filename: str | Path | None = None, *, settings: Settings | None = None) -> FastAPI:
+    settings = settings or Settings.load()
+    settings.validate()
+    database = filename or settings.database
     store = PetStore(database)
     quiz = QuizEngine(database)
     reader = StoryReader(database)
     app = FastAPI(
         title="xiaozhi-pet PetLearning MVP",
-        version="0.1.0",
+        version="0.2.0",
+        docs_url=None if settings.production else "/docs",
+        redoc_url=None if settings.production else "/redoc",
+        openapi_url=None if settings.production else "/openapi.json",
         description="Authenticated pet replay receipts and reviewed local learning content.",
     )
+    app.state.settings = settings
+    app.state.parent_auth = ParentAuth(database, settings)
     app.state.pet_store = store
     app.state.quiz_engine = quiz
     app.state.story_reader = reader
 
-    def require_device(device_id: str, authorization: str | None) -> None:
-        # No user identity or bearer token is returned in error messages.
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
-        token = authorization[7:]
-        if not store.authenticated(device_id, token):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        if request.url.path.startswith("/v1/parent/"):
+            # FastAPI's default errors echo invalid input, including credentials.
+            return JSONResponse(status_code=422, content={"detail": "INVALID_PARENT_REQUEST"},
+                                headers={"Cache-Control": "no-store"})
+        return await request_validation_exception_handler(request, exc)
 
     # Developer-only interactive preview. Disabled by default and static:
     # no token, content approval, storage or parental admin endpoints.
     # Bind uvicorn to loopback and use a separate test device ID.
     def playground_file(name: str, media_type: str):
-        if os.environ.get("KID_PET_ENABLE_PLAYGROUND") != "1":
+        if settings.production or os.environ.get("KID_PET_ENABLE_PLAYGROUND", str(int(settings.playground))) != "1":
             raise HTTPException(status_code=404, detail="NOT_FOUND")
         file = Path(__file__).resolve().parent / "playground" / name
         response = FileResponse(file, media_type=media_type)
@@ -106,110 +83,9 @@ def create_app(filename: str | Path | None = None) -> FastAPI:
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/v1/devices/{device_id}/events")
-    def ingest(device_id: str, batch: EventBatch,
-               authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if any(x.device_id != device_id for x in batch.events):
-            raise HTTPException(status_code=400, detail="DEVICE_ID_MISMATCH")
-        # Each accepted event commits in SQLite before its ACK is returned.
-        # A rejected event does not consume the next sequence number.
-        return {"acks": [store.apply_event(device_id, item.model_dump(exclude_none=True))
-                         for item in batch.events]}
-
-    @app.get("/v1/devices/{device_id}/snapshot")
-    def snapshot(device_id: str,
-                 authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        return store.snapshot(device_id)
-
-    @app.get("/v1/books/{book_id}/pages/{page}")
-    def approved_page(book_id: str, page: int,
-                      x_device_id: str | None = Header(default=None),
-                      authorization: str | None = Header(default=None)) -> dict:
-        if x_device_id is None:
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
-        require_device(x_device_id, authorization)
-        item = store.page(book_id, page)
-        if item is None:
-            # Treat unapproved and nonexistent content identically.
-            raise HTTPException(status_code=404, detail="APPROVED_PAGE_NOT_FOUND")
-        return item
-
-    @app.post("/v1/devices/{device_id}/quiz/start")
-    def start_quiz(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if store.snapshot(device_id)["quiet"]:
-            return {"kind": "fallback", "action": None,
-                    "tts_text": "现在是安静时间，我们下次再一起玩吧。",
-                    "learning_state": "idle"}
-        return quiz.start(device_id)
-
-    @app.post("/v1/devices/{device_id}/quiz/answer")
-    def answer_quiz(device_id: str, answer: QuizAnswer,
-                    authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if store.snapshot(device_id)["quiet"]:
-            return {"kind": "fallback", "action": None,
-                    "tts_text": "现在是安静时间，我们下次再一起玩吧。",
-                    "learning_state": "idle"}
-        return quiz.answer(device_id, answer.choice)
-
-    @app.get("/v1/devices/{device_id}/quiz/status")
-    def quiz_status(device_id: str,
-                    authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        return quiz.status(device_id)
-
-    @app.post("/v1/devices/{device_id}/story/start")
-    def start_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if store.snapshot(device_id)["quiet"]:
-            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
-        return reader.start(device_id)
-
-    @app.post("/v1/devices/{device_id}/story/next")
-    def next_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if store.snapshot(device_id)["quiet"]:
-            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
-        return reader.next(device_id)
-
-    @app.post("/v1/devices/{device_id}/story/repeat")
-    def repeat_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        if store.snapshot(device_id)["quiet"]:
-            return {"kind":"fallback","action":None,"tts_text":"现在是安静时间，我们下次再读吧。","story_state":"idle"}
-        return reader.repeat(device_id)
-
-    @app.post("/v1/devices/{device_id}/story/stop")
-    def stop_story(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        return reader.stop(device_id)
-
-    @app.get("/v1/devices/{device_id}/story/status")
-    def story_status(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        return reader.status(device_id)
-
-    @app.post("/v1/devices/{device_id}/intent")
-    def classify_intent(device_id: str, query: VoiceQuery,
-                        authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
-        context = store.snapshot(device_id)
-        learning_reply = quiz.intent(device_id, query.text, quiet=context["quiet"])
-        if learning_reply is not None:
-            return learning_reply
-        # Preserve legacy STORY_OPEN/PAGE_NEXT PetStore behavior when an
-        # existing device has already opened a book with Pet events.
-        if context["mode"] == "STORY":
-            legacy_reply = resolve(query.text, context, store.page)
-            if legacy_reply["kind"] != "fallback":
-                return legacy_reply
-        story_reply = reader.intent(device_id, query.text, quiet=context["quiet"])
-        if story_reply is not None:
-            return story_reply
-        return resolve(query.text, context, store.page)
+    app.include_router(device.create_router(store, quiz, reader))
+    app.include_router(voice.create_router(store, quiz, reader))
+    app.include_router(parent.router)
 
     return app
 

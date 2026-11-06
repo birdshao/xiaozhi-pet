@@ -8,6 +8,8 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
+# Local service state (including SQLite WAL/SHM and authentication secrets).
+/data/
 .env
 .env.*
 !.env.example
