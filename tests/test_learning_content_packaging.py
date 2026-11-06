@@ -127,7 +127,7 @@ class Packaging(unittest.TestCase):
             build_reviewed_book(self.stage, review, self.root / "no.kpb")
 
     def test_invalid_audio_and_long_story_rejected(self):
-        with wave.open(str(self.assets / "audio_02.wav"), "wb") as wav:
+        with wave.open(str(self.assets / "audio_2.wav"), "wb") as wav:
             wav.setnchannels(1)
             wav.setsampwidth(2)
             wav.setframerate(16000)
