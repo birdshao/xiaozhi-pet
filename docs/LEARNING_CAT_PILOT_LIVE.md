@@ -79,6 +79,15 @@ research_content/live_bookdash_real_voice/
   staged/preview/page_01_grey.png ... page_12_grey.png
 ```
 
+**查看整本审核包：** 集成脚本会在 `staged/review/` 自动生成两个 12 页接触表和一个只读 `index.html`。用本地浏览器打开 `staged/review/index.html`，可以同时看到每页真实 1-bit/4 灰度预览、中文脚本文本和该页的 WAV 播放器；不会联网，也不会自动批准内容。单独补建也可以运行：
+
+```bash
+python -m content_pipeline.cli make-review-packet \
+  --stage-dir research_content/live_bookdash_real_voice/staged
+```
+
+预览 HTML / 接触表只是审核演示，不是审核文件；修改基础图片、WAV、文本或本来已绑定的预览后，哈希检查失败，必须重新 staging。GitHub Actions 公共 artifact 只上传接触表、预览 PNG 和版权说明，**不会上传第三方在线 TTS WAV**。
+
 先逐一检查：12 页中文是否与图片对应、黑白回退能否识别猫/篮子/蝴蝶/蜗牛等主体；真人试听全部 12 段配音，确认儿童安全与自然语速；确认作者/插画/设计者及二次改编标注。
 
 审核**签署之前**，必须确保没有伪造审核人身份，且相关音频使用许可满足研究分发目的。参考 `docs/LEARNING_CONTENT_PIPELINE_QUICKSTART.md` 生成独立、绑定候选 `checked_hash` 的审核文件后，才运行 `build-book`：
