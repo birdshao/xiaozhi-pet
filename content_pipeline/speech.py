@@ -33,21 +33,36 @@ def _check_voice(locale: str, voice: str) -> None:
         raise ContentError("speech: voice must match zh-Hans or en locale")
 
 
+def _ffmpeg_binary() -> str:
+    """Prefer OS ffmpeg; also support the self-contained imageio-ffmpeg wheel."""
+    system = shutil.which("ffmpeg")
+    if system:
+        return system
+    try:
+        import imageio_ffmpeg
+        portable = imageio_ffmpeg.get_ffmpeg_exe()
+        if portable and Path(portable).is_file():
+            return str(portable)
+    except (ImportError, OSError, RuntimeError):
+        pass
+    raise ContentError(
+        "speech: install ffmpeg or the optional imageio-ffmpeg Python package")
+
+
 def _edge_backend(text: str, output: Path, voice: str) -> None:
     """Generate MP3 using edge-tts then transcode to exact 24 kHz PCM16 WAV."""
     try:
         import edge_tts
     except ImportError as exc:
         raise ContentError("speech: install optional edge-tts package") from exc
-    if shutil.which("ffmpeg") is None:
-        raise ContentError("speech: ffmpeg executable is required")
+    ffmpeg_bin = _ffmpeg_binary()
     with tempfile.TemporaryDirectory(prefix="lcp-tts-") as t:
         work = Path(t)
         mp3, wav = work / "voice.mp3", work / "voice.wav"
         try:
             asyncio.run(edge_tts.Communicate(text, voice).save(str(mp3)))
             subprocess.run(
-                ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                [ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error",
                  "-y", "-i", str(mp3), "-ar", "24000", "-ac", "1",
                  "-c:a", "pcm_s16le", str(wav)],
                 check=True, capture_output=True, timeout=90,
