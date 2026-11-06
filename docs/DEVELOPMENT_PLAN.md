@@ -144,6 +144,8 @@ V0 方案与硬件资料冻结（本次）
 
 **Gate V5**：团团"记得"昨天做过的事和孩子选过的喜好；家长能看到并一键清空。
 
+V5-05/V5-06 的服务端方案（部署、同步协议、API、隐私、里程碑与待决策）见 [V5/V6 服务端方案](V5_V6_SERVER_PLAN.md)。
+
 ## V6：语音深化与家长控制（可并行）
 
 | ID | 任务 | 验收 |
@@ -154,6 +156,8 @@ V0 方案与硬件资料冻结（本次）
 | V6-04 | 个性参数作为角色设定传给语音服务；输出审核不变 | 测试 |
 | V6-05 | 家长开放问答开关、审核失败关闭 | 安全用例 |
 | V6-06 | 设备家长入口完整版：配网、内容列表、记忆清空 | 真机 |
+
+V6-02..05、V6-06 的服务端部分以及内容/声音包分发的方案见 [V5/V6 服务端方案](V5_V6_SERVER_PLAN.md)。
 
 ## V7：稳定性、OTA、外壳与安全
 
@@ -218,4 +222,4 @@ V0 方案与硬件资料冻结（本次）
 
 ## 8. 相关文档
 
-[产品需求](PRODUCT_REQUIREMENTS.md) · [技术架构](ARCHITECTURE.md) · [接口与数据](INTERFACES_AND_DATA.md) · [测试与上游](TEST_AND_UPSTREAM.md) · [架构决策](DECISIONS.md) · [硬件基线](hardware/BOARD_BASELINE.md)
+[产品需求](PRODUCT_REQUIREMENTS.md) · [技术架构](ARCHITECTURE.md) · [接口与数据](INTERFACES_AND_DATA.md) · [测试与上游](TEST_AND_UPSTREAM.md) · [架构决策](DECISIONS.md) · [V5/V6 服务端方案](V5_V6_SERVER_PLAN.md) · [硬件基线](hardware/BOARD_BASELINE.md)
