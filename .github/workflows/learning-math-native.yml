@@ -48,7 +48,9 @@ jobs:
           assert staged['approved'] is False
           assert all(r['approved'] is False for r in staged['rounds'])
           assert manifest['format']=='KPG1' and manifest['placeholder'] is True
-          assert scenes['status']=='test_only' and len(scenes['scenes'])==5
+          assert scenes['status']=='test_only' and len(scenes['scenes'])==20
+          assert scenes['rounds']==15
+          assert (root/'previews/index.html').is_file()
           assert all(x['size']==[800,480] for x in scenes['scenes'])
           print('PASS: real native KPG1 session, audio and GameArt; no real child content published')
           PY
@@ -58,6 +60,7 @@ jobs:
           name: math-kpg1-15-questions-native-gameart-1bit-test-only
           path: |
             build/lcp09/previews/*.png
+            build/lcp09/previews/index.html
             build/lcp09/previews/device-scenes.json
             build/lcp09/device-fixture/device-fixture-report.json
             build/lcp09/device-fixture/README-TEST-ONLY.txt
@@ -66,5 +69,5 @@ jobs:
       - name: Note exact hardware limitation
         run: |
           echo '15 actual math lessons passed host-compiled GamePackReader/GameSession/InputHub/SceneComposer.' >> "$GITHUB_STEP_SUMMARY"
-          echo '5 PBM 1-bit firmware pixel frames converted to PNG; still NOT captured from physical EPD.' >> "$GITHUB_STEP_SUMMARY"
+          echo '15 full questions + 5 example native PBM 1-bit frames converted to PNG, NOT captured from physical EPD.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Voices are test-only synthetic tones. No approved content, SD deployment or flashing.' >> "$GITHUB_STEP_SUMMARY"
