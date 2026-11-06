@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -22,6 +23,7 @@ from content_pipeline.pilot import PILOT_REF, PILOT_SOURCE, prepare_cat_pilot
 from content_pipeline.schema import ContentError, content_digest, write_json
 from content_pipeline.source_snapshots import (
     fetch_bookdash_source, pinned_markdown_url)
+from tools import learning_live_bookdash_pilot as live
 from content_pipeline.speech import narrate_book
 from tools import game_pack
 
@@ -188,6 +190,30 @@ class PinnedBookDashPilot(unittest.TestCase):
         })
         with self.assertRaisesRegex(ContentError, "synthetic test-only narration"):
             build_reviewed_book(stage, review, self.root / "not_child.kpb")
+
+    def test_live_runner_orchestration_with_offline_network_mocks(self):
+        def source_stub(**kwargs):
+            return fetch_bookdash_source(
+                **kwargs, fetch=lambda url, limit: self.source_bytes)
+
+        def image_stub(document, output):
+            return fetch_bookdash_images(
+                document, output,
+                fetch=lambda url, limit: _jpeg(int(
+                    url.rsplit("/", 1)[-1].replace(".jpg", ""))))
+
+        with patch.object(live, "fetch_bookdash_source", side_effect=source_stub), \\
+             patch.object(live, "fetch_bookdash_images", side_effect=image_stub):
+            result = live.build_research_preview(self.root / "orchestrated")
+        self.assertEqual(result["status"], "test_only")
+        self.assertEqual(result["source_images"], 12)
+        self.assertEqual(result["audio_clips"], 12)
+        self.assertEqual(result["audio_provider"], "offline_synthetic_fixture")
+        self.assertEqual(result["epaper_previews"], 24)
+        msg = (self.root / "orchestrated/README-RESEARCH-ONLY.txt").read_text(
+            encoding="utf-8")
+        self.assertIn("test-only sine tones", msg)
+        self.assertIn("Nicola Rijsdijk", msg)
 
     def test_cli_creates_pilot_offline(self):
         self._source()
