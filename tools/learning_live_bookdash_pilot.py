@@ -110,8 +110,8 @@ def build_research_preview(workdir: Path, *, narration: str = "synthetic") -> di
         "License: https://creativecommons.org/licenses/by/4.0/\n"
         "Chinese text is an unreviewed AI-assisted adaptation.\n"
         "Preview PNGs reflect KPB2 mono/4-grey quantization, not actual hardware tests.\n"
-        ("Audio comprises test-only sine tones, not narration.\n" if
-         narration == "synthetic" else
+        + ("Audio comprises test-only sine tones, not narration.\n" if
+           narration == "synthetic" else
          "Audio is online synthesized Chinese narration, NOT adult reviewed.\n"),
         encoding="utf-8")
     return report
