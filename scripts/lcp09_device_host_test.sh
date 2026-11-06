@@ -24,5 +24,6 @@ python3 -m tools.learning_math_native_fixture --output-dir "$BUILD/device-fixtur
   "$BUILD/true-gameart-previews"
 python3 -m tools.learning_math_native_report \
   --source "$BUILD/true-gameart-previews" \
-  --output "$BUILD/previews"
+  --output "$BUILD/previews" \
+  --lesson "$BUILD/device-fixture/source/lesson.json"
 echo "PASS: host KPG1/device logic integration (TEST ONLY) in $BUILD"
