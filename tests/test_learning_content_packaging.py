@@ -1,0 +1,156 @@
+"""Stage real 800x480 images/WAVs and build KPB2 only with human review.
+
+All example images/audio here are synthetic local test fixtures, NOT child content.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+import wave
+
+from PIL import Image
+
+from content_pipeline.adapters import import_bookdash
+from content_pipeline.packaging import build_reviewed_book, stage_book
+from content_pipeline.schema import ContentError, write_json
+from tools import kpb2
+
+SHA = "b" * 40
+BOOK = """---
+title: "Two Toy Friends"
+---
+# Two Toy Friends
+
+![A circle]({{ site.image-set }}/01.jpg)
+
+A circle is round.
+
+![A square]({{ site.image-set }}/02.jpg)
+
+A square has four sides.
+"""
+
+
+class Packaging(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.assets = self.root / "assets"
+        self.assets.mkdir()
+        for i in (1, 2):
+            im = Image.new("RGB", (400 + i * 50, 320), ("white" if i == 1 else "lightgray"))
+            im.save(self.assets / f"image_{i}.png")
+            with wave.open(str(self.assets / f"audio_{i}.wav"), "wb") as f:
+                f.setnchannels(1)
+                f.setsampwidth(2)
+                f.setframerate(24000)
+                f.writeframes(b"\x00\x00" * 12000)
+        self.map_file = self.assets / "assets.json"
+        write_json(self.map_file, {
+            "schema_version": 1,
+            "pages": {
+                str(i): {"image": f"image_{i}.png", "audio": f"audio_{i}.wav"}
+                for i in (1, 2)
+            }
+        })
+        self.lcir = self.root / "imported.json"
+        self.write_doc("CC-BY-4.0")
+        self.stage = self.root / "stage"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_doc(self, license_id):
+        doc = import_bookdash(
+            BOOK, source_item_id="two-toy-friends/en/index.md",
+            source_url="https://github.com/bookdash/bookdash-books/blob/" + SHA +
+                       "/two-toy-friends/en/index.md",
+            source_ref=SHA, content_id=1101,
+            license_id=license_id,
+            skills=["math.shapes_basic"],
+        )
+        write_json(self.lcir, doc)
+
+    def review(self, hash):
+        file = self.root / "review.json"
+        write_json(file, {
+            "status": "reviewed",
+            "reviewer": "Test reviewer",
+            "checked_hash": hash,
+            "attestations": {
+                "source_license": True, "illustrations": True,
+                "text": True, "audio": True, "age_safety": True,
+            }
+        })
+        return file
+
+    def test_real_kpb2_roundtrip(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        staged_book = json.loads((self.stage / "book.json").read_text(encoding="utf-8"))
+        self.assertFalse(staged_book["approved"])
+        self.assertTrue(all(not p["approved"] for p in staged_book["pages"]))
+        with Image.open(self.stage / "page_01.png") as im:
+            self.assertEqual(im.size, (800, 480))
+        result = build_reviewed_book(self.stage, self.review(candidate["checked_hash"]),
+                                     self.root / "book.kpb")
+        self.assertGreater(result["package_bytes"], 0)
+        self.assertTrue((self.root / "book.manifest.json").exists())
+        parsed = kpb2.parse((self.root / "book.kpb").read_bytes())
+        self.assertEqual(parsed["format"], "KPB2")
+        self.assertEqual(len(parsed["pages"]), 2)
+        self.assertFalse((self.stage / "__reviewed_kpb2_temp.json").exists())
+        self.assertFalse(staged_book["approved"])
+
+    def test_modified_stage_rejected(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        review = self.review(candidate["checked_hash"])
+        with (self.stage / "page_01.wav").open("ab") as f:
+            f.write(b"modification")
+        with self.assertRaisesRegex(ContentError, "changed"):
+            build_reviewed_book(self.stage, review, self.root / "book.kpb")
+
+    def test_not_reviewed_and_unknown_license_rejected(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        review = self.review(candidate["checked_hash"])
+        data = json.loads(review.read_text(encoding="utf-8"))
+        data["attestations"]["audio"] = False
+        write_json(review, data)
+        with self.assertRaisesRegex(ContentError, "five human"):
+            build_reviewed_book(self.stage, review, self.root / "no.kpb")
+        self.write_doc("unknown")
+        stage_book(self.lcir, self.map_file, self.stage)
+        candidate = json.loads((self.stage / "candidate.json").read_text(encoding="utf-8"))
+        review = self.review(candidate["checked_hash"])
+        with self.assertRaisesRegex(ContentError, "exact source license"):
+            build_reviewed_book(self.stage, review, self.root / "no.kpb")
+
+    def test_invalid_audio_and_long_story_rejected(self):
+        with wave.open(str(self.assets / "audio_02.wav"), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 100)
+        with self.assertRaisesRegex(ContentError, "24 kHz"):
+            stage_book(self.lcir, self.map_file, self.stage)
+        self.setUp  # keep test tooling explicit, no implicit state reset
+        doc = json.loads(self.lcir.read_text(encoding="utf-8"))
+        doc["pages"][0]["text"] = "很" * 321
+        write_json(self.lcir, doc)
+        with self.assertRaisesRegex(ContentError, "320"):
+            stage_book(self.lcir, self.map_file, self.stage)
+
+    def test_symlink_outside_asset_root_rejected(self):
+        outside = self.root / "outside.png"
+        Image.new("RGB", (200, 200), "white").save(outside)
+        (self.assets / "escaped.png").symlink_to(outside)
+        mapping = json.loads(self.map_file.read_text(encoding="utf-8"))
+        mapping["pages"]["1"]["image"] = "escaped.png"
+        write_json(self.map_file, mapping)
+        with self.assertRaisesRegex(ContentError, "escapes"):
+            stage_book(self.lcir, self.map_file, self.stage)
+
+
+if __name__ == "__main__":
+    unittest.main()
