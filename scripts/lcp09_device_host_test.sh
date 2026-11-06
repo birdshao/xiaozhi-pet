@@ -8,7 +8,8 @@ mkdir -p "$BUILD"
 INC="$ROOT/firmware/components/kid_app/include"
 SRC="$ROOT/firmware/components/kid_app/src"
 CXX="${CXX:-g++}"
-python3 -m tools.learning_math_native_fixture --output-dir "$BUILD/device-fixture"
+python3 -m tools.learning_math_native_fixture --output-dir "$BUILD/device-fixture" \
+  --narration "${LCP09_NARRATION:-synthetic}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$SRC/game_pack_reader.cc" \
   "$SRC/sound_pack_reader.cc" \
@@ -25,5 +26,6 @@ python3 -m tools.learning_math_native_fixture --output-dir "$BUILD/device-fixtur
 python3 -m tools.learning_math_native_report \
   --source "$BUILD/true-gameart-previews" \
   --output "$BUILD/previews" \
-  --lesson "$BUILD/device-fixture/source/lesson.json"
+  --lesson "$BUILD/device-fixture/source/lesson.json" \
+  --narration "${LCP09_NARRATION:-synthetic}"
 echo "PASS: host KPG1/device logic integration (TEST ONLY) in $BUILD"
