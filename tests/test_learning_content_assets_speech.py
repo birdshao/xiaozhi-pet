@@ -23,6 +23,7 @@ from content_pipeline.cli import main
 from content_pipeline.game_lessons import original_math_lesson, audio_script
 from content_pipeline.game_packaging import stage_game
 from content_pipeline.packaging import stage_book
+from content_pipeline.localize import localize_bookdash
 from content_pipeline.schema import ContentError, write_json
 from content_pipeline.speech import narrate_book, narrate_game
 from tools import game_pack as gp
@@ -210,6 +211,66 @@ class GameAudio(unittest.TestCase):
             narrate_game(self.lesson_file, self.assets, voice="zh-CN-XiaoxiaoNeural",
                          synthesize=bad_sample, test_only=True)
 
+
+
+class LocalizedBook(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.english = self.root / "english.json"
+        doc = import_bookdash(
+            STORY, source_item_id=SOURCE,
+            source_url=f"https://github.com/bookdash/bookdash-books/blob/{PIN}/{SOURCE}",
+            source_ref=PIN, content_id=1101, skills=["language.story_sequence"],
+            locale="en", license_id="CC-BY-4.0")
+        doc["source"]["creators"] = {
+            "text": ["Research writer"], "illustration": ["Research artist"],
+            "translation": []}
+        write_json(self.english, doc)
+        self.trans = self.root / "translation.json"
+        write_json(self.trans, {
+            "schema_version": 1, "title": "两个好朋友",
+            "translator": "人工复核负责人",
+            "pages": ["圆圆住在圆圆的小房子里。", "方方住在方方的小房子里。"],
+        })
+        self.chinese = self.root / "chinese.json"
+        self.assets = self.root / "assets"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_chinese_images_and_narration_follow_same_pinned_original(self):
+        original = json.loads(self.english.read_text(encoding="utf-8"))
+        translated = localize_bookdash(self.english, self.trans, self.chinese,
+                                      content_id=1301)
+        self.assertEqual(translated["locale"], "zh-Hans")
+        self.assertEqual(translated["source"]["source_ref"], PIN)
+        self.assertEqual(translated["pages"][0]["image_ref"], original["pages"][0]["image_ref"])
+        self.assertEqual(translated["review"]["status"], "draft")
+        self.assertEqual(translated["source"]["creators"]["translation"],
+                         ["人工复核负责人"])
+        self.assertEqual(len(translated["transformations"]), 1)
+        manifest = fetch_bookdash_images(
+            self.chinese, self.assets, fetch=lambda url, limit: _jpg())
+        self.assertEqual(len(manifest["images"]), 2)
+        wavs = narrate_book(self.chinese, self.assets, voice="zh-CN-XiaoxiaoNeural",
+                            synthesize=_synthetic_tone, test_only=True)
+        self.assertEqual(len(wavs["audio"]), 2)
+        mapped = combine_book_assets(self.chinese, self.assets,
+                                     allow_test_artifacts=True)
+        self.assertEqual(len(mapped["pages"]), 2)
+        staged = stage_book(self.chinese, self.assets / "assets.json",
+                            self.root / "staged")
+        self.assertEqual(staged["schema_version"], 1)
+
+    def test_translation_rejects_missing_pages_and_non_distinct_ids(self):
+        with self.assertRaisesRegex(ContentError, "distinct content_id"):
+            localize_bookdash(self.english, self.trans, self.chinese, content_id=1101)
+        raw = json.loads(self.trans.read_text(encoding="utf-8"))
+        raw["pages"].pop()
+        write_json(self.trans, raw)
+        with self.assertRaisesRegex(ContentError, "exactly one"):
+            localize_bookdash(self.english, self.trans, self.chinese, content_id=1301)
 
 if __name__ == "__main__":
     unittest.main()
