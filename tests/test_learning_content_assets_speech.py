@@ -21,8 +21,8 @@ from content_pipeline.assets import (
     MAX_IMAGE_BYTES, bookdash_url, combine_book_assets, fetch_bookdash_images)
 from content_pipeline.cli import main
 from content_pipeline.game_lessons import original_math_lesson, audio_script
-from content_pipeline.game_packaging import stage_game
-from content_pipeline.packaging import stage_book
+from content_pipeline.game_packaging import stage_game, build_reviewed_game
+from content_pipeline.packaging import stage_book, build_reviewed_book
 from content_pipeline.localize import localize_bookdash
 from content_pipeline.schema import ContentError, write_json
 from content_pipeline.speech import narrate_book, narrate_game
@@ -132,6 +132,17 @@ class BookAssets(unittest.TestCase):
         stage = self.root / "stage"
         candidate = stage_book(self.lcir, self.assets / "assets.json", stage)
         self.assertEqual(candidate["schema_version"], 1)
+        review_path = self.root / "parent_review.json"
+        write_json(review_path, {
+            "status": "reviewed", "reviewer": "CI synthetic fixture",
+            "checked_hash": candidate["checked_hash"],
+            "attestations": {
+                "source_license": True, "illustrations": True,
+                "text": True, "audio": True, "age_safety": True,
+            },
+        })
+        with self.assertRaisesRegex(ContentError, "synthetic test-only narration"):
+            build_reviewed_book(stage, review_path, self.root / "not_child.kpb")
         with Image.open(stage / "page_02.png") as im:
             self.assertEqual(im.size, (800, 480))
         img = self.assets / "images" / "page_01.jpg"
@@ -194,6 +205,18 @@ class GameAudio(unittest.TestCase):
         staged = stage_game(self.lesson_file, self.assets / "audio_map.json",
                             self.root / "stage")
         self.assertEqual(staged["schema_version"], 1)
+        review = self.root / "review.json"
+        write_json(review, {
+            "status": "reviewed", "reviewer": "CI synthetic fixture",
+            "checked_hash": staged["checked_hash"],
+            "attestations": {
+                "educational_accuracy": True, "answer_uniqueness": True,
+                "audio": True, "age_safety": True, "source": True,
+            },
+        })
+        with self.assertRaisesRegex(ContentError, "synthetic test-only TTS"):
+            build_reviewed_game(self.root / "stage", review,
+                                self.root / "game" / "default.kpg")
         with self.assertRaisesRegex(ContentError, "already exists"):
             narrate_game(self.lesson_file, self.assets, voice="zh-CN-XiaoxiaoNeural",
                          synthesize=_synthetic_tone, test_only=True)
