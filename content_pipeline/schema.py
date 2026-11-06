@@ -152,7 +152,16 @@ def validate_document(doc: Any) -> dict:
                   "image_mode", "skills", "questions"}, f"page {i}")
         if type(p["number"]) is not int or p["number"] != i:
             raise ContentError(f"page {i}: non-sequential number")
-        _string(p["text"], f"page {i} text", 3200)
+        if p["text"] == "":
+            # The original Book Dash archive contains genuinely wordless
+            # illustrated pages. Keep those pages silent rather than
+            # inventing words and attributing them to the book's author.
+            if not (s["provider"] == "bookdash" and
+                    d["locale"] == "en" and not d["transformations"] and
+                    p["image_ref"] is not None):
+                raise ContentError(f"page {i}: empty text only allowed in original Book Dash")
+        else:
+            _string(p["text"], f"page {i} text", 3200)
         if p["image_ref"] is not None:
             safe_relpath(p["image_ref"], f"page {i} image_ref")
         for key in ("image", "audio"):
