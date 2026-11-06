@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Live Book Dash pilot: fetch 12 real illustrations, stage 24 EPD previews.
 
-This script is for RESEARCH VALIDATION ONLY. Narration is a synthetic test
-tone, not child-facing audio. It never generates .kpb and cannot approve
+This script is for RESEARCH VALIDATION ONLY. Narration may be synthetic
+test tones or real unreviewed Chinese TTS. It never generates .kpb or approves
 content. All source imagery retains Book Dash CC BY 4.0 attribution.
 """
 from __future__ import annotations
@@ -30,8 +30,10 @@ def _synthetic_tone(text: str, wav: Path, voice: str) -> None:
         [350 + min(400, len(text) * 9)], note_s=0.12))
 
 
-def build_research_preview(workdir: Path) -> dict:
-    """Uses true external JPEGs but synthetic tone WAVs; output is test-only."""
+def build_research_preview(workdir: Path, *, narration: str = "synthetic") -> dict:
+    """Create review-ready pages but never approve or compile child content."""
+    if narration not in ("synthetic", "edge"):
+        raise ContentError("live source: unsupported speech backend")
     workdir = Path(workdir)
     source_dir = workdir / "source"
     pilot_dir = workdir / "pilot"
@@ -53,11 +55,19 @@ def build_research_preview(workdir: Path) -> dict:
         if entry["page"] != number or not entry["source_url"].endswith(
                 f"/{number:02d}.jpg"):
             raise ContentError("live source: illustration order mismatch")
-    tone = narrate_book(lcir, assets_dir, voice="zh-CN-XiaoxiaoNeural",
-                        synthesize=_synthetic_tone, test_only=True)
-    if tone["status"] != "test_only":
-        raise ContentError("live source: unsafe fixture status")
-    combine_book_assets(lcir, assets_dir, allow_test_artifacts=True)
+    if narration == "synthetic":
+        audio = narrate_book(lcir, assets_dir, voice="zh-CN-XiaoxiaoNeural",
+                             synthesize=_synthetic_tone, test_only=True)
+        if audio["status"] != "test_only":
+            raise ContentError("live source: unsafe fixture status")
+        combine_book_assets(lcir, assets_dir, allow_test_artifacts=True)
+    else:
+        # The external service creates genuinely spoken Chinese WAVs, but
+        # neither the words nor voice quality are automatically approved.
+        audio = narrate_book(lcir, assets_dir, voice="zh-CN-XiaoxiaoNeural")
+        if audio["status"] != "draft":
+            raise ContentError("live source: real TTS must remain unreviewed draft")
+        combine_book_assets(lcir, assets_dir)
     candidate = stage_book(lcir, assets_dir / "assets.json", staged_dir)
     if len(candidate["preview_files"]) != 24 or len(candidate["stage_files"]) != 24:
         raise ContentError("live source: expected 12 images, 12 tones and 24 previews")
@@ -65,7 +75,7 @@ def build_research_preview(workdir: Path) -> dict:
         raise ContentError("live source: unexpected child-facing package")
     report = {
         "schema_version": "BOOKLIVESMOKE1",
-        "status": "test_only",
+        "status": "test_only" if narration == "synthetic" else "draft",
         "source_url": source["source_url"],
         "git_sha": source["source_ref"],
         "source_sha256": source["sha256"],
@@ -73,7 +83,9 @@ def build_research_preview(workdir: Path) -> dict:
         "zh_pages": pilot["pages"],
         "source_images": len(images["images"]),
         "image_sha256": [x["sha256"] for x in images["images"]],
-        "synthetic_audio_clips": len(tone["audio"]),
+        "audio_clips": len(audio["audio"]),
+        "audio_provider": audio["provider"],
+        "audio_status": audio["status"],
         "epaper_previews": len(candidate["preview_files"]),
         "preview_sha256": candidate["checked_hash"],
         "license": "CC-BY-4.0",
@@ -84,7 +96,9 @@ def build_research_preview(workdir: Path) -> dict:
         },
         "caveat": (
             "Real pinned Book Dash illustrations and AI-assisted Chinese text; "
-            "test-only sine tones. Not adult reviewed; not usable child content."
+            + ("test-only sine tones." if narration == "synthetic" else
+               "real unreviewed Chinese TTS. No audio redistribution approved.")
+            + " Not adult reviewed; not usable child content."
         ),
     }
     write_json(workdir / "live-report.json", report)
@@ -96,7 +110,9 @@ def build_research_preview(workdir: Path) -> dict:
         "License: https://creativecommons.org/licenses/by/4.0/\n"
         "Chinese text is an unreviewed AI-assisted adaptation.\n"
         "Preview PNGs reflect KPB2 mono/4-grey quantization, not actual hardware tests.\n"
-        "Audio comprises test-only sine tones, not narration.\n",
+        ("Audio comprises test-only sine tones, not narration.\n" if
+         narration == "synthetic" else
+         "Audio is online synthesized Chinese narration, NOT adult reviewed.\n"),
         encoding="utf-8")
     return report
 
@@ -104,14 +120,18 @@ def build_research_preview(workdir: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--narration", choices=("synthetic", "edge"),
+                        default="synthetic", help="Default is test tones; edge uses real unreviewed online TTS")
     args = parser.parse_args()
-    report = build_research_preview(args.output_dir)
+    report = build_research_preview(args.output_dir, narration=args.narration)
     print(json.dumps({
         "status": report["status"],
         "source_sha256": report["source_sha256"],
         "images": report["source_images"],
         "previews": report["epaper_previews"],
         "zh_pages": report["zh_pages"],
+        "audio_clips": report["audio_clips"],
+        "audio_provider": report["audio_provider"],
         "external_git_sha": report["git_sha"],
     }, ensure_ascii=False, sort_keys=True))
     return 0
