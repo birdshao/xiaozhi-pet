@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import shutil
 
+from content_pipeline.audio_qc import analyze_wav
 from content_pipeline.game_lessons import audio_key, audio_script, validate_lesson
 from content_pipeline.packaging import _asset, _hash, _sha_file
 from content_pipeline.schema import ContentError, canonical_json, write_json
@@ -75,6 +76,7 @@ def _manifest(stage_dir: Path) -> dict:
         f = _asset(stage_dir, rel, max_size=MAX_GAME_WAV)
         files[rel] = _sha_file(f, MAX_GAME_WAV)
         game_pack.read_wav(f, rel)
+        analyze_wav(f, max_seconds=10)
     return {
         "schema_version": 1,
         "lesson_sha256": _hash(lesson_file.read_bytes()),
@@ -106,6 +108,7 @@ def stage_game(lesson_file: Path, audio_map_file: Path, stage_dir: Path) -> dict
             raise ContentError("source audio cannot be inside stage directory")
         # Existing KPG1 reader is the single authority for audio duration.
         game_pack.read_wav(source, text)
+        analyze_wav(source, max_seconds=10)
         target = stage_dir / "clips" / f"{key}.wav"
         shutil.copyfile(source, target)
         provenance.append({
