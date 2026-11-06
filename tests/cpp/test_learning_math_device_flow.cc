@@ -204,6 +204,14 @@ int main(int argc, char** argv) {
 
     std::filesystem::path preview_dir = argv[2];
     std::filesystem::create_directories(preview_dir);
+    // Render every validated round from the actual KPG1 table using
+    // precisely the same 800x480 GameArt primitives as the ESP32 firmware.
+    // Source order is shown; GameSession shuffles cards at runtime.
+    for (size_t n = 0; n < pack.RoundCount(); ++n) {
+        const std::string prefix = n + 1 < 10 ? "math_round_0" : "math_round_";
+        SavePbm(preview_dir / (prefix + std::to_string(n + 1) + "_1bit.pbm"),
+                ExampleView(pack.Rounds()[n]));
+    }
     SavePbm(preview_dir / "math_shape_1bit.pbm",
             ExampleView(samples.at(GameKind::MatchShape)));
     SavePbm(preview_dir / "math_count_1bit.pbm",
