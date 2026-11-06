@@ -9,9 +9,9 @@ from __future__ import annotations
 from html import escape
 import json
 from pathlib import Path
-import wave
 
 from content_pipeline.game_lessons import validate_lesson, audio_key
+from content_pipeline.audio_qc import analyze_wav
 from content_pipeline.game_packaging import _manifest, MAX_GAME_WAV
 from content_pipeline.schema import ContentError, canonical_json, write_json
 from content_pipeline.packaging import _hash, _asset, _sha_file
@@ -102,11 +102,11 @@ def make_game_review_packet(stage_dir: Path) -> dict:
             if rel != expected:
                 raise ContentError(f"game review: round {i} has incorrect speech mapping")
             wav = _asset(stage, rel, max_size=MAX_GAME_WAV)
-            with wave.open(str(wav), "rb") as sound:
-                duration_ms = round(1000 * sound.getnframes() / sound.getframerate())
+            quality = analyze_wav(wav, max_seconds=10)
             metrics.append({"path": rel, "spoken_text": spoken,
-                            "duration_ms": duration_ms,
-                            "sha256": _sha_file(wav, MAX_GAME_WAV)})
+                            "duration_ms": quality["duration_ms"],
+                            "sha256": _sha_file(wav, MAX_GAME_WAV),
+                            "quality": quality})
             unique_clips.add(rel)
         rows.append({
             "round": i, "kind": source["kind"], "skill": source["skill"],
@@ -135,6 +135,15 @@ def make_game_review_packet(stage_dir: Path) -> dict:
             '</strong><audio controls preload="none" src="../' +
             escape(item["prompt_audio"], quote=True) + '"></audio></div></div>' +
             '<div class="options">' + ''.join(options) + '</div></section>')
+    unique_quality = {
+        clip["path"]: clip["quality"]
+        for row in rows for clip in row["audio"]
+    }
+    warning_clips = {
+        path: quality["warnings"]
+        for path, quality in unique_quality.items()
+        if quality["warnings"]
+    }
     html = (
         '<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -152,6 +161,9 @@ def make_game_review_packet(stage_dir: Path) -> dict:
         '<p>插图仅是原创矢量示意，并非固件内置 GameArt 的实际像素，必须另做实机验证。</p>'
         '<p>' + ('这些音频是合成测试音调，不是真人/中文朗读。' if is_test else
                  '这些中文合成语音尚未经真人完整试听与审核。') + '</p>'
+        '<p>声音技术警告片段：' + str(len(warning_clips)) +
+        ' / ' + str(len(unique_quality)) +
+        '（低音量、削波、长静音等指标只供参考，仍须逐句试听）。</p>'
         '<p>候选哈希：<code>' + candidate["checked_hash"] + '</code></p></div>'
         + ''.join(pages) + '</body></html>')
     (output / "index.html").write_text(html, encoding="utf-8")
@@ -163,6 +175,7 @@ def make_game_review_packet(stage_dir: Path) -> dict:
         "checked_hash": candidate["checked_hash"],
         "rounds": rows,
         "unique_audio_clips": len(unique_clips),
+        "technical_warnings": warning_clips,
         "total_audio_ms": sum({
             clip["path"]: clip["duration_ms"]
             for row in rows for clip in row["audio"]
