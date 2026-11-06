@@ -1475,6 +1475,10 @@ BOARD_WORKER = r'''
     kid_app::SoundPackReader sound_pack_;
     kid_app::SoundBank sound_bank_{&kid_app::LoadPromptClip};
     kid_app::PhrasePlanner phrase_planner_;  // gentle until the parent sets one (V5-06)
+    kid_app::MemoryPhraseSelector memory_phrases_;  // V5-04: yesterday's book, a chosen like
+    // Set by the pickup gesture just before its Pickup action; the Greeting
+    // line that follows may then mention a like (not the rail's Chat item).
+    std::atomic<bool> pickup_gesture_{false};
     bool sound_pack_tried_ = false;
 
     void LoadSoundPack() {
@@ -1543,11 +1547,42 @@ BOARD_WORKER = r'''
             // V5-01: the parent-set temperament from the ledger's memory
             // (gentle until a parent sets one).
             if (phrase) phrase_planner_.SetTemperament(pet_service_.TemperamentNow());
-            const uint16_t phrase_id = phrase ? phrase_planner_.Next(context, NowMs()) : 0;
+            // Consumed even if the line is dropped below: one gesture, one chance.
+            const bool pickup_line =
+                phrase && context == kid_app::PhraseContext::Greeting &&
+                pickup_gesture_.exchange(false);
+            uint16_t phrase_id = phrase ? phrase_planner_.Next(context, NowMs()) : 0;
             if (phrase && !phrase_id) {
                 ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
                          kid_app::PhraseContextName(context));
                 continue;
+            }
+            // V5-04: a memory line (yesterday's book at good morning, a chosen
+            // like on a pickup gesture) when the ledger really has one; the
+            // plain line above is the fallback. The pack holds no clips for
+            // slot lines yet, so they only log (src=text); a recorded clip
+            // would replace the plain line.
+            if (phrase && (context == kid_app::PhraseContext::MorningRecap || pickup_line)) {
+                const auto kind = context == kid_app::PhraseContext::MorningRecap
+                                      ? kid_app::MemoryPhraseKind::MorningRecap
+                                      : kid_app::MemoryPhraseKind::PickupLike;
+                const auto memory = pet_service_.MemoryNow();
+                const auto choice = memory_phrases_.Select(kind, memory, local_day_.load(),
+                                                           quiet_hours_.load(), NowMs());
+                if (choice.use) {
+                    kid_app::SoundClip memory_clip;
+                    const bool recorded = sound_bank_.LoadPhrase(choice.phrase_id, &memory_clip) &&
+                                          memory_clip.source == kid_app::SoundClip::Source::Pack;
+                    if (recorded) phrase_id = choice.phrase_id;
+                    ESP_LOGI(TAG, "PET_MEMORY_PHRASE ctx=%s id=%u src=%s slot=%u value=%u",
+                             kid_app::MemoryPhraseKindName(kind),
+                             static_cast<unsigned>(choice.phrase_id), recorded ? "pack" : "text",
+                             static_cast<unsigned>(choice.slot), static_cast<unsigned>(choice.value));
+                } else {
+                    ESP_LOGI(TAG, "PET_MEMORY_DECISION ctx=%s used=0 reason=%s",
+                             kid_app::MemoryPhraseKindName(kind),
+                             kid_app::MemoryPhraseReasonName(choice.reason));
+                }
             }
             auto& audio = Application::GetInstance().GetAudioService();
             // Newest request wins: invalidate audio queued for an older prompt.
@@ -2193,8 +2228,10 @@ BOARD_WORKER = r'''
             power_poke_.store(true);
             switch (gesture) {
                 case kid_app::Gesture::Pickup:
+                    pickup_gesture_.store(true);  // V5-04: the Greeting may mention a like
                     acted = kid_app::PetInputRouter::IsHomeRail(pet_event_mode_.load()) &&
                             pet_service_.PostLocal(kid_app::PetAction::Pickup);
+                    if (!acted) pickup_gesture_.store(false);
                     break;
                 case kid_app::Gesture::GentleShake:
                     acted = RequestHomeAnimation(kid_app::Animation::Giggle);
@@ -3554,6 +3591,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/prompt_clips.h"\n'
         '#include "kid_app/sound_bank.h"\n'
         '#include "kid_app/pet_phrases.h"\n'
+        '#include "kid_app/memory_phrases.h"\n'
         '#include "kid_app/status_bar.h"\n'
         '#include <wifi_manager.h>\n'
         '#include "esp_attr.h"\n'
