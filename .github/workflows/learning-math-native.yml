@@ -71,3 +71,53 @@ jobs:
           echo '15 actual math lessons passed host-compiled GamePackReader/GameSession/InputHub/SceneComposer.' >> "$GITHUB_STEP_SUMMARY"
           echo '15 full questions + 5 example native PBM 1-bit frames converted to PNG, NOT captured from physical EPD.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Voices are test-only synthetic tones. No approved content, SD deployment or flashing.' >> "$GITHUB_STEP_SUMMARY"
+
+  native-math-real-speech:
+    name: Real unreviewed Mandarin WAVs → actual C++ KPG1 reader
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    # Voice service may be flaky; failure must be reported but must not
+    # block the deterministic pure-offline firmware regression.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install preview, Edge TTS and portable FFmpeg dependencies
+        run: |
+          python -m pip install -r tools/story_pack_requirements.txt
+          python -m pip install 'edge-tts>=7.3.0,<8.0' 'imageio-ffmpeg>=0.6.0,<1.0'
+      - name: Build real Mandarin placeholder KPG1 and run native C++ flow
+        id: voice
+        continue-on-error: true
+        env:
+          LCP09_NARRATION: edge
+        run: bash scripts/lcp09_device_host_test.sh build/lcp09-real-voice
+      - name: Verify no parent review or publishable asset was produced
+        if: steps.voice.outcome == 'success'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('build/lcp09-real-voice')
+          report=json.loads((root/'device-fixture/device-fixture-report.json').read_text())
+          stage=json.loads((root/'device-fixture/stage/game.json').read_text())
+          manifest=json.loads((root/'device-fixture/games/default.manifest.json').read_text())
+          previews=json.loads((root/'previews/device-scenes.json').read_text())
+          assert report['status']=='test_only' and report['voice_provider']=='edge-tts'
+          assert report['original_audio_status']=='draft'
+          assert report['rounds']==15 and report['clips']==19
+          assert stage['approved'] is False and all(not r['approved'] for r in stage['rounds'])
+          assert manifest['placeholder'] is True
+          assert previews['narration']=='edge' and len(previews['scenes'])==20
+          print('PASS: native C++ played real PCM16 TTS from placeholder KPG1, NOT approved')
+          PY
+      - name: Report precise online voice verification outcome (no WAV upload)
+        if: always()
+        env:
+          VOICE_OUTCOME: ${{ steps.voice.outcome }}
+        run: |
+          echo "Real Mandarin-to-native-KPG1 result: ${VOICE_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          echo 'No actual voice WAV or placeholder KPG1 is uploaded as a public artifact.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is NOT an ESP32 GPIO/I2S/physical EPD test and NOT adult-reviewed content.' >> "$GITHUB_STEP_SUMMARY"
