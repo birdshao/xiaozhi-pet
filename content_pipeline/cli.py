@@ -63,8 +63,47 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stage-dir", type=Path, required=True)
     p.add_argument("--review-file", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p = sub.add_parser("make-math-game", help="Generate 15 original math draft rounds and WAV script")
+    p.add_argument("--output-dir", type=Path, required=True)
+    p = sub.add_parser("check-game", help="Validate math lesson draft and correct answers")
+    p.add_argument("--input", type=Path, required=True)
+    p = sub.add_parser("stage-game", help="Prepare KPG1 game with external speech WAVs")
+    p.add_argument("--input", type=Path, required=True, help="GAMELESSON1 JSON draft")
+    p.add_argument("--audio-map", type=Path, required=True, help="WAV file locations")
+    p.add_argument("--output-dir", type=Path, required=True)
+    p = sub.add_parser("build-game", help="Build default.kpg only after adult review")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p.add_argument("--review-file", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True, help="SD games/default.kpg")
     args = parser.parse_args(argv)
     try:
+        if args.command == "make-math-game":
+            from content_pipeline.game_lessons import (
+                original_math_lesson, audio_script, audio_map)
+            lesson = original_math_lesson()
+            write_json(args.output_dir / "lesson.json", lesson)
+            write_json(args.output_dir / "audio_script.json", audio_script(lesson))
+            write_json(args.output_dir / "audio_map.json", audio_map(lesson))
+            print(json.dumps({"lesson": str(args.output_dir / "lesson.json"),
+                              "status": "draft", "rounds": len(lesson["rounds"]),
+                              "speech_clips": len(audio_script(lesson)["clips"])},
+                             ensure_ascii=False))
+            return 0
+        if args.command == "check-game":
+            from content_pipeline.game_lessons import validate_lesson, audio_script
+            lesson = validate_lesson(json.loads(args.input.read_text(encoding="utf-8")))
+            print(json.dumps({"status": "draft", "rounds": len(lesson["rounds"]),
+                              "speech_clips": len(audio_script(lesson)["clips"])},
+                             ensure_ascii=False))
+            return 0
+        if args.command in ("stage-game", "build-game"):
+            from content_pipeline.game_packaging import stage_game, build_reviewed_game
+            if args.command == "stage-game":
+                result = stage_game(args.input, args.audio_map, args.output_dir)
+            else:
+                result = build_reviewed_game(args.stage_dir, args.review_file, args.output)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command in ("stage-book", "build-book"):
             from content_pipeline.packaging import stage_book, build_reviewed_book
             if args.command == "stage-book":
