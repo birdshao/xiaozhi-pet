@@ -105,6 +105,7 @@ class BookAssets(unittest.TestCase):
         self.assertFalse((self.assets / "images.manifest.json").exists())
         doc = json.loads(self.lcir.read_text(encoding="utf-8"))
         doc["pages"][0]["image_ref"] = "../../outside.jpg"
+        write_json(self.lcir, doc)
         with self.assertRaisesRegex(ContentError, "unsafe"):
             bookdash_url(doc, "../../outside.jpg")
         with self.assertRaisesRegex(ContentError, "unsafe"):
