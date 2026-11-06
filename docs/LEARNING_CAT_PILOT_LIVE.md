@@ -39,11 +39,10 @@ GitHub Actions 测试：`.github/workflows/learning-live-bookdash.yml`。在线�
 
 ## 2. 生成整本真实中文朗读音频
 
-需另装可选的 `edge-tts` (7.3.0+) 和 `ffmpeg`：
+需另装可选的 `edge-tts` (7.3.0+) 和音频转换工具。现在支持系统 `ffmpeg` 或无需 sudo 的 `imageio-ffmpeg` Python 自带可执行文件（后者更适合 GitHub Actions）：
 
 ```bash
-python -m pip install 'edge-tts>=7.3.0,<8.0'
-ffmpeg -version
+python -m pip install 'edge-tts>=7.3.0,<8.0' 'imageio-ffmpeg>=0.6.0,<1.0'
 python -m tools.learning_live_bookdash_pilot \
   --output-dir research_content/live_bookdash_real_voice \
   --narration edge
