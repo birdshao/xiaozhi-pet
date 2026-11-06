@@ -75,8 +75,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stage-dir", type=Path, required=True)
     p.add_argument("--review-file", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True, help="SD games/default.kpg")
+    p = sub.add_parser("build-course-index", help="Verify KPB2/KPG1 packages and map skills")
+    p.add_argument("--course", type=Path, required=True)
+    p.add_argument("--skills", type=Path, required=True)
+    p.add_argument("--package", type=Path, action="append", required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--test-only", action="store_true",
+                   help="Explicitly label the entire index test-only; allow tone fixtures")
     args = parser.parse_args(argv)
     try:
+        if args.command == "build-course-index":
+            from content_pipeline.catalog import build_index
+            result = build_index(args.course, args.skills, args.package,
+                                 args.output, allow_test_artifacts=args.test_only)
+            print(json.dumps({"course": result["course_id"],
+                              "status": result["status"],
+                              "packages": len(result["packages"]),
+                              "units": len(result["units"])}, ensure_ascii=False))
+            return 0
         if args.command == "make-math-game":
             from content_pipeline.game_lessons import (
                 original_math_lesson, audio_script, audio_map)
