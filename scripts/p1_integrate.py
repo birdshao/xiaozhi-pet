@@ -1838,6 +1838,23 @@ BOARD_WORKER = r'''
         HandlePowerEvent(power_.Tick(now, conditions));
     }
 
+    // Plain power-on (no trial script, no alarm): open Pet mode as soon as
+    // XiaoZhi is idle, so the child sees the pet, not the XiaoZhi screen.
+    // BOOT long press still switches back and forth. Runs on pet_selftest.
+    void EnterPetAtBoot() {
+        for (int attempt = 0; attempt < kMorningEnterTries && !pet_mode_.load(); ++attempt) {
+            RequestPetModeToggle();
+            for (int poll = 0; poll < 20 && !pet_mode_.load(); ++poll)
+                vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (pet_mode_.load()) {
+            ESP_LOGI(TAG, "PET_BOOT_ENTER result=pet");
+        } else {
+            ESP_LOGW(TAG, "PET_BOOT_ENTER result=timeout state=%d",
+                     static_cast<int>(Application::GetInstance().GetDeviceState()));
+        }
+    }
+
     // As after an RTC-alarm power-on: open Pet mode (XiaoZhi must be idle)
     // and let pet_input show the morning. Runs on pet_selftest.
     bool RunMorningWake(const char* source) {
@@ -3268,6 +3285,7 @@ BOARD_WORKER = r'''
         if (!running || running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1 ||
             running->size < 2 * kSelfTestSectorBytes) {
             ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=not_ota1");
+            EnterPetAtBoot();
             return;
         }
         // A trial that powered off with an alarm must not loop on wake-up.
@@ -3292,6 +3310,8 @@ BOARD_WORKER = r'''
         if (!ok) {
             ESP_LOGI(TAG, "PET_SELFTEST_NONE reason=no_script");
             delete script;
+            // Trials keep starting outside Pet mode: their "pet" step enters it.
+            EnterPetAtBoot();
             return;
         }
         // PowerManager never powers off by itself during a trial.
