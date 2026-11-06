@@ -104,8 +104,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--assets-dir", type=Path, required=True)
     p.add_argument("--output", type=Path,
                    help="Must be placed inside --assets-dir (default assets.json)")
+    p = sub.add_parser("localize-bookdash",
+                       help="Convert page-aligned Chinese draft into a pinned LCIR1 translation")
+    p.add_argument("--input", type=Path, required=True, help="Original English LCIR1")
+    p.add_argument("--translations", type=Path, required=True, help="Page-aligned zh-Hans JSON")
+    p.add_argument("--content-id", type=int, required=True)
+    p.add_argument("--revision", type=int, default=1)
+    p.add_argument("--registry", type=Path)
+    p.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "localize-bookdash":
+            from content_pipeline.localize import localize_bookdash
+            document = localize_bookdash(args.input, args.translations,
+                                         args.output, content_id=args.content_id,
+                                         revision=args.revision)
+            if args.registry:
+                register_document(args.registry, document)
+            print(json.dumps({"status": "draft", "item_uid": document["item_uid"],
+                              "pages": len(document["pages"]),
+                              "sha256": content_digest(document)}, ensure_ascii=False))
+            return 0
         if args.command == "fetch-bookdash-images":
             from content_pipeline.assets import fetch_bookdash_images
             result = fetch_bookdash_images(args.input, args.output_dir, replace=args.replace)
