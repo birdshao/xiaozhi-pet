@@ -55,8 +55,24 @@ def main(argv: list[str] | None = None) -> int:
                        help="Stable ID registry; strongly recommended for multiple books")
     p = sub.add_parser("check")
     p.add_argument("--input", type=Path, required=True)
+    p = sub.add_parser("stage-book", help="Render draft pages and bind review hash")
+    p.add_argument("--input", type=Path, required=True, help="LCIR1 JSON file")
+    p.add_argument("--assets", type=Path, required=True, help="Local asset-map JSON")
+    p.add_argument("--output-dir", type=Path, required=True)
+    p = sub.add_parser("build-book", help="Build existing KPB2 with human review proof")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p.add_argument("--review-file", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command in ("stage-book", "build-book"):
+            from content_pipeline.packaging import stage_book, build_reviewed_book
+            if args.command == "stage-book":
+                result = stage_book(args.input, args.assets, args.output_dir)
+            else:
+                result = build_reviewed_book(args.stage_dir, args.review_file, args.output)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command == "check":
             document = validate_document(json.loads(args.input.read_text(encoding="utf-8")))
         else:
