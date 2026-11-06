@@ -134,7 +134,6 @@ class Packaging(unittest.TestCase):
             wav.writeframes(b"\x00\x00" * 100)
         with self.assertRaisesRegex(ContentError, "24 kHz"):
             stage_book(self.lcir, self.map_file, self.stage)
-        self.setUp  # keep test tooling explicit, no implicit state reset
         doc = json.loads(self.lcir.read_text(encoding="utf-8"))
         doc["pages"][0]["text"] = "很" * 321
         write_json(self.lcir, doc)
