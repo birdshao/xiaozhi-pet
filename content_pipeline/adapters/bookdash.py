@@ -38,7 +38,7 @@ def _frontmatter(markdown: str) -> tuple[dict[str, str], str]:
         if ":" not in line:
             raise ContentError("Book Dash: unsupported frontmatter structure")
         key, value = line.split(":", 1)
-        meta[key.strip()] = value.strip().strip('"'')
+        meta[key.strip()] = value.strip().strip(chr(34) + chr(39))
     return meta, markdown[end + 5:]
 
 
