@@ -210,6 +210,8 @@ class PinnedBookDashPilot(unittest.TestCase):
         self.assertEqual(result["audio_clips"], 12)
         self.assertEqual(result["audio_provider"], "offline_synthetic_fixture")
         self.assertEqual(result["epaper_previews"], 24)
+        self.assertEqual(result["review_contact_sheets"], 2)
+        self.assertTrue((self.root / "orchestrated/staged/review/index.html").exists())
         msg = (self.root / "orchestrated/README-RESEARCH-ONLY.txt").read_text(
             encoding="utf-8")
         self.assertIn("test-only sine tones", msg)
