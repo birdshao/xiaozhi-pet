@@ -1,0 +1,79 @@
+name: Learning live Book Dash research smoke
+
+on:
+  pull_request:
+    paths:
+      - 'content_pipeline/**'
+      - 'curriculum/pilots/**'
+      - 'tools/learning_live_bookdash_pilot.py'
+      - '.github/workflows/learning-live-bookdash.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-source-images:
+    name: Pinned original story + 12 real JPEG pages + EPD previews
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing image packaging dependency
+        run: python -m pip install -r tools/story_pack_requirements.txt
+      - name: Fetch pinned Book Dash source and 12 real original illustrations
+        run: |
+          python -m tools.learning_live_bookdash_pilot \
+            --output-dir research_content/live_bookdash
+      - name: State research-only limits
+        run: |
+          echo "Images downloaded from a pinned upstream Git SHA and tested in 24 electronic-paper previews." >> "$GITHUB_STEP_SUMMARY"
+          echo "Chinese text is an unreviewed AI-assisted adaptation. Audio is synthetic sine tones (test_only)." >> "$GITHUB_STEP_SUMMARY"
+          echo "This is not approved content, nor a real ESP32/ePaper display validation." >> "$GITHUB_STEP_SUMMARY"
+      - name: Provide preview PNGs with Book Dash credits (research only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cat-book-live-jpeg-epaper-previews-research-only
+          path: |
+            research_content/live_bookdash/live-report.json
+            research_content/live_bookdash/README-RESEARCH-ONLY.txt
+            research_content/live_bookdash/pilot/attribution.json
+            research_content/live_bookdash/staged/preview/*.png
+          if-no-files-found: error
+          retention-days: 7
+
+  external-tts-probe:
+    name: Edge Chinese neural voice live connectivity (experimental)
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install optional Edge voice package
+        run: python -m pip install 'edge-tts>=7.3.0,<8.0'
+      - name: Probe a single real Chinese phrase (not uploaded)
+        id: tts
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from content_pipeline.speech import _edge_backend, _validate_wav
+          file = Path("research_content/voice-probe.wav")
+          _edge_backend("小猫，快回来！陪我一起玩吧！", file, "zh-CN-XiaoxiaoNeural")
+          _validate_wav(file, 60)
+          print("LIVE_CHINESE_TTS_OK size", file.stat().st_size,
+                "SHA256", hashlib.sha256(file.read_bytes()).hexdigest())
+          PY
+      - name: Report the real external-service status
+        if: always()
+        env:
+          OUTCOME: ${{ steps.tts.outcome }}
+        run: |
+          echo "One-line Edge TTS external connectivity result: ${OUTCOME}." >> "$GITHUB_STEP_SUMMARY"
+          echo "Success verifies connectivity/PCM format only; voice quality and license still need manual checks." >> "$GITHUB_STEP_SUMMARY"
