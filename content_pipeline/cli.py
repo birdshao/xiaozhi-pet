@@ -128,8 +128,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--credits", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("make-review-packet",
+                       help="Create read-only EPD contact sheets and local WAV review HTML")
+    p.add_argument("--stage-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "make-review-packet":
+            from content_pipeline.review_packet import make_review_packet
+            result = make_review_packet(args.stage_dir)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command == "fetch-bookdash-source":
             from content_pipeline.source_snapshots import fetch_bookdash_source
             result = fetch_bookdash_source(
