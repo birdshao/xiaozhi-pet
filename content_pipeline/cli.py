@@ -82,8 +82,54 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--test-only", action="store_true",
                    help="Explicitly label the entire index test-only; allow tone fixtures")
+    p = sub.add_parser("fetch-bookdash-images",
+                       help="Download referenced JPEG pages from exact upstream Git SHA")
+    p.add_argument("--input", type=Path, required=True, help="Imported Book Dash LCIR1")
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true",
+                   help="Explicitly replace images/manifest already in this research folder")
+    p = sub.add_parser("tts-book", help="Use optional Edge TTS + ffmpeg for page narration")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--voice", required=True, help="Locale-matched neural voice, e.g. zh-CN-XiaoxiaoNeural")
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("tts-game", help="Deduplicate and synthesize Chinese math prompts")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--voice", default="zh-CN-XiaoxiaoNeural")
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("prepare-book-assets",
+                       help="Verify downloaded images and recorded WAVs before stage-book")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--assets-dir", type=Path, required=True)
+    p.add_argument("--output", type=Path,
+                   help="Must be placed inside --assets-dir (default assets.json)")
     args = parser.parse_args(argv)
     try:
+        if args.command == "fetch-bookdash-images":
+            from content_pipeline.assets import fetch_bookdash_images
+            result = fetch_bookdash_images(args.input, args.output_dir, replace=args.replace)
+            print(json.dumps({"status": result["status"],
+                              "images": len(result["images"]),
+                              "source_git_sha": result["source_git_sha"]}, ensure_ascii=False))
+            return 0
+        if args.command in ("tts-book", "tts-game"):
+            from content_pipeline.speech import narrate_book, narrate_game
+            if args.command == "tts-book":
+                result = narrate_book(args.input, args.output_dir, voice=args.voice,
+                                      replace=args.replace)
+            else:
+                result = narrate_game(args.input, args.output_dir, voice=args.voice,
+                                      replace=args.replace)
+            print(json.dumps({"status": result["status"], "provider": result["provider"],
+                              "clips": len(result["audio"])}, ensure_ascii=False))
+            return 0
+        if args.command == "prepare-book-assets":
+            from content_pipeline.assets import combine_book_assets
+            result = combine_book_assets(args.input, args.assets_dir, args.output)
+            print(json.dumps({"pages": len(result["pages"]), "status": "draft"},
+                             ensure_ascii=False))
+            return 0
         if args.command == "build-course-index":
             from content_pipeline.catalog import build_index
             result = build_index(args.course, args.skills, args.package,
