@@ -12,9 +12,9 @@ from pathlib import Path
 import wave
 
 from content_pipeline.game_lessons import validate_lesson, audio_key
-from content_pipeline.game_packaging import _manifest
+from content_pipeline.game_packaging import _manifest, MAX_GAME_WAV
 from content_pipeline.schema import ContentError, canonical_json, write_json
-from content_pipeline.packaging import _hash, _asset, _sha_file, MAX_GAME_WAV
+from content_pipeline.packaging import _hash, _asset, _sha_file
 
 GAME_ICONS = {
     "match_shape": "认形状", "count": "数数", "big_small": "比较大小",
