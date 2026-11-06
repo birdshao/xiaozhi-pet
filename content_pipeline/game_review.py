@@ -163,16 +163,11 @@ def make_game_review_packet(stage_dir: Path) -> dict:
         "checked_hash": candidate["checked_hash"],
         "rounds": rows,
         "unique_audio_clips": len(unique_clips),
-        "total_audio_ms": sum(a["duration_ms"] for row in rows for a in
-                              row["audio"] if a["path"] in unique_clips and
-                              (unique_clips.remove(a["path"]) is None)),
+        "total_audio_ms": sum({
+            clip["path"]: clip["duration_ms"]
+            for row in rows for clip in row["audio"]
+        }.values()),
         "warning": "Illustrations are schematic, not device screenshots. NOT APPROVED.",
     }
-    # The duration calculation above is intentionally replaced by an explicit
-    # unique-path pass below, to avoid counting the same reused voice multiple times.
-    duration_by_path = {clip["path"]: clip["duration_ms"] for row in rows
-                        for clip in row["audio"]}
-    report["total_audio_ms"] = sum(duration_by_path.values())
-    report["unique_audio_clips"] = len(duration_by_path)
     write_json(output / "review-summary.json", report)
     return report
