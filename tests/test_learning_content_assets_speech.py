@@ -112,6 +112,7 @@ class BookAssets(unittest.TestCase):
         with self.assertRaisesRegex(ContentError, "unsafe"):
             fetch_bookdash_images(self.lcir, self.assets, fetch=self.fetch)
         doc = json.loads(self.lcir.read_text(encoding="utf-8"))
+        doc["pages"][0]["image_ref"] = "images/01.jpg"
         doc["source"]["provider"] = "global-asp"
         with self.assertRaisesRegex(ContentError, "Book Dash"):
             bookdash_url(doc, "images/01.jpg")
