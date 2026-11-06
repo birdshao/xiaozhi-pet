@@ -14,6 +14,7 @@ from PIL import Image
 
 from content_pipeline.adapters import import_bookdash
 from content_pipeline.packaging import build_reviewed_book, stage_book
+from content_pipeline.review_packet import make_review_packet
 from content_pipeline.schema import ContentError, write_json
 from tools import kpb2
 
@@ -111,6 +112,26 @@ class Packaging(unittest.TestCase):
         self.assertEqual(len(parsed["pages"]), 2)
         self.assertFalse((self.stage / "__reviewed_kpb2_temp.json").exists())
         self.assertFalse(staged_book["approved"])
+
+    def test_read_only_epaper_review_packet(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        review = make_review_packet(self.stage)
+        self.assertEqual(review["status"], "unreviewed")
+        self.assertEqual(review["pages"], 2)
+        self.assertEqual(review["checked_hash"], candidate["checked_hash"])
+        page = (self.stage / "review/index.html").read_text(encoding="utf-8")
+        self.assertIn("NOT APPROVED", page)
+        self.assertIn("Two Toy Friends", page)
+        self.assertIn("../page_01.wav", page)
+        self.assertFalse((self.stage / "__reviewed_kpb2_temp.json").exists())
+        for image in ("contact-mono.png", "contact-grey.png"):
+            with Image.open(self.stage / "review" / image) as sheet:
+                self.assertGreater(sheet.width, 800)
+                self.assertGreater(sheet.height, 190)
+        with (self.stage / "preview/page_01_mono.png").open("ab") as out:
+            out.write(b"tamper")
+        with self.assertRaisesRegex(ContentError, "changed"):
+            make_review_packet(self.stage)
 
     def test_modified_stage_rejected(self):
         candidate = stage_book(self.lcir, self.map_file, self.stage)
