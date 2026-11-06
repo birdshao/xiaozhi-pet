@@ -151,7 +151,8 @@ def fetch_bookdash_images(lcir_file: Path, output_dir: Path,
 
 
 def combine_book_assets(lcir_file: Path, assets_dir: Path,
-                        output: Path | None = None) -> dict:
+                        output: Path | None = None, *,
+                        allow_test_artifacts: bool = False) -> dict:
     """Verify two independently generated manifests before stage-book."""
     doc = validate_document(json.loads(Path(lcir_file).read_text(encoding="utf-8")))
     base = Path(assets_dir)
@@ -159,7 +160,9 @@ def combine_book_assets(lcir_file: Path, assets_dir: Path,
     audio = json.loads((base / "audio.manifest.json").read_text(encoding="utf-8"))
     for label, manifest, schema in (
             ("images", imgs, "BOOKIMAGES1"), ("audio", audio, "BOOKAUDIO1")):
-        if manifest.get("schema_version") != schema or manifest.get("status") != "draft" \
+        allowed = {"draft", "test_only"} if label == "audio" and allow_test_artifacts \
+            else {"draft"}
+        if manifest.get("schema_version") != schema or manifest.get("status") not in allowed \
                 or manifest.get("item_uid") != doc["item_uid"] \
                 or manifest.get("content_digest") != content_digest(doc):
             raise ContentError(f"{label}: stale, mismatched, or invalid manifest")
