@@ -36,9 +36,34 @@ def _manifest(stage_dir: Path) -> dict:
     lesson = validate_lesson(json.loads(lesson_file.read_text(encoding="utf-8")))
     game = json.loads(game_file.read_text(encoding="utf-8"))
     attr = json.loads(attr_file.read_text(encoding="utf-8"))
+    if not isinstance(game, dict) or game.get("approved") is not False or \
+            game.get("schema_version") != 1 or \
+            game.get("package_type") != "game" or \
+            game.get("content_id") != lesson["content_id"] or \
+            game.get("revision") != lesson["revision"] or \
+            game.get("game_id") != lesson["game_id"]:
+        raise ContentError("game: staged header or review status conflicts with lesson")
     expected = set(audio_script(lesson)["clips"])
     used = set()
-    for item in game["rounds"]:
+    if len(game.get("rounds", [])) != len(lesson["rounds"]):
+        raise ContentError("game: staged round count mismatch")
+    for index, (item, source) in enumerate(zip(game["rounds"], lesson["rounds"]), 1):
+        options = source["options"]
+        expected_round = {
+            "kind": source["kind"],
+            "prompt": source["prompt"],
+            "prompt_audio": f"clips/{audio_key(source['prompt'])}.wav",
+            "question_art": source["question_art"],
+            "answer": source["answer"],
+            "approved": False,
+            "options": [{
+                "art": option["art"],
+                "label": option["label"],
+                "audio": f"clips/{audio_key(option['label'])}.wav",
+            } for option in options],
+        }
+        if item != expected_round:
+            raise ContentError(f"game: staged round {index} differs from validated lesson")
         used.add(item["prompt_audio"])
         for option in item["options"]:
             used.add(option["audio"])
