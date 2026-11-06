@@ -109,11 +109,34 @@
 
 **自测**：`tools/selftest/v4_env_tips.pettest`（25 % 缩放，约 136 s，监视上限 146 s）。开头的基线 `temp 22` 先保持满 60 s（缩放 15 s），保证无论真实传感器开机时在哪个区都先回到 normal。新增 PETSELFTEST1 步骤 `temp <0..60>` / `temp off`：像 `battery` 步骤一样替代 SHTC3（同时驱动状态栏和提醒策略）；缩放后 60 s 保持变 15 s。场景依次 33 °C → 22 °C → 12 °C（注入值不补偿，策略每轮循环直接看到注入值，不等 10 s 心跳），期望热提醒、无提醒恢复、冷提醒。**必须在家长安静时段之外运行**，否则会看到 `PET_ENV_TIP_HELD`。原速运行：`--timescale 100`。
 
+## 5.5 记忆驱动的话术（V5-04 后半）
+
+`include/kid_app/memory_phrases.h`，纯 C++（`MemoryPhraseSelector`），主机单测 `tests/cpp/test_memory_phrases.cc`（`scripts/p2_test.sh`）。
+
+- **早安回顾** `MorningRecap`：早安流程（`PET_MORNING`）里，只有 `BookReadOn(今天-1)` 确实有昨天读完的书才选带 `{book}` 的模板（好奇 122 / 温柔 222 / 活泼 322）；没有就不说，退回原来的普通早安句。不受安静时段和拿起频率限制（早安窗口本来就是家长的起床计划）。目前记忆里“昨天”只有书有对应模板；游戏/喂食没有模板，没有编造。
+- **拿起提到喜好** `PickupLike`：只有 **拿起手势**（`gesture pickup`，不是首页轨道的“聊天”）后的问候才可能换成带 `{like}` 的模板（132 / 232 / 332），喜好只来自拨轮选择题（V5-03）；没有选过喜好就不说。多个喜好按最近到最早轮流提。
+  - 频率上限：每个本地日最多 3 次，两次之间至少 10 分钟（`kPickupDayLimit` / `kPickupMinGapMs`，uint32 毫秒时钟回绕安全）；被上限/安静时段挡掉的拿起不占次数、不开始计时间隔。
+  - 安静时段（家长作息）一律不说。
+- 同输入同输出：没有随机源；轮流提哪个喜好由本次启动内已说过的次数决定。
+- 性格取自账本里的 `GetTemperament()`（V5-01 模板）。
+
+**声音与文字**：KPS1 声音包只收没有槽位的句子（`RecordablePhrase`），所以带 `{book}`/`{like}` 的句子没有录音。板端处理：选中记忆句时先问声音包有没有这条 id 的录音（有则播，`src=pack`）；没有就仍播原来的普通问候/早安（声音包或提示音），记忆句只写日志（`src=text`）。电子纸还没有汉字字库和字幕层，屏上不显示这句话——**“只显示文字”目前只落在串口日志**，书名/选项名的音频拼接和屏上字幕仍未做。
+
+**日志**：
+
+- `PET_MEMORY_PHRASE ctx=morning_recap|pickup_like id=<模板 id> src=pack|text slot=<1 书/2 喜好> value=<书 id 或选项 id>`（真的用了记忆句）
+- `PET_MEMORY_DECISION ctx=.. used=0 reason=no_memory|quiet|too_soon|day_limit|no_template`（退回普通问候）
+- 每次拿起手势后的问候、每次早安各产生恰好一行以上两者之一（问候本身被 4 s 间隔丢掉时除外）。
+
+**板端**：`scripts/p1_integrate.py` overlay 在 `pet_prompt` 任务里调用（`phrase_planner_` 选出普通句之后）；拿起手势在 `PostLocal(Pickup)` 前置位 `pickup_gesture_`，问候被消费或丢弃时清除，保证只有手势触发的问候才有机会提到喜好。
+
+**自测**：`tools/selftest/v5_memory_phrases.pettest`（原速，监视上限约 94 s）：三次间隔 6 s 的拿起，再一次早安 + 拨轮触摸保持清醒。结果取决于设备账本记得什么（有喜好时第 2、3 次拿起是 `reason=too_soon`），所以场景只要求每次触发都有一次回答、没有失败；上限、安静时段、无记忆兜底由主机单测钉死。
+
 ## 6. 尚未完成
 
 - 板级接线已完成（ADR-014，见 `P3_ATOMIC_PET_LEDGER.md`）：板子改用 `FreertosAtomicPetService`，首次启动从旧 `kid_pet` 迁移；喂食/问候计数按 RTC 本地日换日（`SetDayProvider`）；话术按账本里的性格选（`TemperamentNow()`，家长设置性格前为温柔）；`PostMemory` / 板上 `RecordMemory()` 是写记忆的入口，选择题的喜好由绘本阅读器接入。
 - V5-04 前半已完成（见 `V2_SOUND_PACK.md`）：拿起/喂食/轻摇/早安/哄睡时，按性格从无槽位的审核句里确定地选一句，播放 TF 声音包里的录音（无录音时播一段提示音）。
-  后半未做：记忆驱动的 `{book}`/`{like}` 槽位句（早安回顾昨天的书、拿起时提到喜好）需要书名/选项名的音频拼接，以及板上启用原子账本后的真实记忆。
+  后半已完成选择与板端接线（见 5.5）；仍未做：带槽位句的真实录音/书名选项名音频拼接、屏上字幕。
 - V4-04/05 页内选择题还没有产生 `PreferenceChosen` 的真实来源。
 - V5-05 服务端记忆同步/查看/删除；记忆事件暂不进入外发队列。
 - V5-06 家长初始化（名字、性格、声音包）的 UI 与 API。
