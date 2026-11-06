@@ -395,3 +395,10 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   "$ROOT/tests/cpp/test_motion_game.cc" \
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
+
+# V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/voice_command.cc" \
+  "$ROOT/tests/cpp/test_voice_command.cc" \
+  -o "$BUILD/test_voice_command"
+"$BUILD/test_voice_command"

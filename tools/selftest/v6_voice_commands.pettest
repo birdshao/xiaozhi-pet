@@ -1,0 +1,62 @@
+PETSELFTEST1
+# V6-02 fixed voice commands on the pet. "vcmd" steps inject the wire names
+# the server's matcher would send (the board's real command path; the XiaoZhi
+# MCP tool that carries them from the server is a later step). Counted from
+# "mark begin" (see tools/selftest_report.py).
+# Every command logs one PET_VOICE_CMD line with its result.
+# expect min:name=PAGE_NEXT 2
+# expect min:name=TELL_TIME 1
+# expect min:name=TELL_BATTERY 2
+# expect min:name=OPEN_READER 1
+# expect min:name=SLEEP_REQUEST 1
+# Next page at home, an unknown name, and a status answer over a book are
+# refused or ignored; battery, reader and sleep requests are done.
+# expect min:result=not_in_reader 1
+# expect min:result=unknown 1
+# expect min:result=busy 1
+# expect min:result=done 3
+# SLEEP_REQUEST runs the V2-09 flow and is cancelled by a key press while
+# the sleeping picture is still coming up: nothing powers off.
+# expect min:PET_SLEEP_REQUESTED 1
+# expect min:PET_SLEEP_CANCELLED 1
+# expect none:PET_SLEEP_POWEROFF 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# Quiet prompts while testing (RAM only, this boot).
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Home: next page has no book to turn; an unknown name is ignored.
+vcmd PAGE_NEXT
+wait 3000
+vcmd FLY_TO_MOON
+wait 1500
+# Time (the RTC may not be set yet: then it says "no_clock"); battery 80 %.
+vcmd TELL_TIME
+wait 3000
+battery 80 0
+wait 4000
+vcmd TELL_BATTERY
+wait 3000
+# Tell a story: the reader (or its no-book picture) opens; a status question
+# over it is "busy"; next page turns the page or says there is no book.
+vcmd OPEN_READER
+wait 7000
+vcmd TELL_BATTERY
+wait 1500
+vcmd PAGE_NEXT
+wait 4000
+# Home again.
+hold press 1500 7000
+battery off
+# Bedtime: a safety alarm, then the sleep flow and a key press to cancel it.
+alarm 30
+vcmd SLEEP_REQUEST
+wait 1500
+tap press 6000
+end

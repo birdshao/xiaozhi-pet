@@ -1021,6 +1021,108 @@ BOARD_WORKER = r'''
         HandleSleepAction(kid_app::SleepAction::RestoreScene);
     }
 
+    // ---- V6-02 fixed voice commands ----
+    // The server's fixed-command matcher (S5) asks for one of a handful of
+    // wire names (kid_app/voice_command.h); any task may post one, pet_input
+    // decides with the same rules as the buttons (DecideVoiceCommand) and
+    // runs the same code paths as the rail / PWR. Voice writes no memory and
+    // gives no extra reward. One slot: a newer command replaces a waiting
+    // one. Bit 0-7 the command, bits 8-23 a sequence (never 0 when posted).
+    std::atomic<uint32_t> voice_cmd_{0};
+    std::atomic<uint16_t> voice_cmd_seq_{0};
+
+    // Any task. Unknown names are logged and dropped right here.
+    void RequestVoiceCommand(const char* name) {
+        const auto command = kid_app::ParseVoiceCommand(name);
+        if (command == kid_app::VoiceCommand::Unknown) {
+            ESP_LOGI(TAG, "PET_VOICE_CMD name=%.15s result=unknown", name ? name : "");
+            return;
+        }
+        const uint32_t seq = static_cast<uint32_t>(voice_cmd_seq_.fetch_add(1) + 1) & 0xFFFF;
+        voice_cmd_.store((seq ? seq : 1u) << 8 | static_cast<uint32_t>(command));
+    }
+
+    kid_app::VoiceScene CurrentVoiceScene() const {
+        if (!pet_mode_.load()) return kid_app::VoiceScene::Off;
+        if (ParentMenuOpen()) return kid_app::VoiceScene::Parent;
+        if (sleep_flow_.Active() || sleep_active_.load()) return kid_app::VoiceScene::Sleeping;
+        if (GameActive()) return kid_app::VoiceScene::Game;
+        if (pet_event_mode_.load() == kid_app::PetMode::Story)
+            return kid_app::VoiceScene::Reader;
+        return kid_app::VoiceScene::Home;
+    }
+
+    // pet_input, every loop.
+    void UpdateVoiceCommand() {
+        const uint32_t word = voice_cmd_.exchange(0);
+        if (!word) return;
+        const auto command = static_cast<kid_app::VoiceCommand>(word & 0xFF);
+        // A voice command is activity: it ends a nap or the morning window
+        // like a dial touch (the command itself still runs).
+        if (power_save_timer_) power_save_timer_->WakeUp();
+        if (pet_mode_.load()) HandlePowerEvent(power_.OnActivity(NowMs()));
+
+        static const char* const kScene[] = {"off", "home", "reader", "game", "parent", "sleeping"};
+        const auto status = kid_app::UnpackStatus(status_bits_.load());
+        kid_app::VoiceContext context;
+        context.scene = CurrentVoiceScene();
+        context.quiet_hours = quiet_hours_.load();
+        context.low_battery = battery_.LowPower();
+        context.clock_known = status.hour != kid_app::StatusBar::kNoTime &&
+                              status.minute != kid_app::StatusBar::kNoTime;
+        context.battery_known = battery_.Percent() >= 0;
+        const auto decision = kid_app::DecideVoiceCommand(command, context);
+        const char* result = decision.result;
+
+        switch (decision.action) {
+            case kid_app::VoiceAction::None:
+                break;
+            case kid_app::VoiceAction::BeginSleep:
+                // The same flow as PWR / the rail: sleeping picture, 3 s to cancel.
+                HandleSleepAction(sleep_flow_.Request(NowMs()));
+                break;
+            case kid_app::VoiceAction::OpenReader:
+                // The rail's Story item: a book, or the no-book picture (#75).
+                if (!pet_service_.PostLocal(kid_app::PetAction::StartStory)) result = "rejected";
+                break;
+            case kid_app::VoiceAction::PageNext:
+                if (!book_.Active() || book_.Asking()) {
+                    result = "busy";  // still opening / answer the question first
+                } else if (book_.Missing() != kid_app::BookMissing::None) {
+                    result = "no_book";
+                } else {
+                    ApplyBookStep(book_.OnInput(kid_app::InputKind::DialDown, NowMs()), "voice");
+                }
+                break;
+            case kid_app::VoiceAction::ShowTime:
+                ESP_LOGI(TAG, "PET_VOICE_TIME hour=%u minute=%u", static_cast<unsigned>(status.hour),
+                         static_cast<unsigned>(status.minute));
+                break;
+            case kid_app::VoiceAction::ShowBattery:
+                ESP_LOGI(TAG, "PET_VOICE_BATTERY pct=%d charging=%d state=%s", battery_.Percent(),
+                         battery_.External() ? 1 : 0, kid_app::BatteryStateName(battery_.State()));
+                break;
+        }
+        ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=%s action=%s hint=%s scene=%s",
+                 kid_app::VoiceCommandName(command), result,
+                 kid_app::VoiceActionName(decision.action),
+                 kid_app::VoiceHintName(decision.hint), kScene[static_cast<int>(context.scene)]);
+
+        // Time / battery answers and refusals: a wave and the pet's hello
+        // (the server's TTS says the digits; the status band already shows
+        // them). Quiet hours: picture only, no sound.
+        const bool answered = decision.action == kid_app::VoiceAction::ShowTime ||
+                              decision.action == kid_app::VoiceAction::ShowBattery;
+        const bool refused = decision.hint != kid_app::VoiceHint::None;
+        if ((answered || refused) && context.scene == kid_app::VoiceScene::Home) {
+            if (!decision.silent && decision.hint != kid_app::VoiceHint::QuietHours)
+                PostPhrase(kid_app::PhraseContext::Greeting);
+            RequestAnimation(kid_app::Animation::Greet, UnpackPetScene(last_pet_scene_.load()));
+        } else if (refused && !decision.silent && decision.hint != kid_app::VoiceHint::QuietHours) {
+            PostPhrase(kid_app::PhraseContext::Greeting);
+        }
+    }
+
     // ---- V6-01 listening / thinking / speaking faces ----
     // pet_input owns the tracker. The face is a UI-only overlay on the home
     // scene (like the rail highlight): XiaoZhi's state never reaches NVS and
@@ -1086,6 +1188,7 @@ BOARD_WORKER = r'''
             UpdatePower(state);
             UpdateBattery(state);
             UpdateEnvTips(state);  // V4-03
+            UpdateVoiceCommand();  // V6-02
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -3225,6 +3328,11 @@ BOARD_WORKER = r'''
                     ESP_LOGI(TAG, "PET_SELFTEST_VOICE phase=%s",
                              kid_app::VoiceFaceName(static_cast<kid_app::VoiceFace>(step.ms)));
                     break;
+                case kid_app::SelfTestOp::VoiceCmd:
+                    // V6-02: as if the server's fixed-command matcher had sent it.
+                    ESP_LOGI(TAG, "PET_SELFTEST_VCMD name=%s", step.name);
+                    RequestVoiceCommand(step.name);
+                    break;
                 case kid_app::SelfTestOp::Battery: {
                     // V3-05: readings as if from the PMIC (status band and
                     // battery policy); "off" hands back to the real PMIC.
@@ -3438,6 +3546,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/refresh_planner.h"\n'
         '#include "kid_app/pet_animation.h"\n'
         '#include "kid_app/voice_face.h"\n'
+        '#include "kid_app/voice_command.h"\n'
         '#include "kid_app/selftest_script.h"\n'
         '#include "kid_app/selftest_clock.h"\n'
         '#include "kid_app/sleep_flow.h"\n'

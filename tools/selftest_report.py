@@ -136,6 +136,10 @@ def plan(scenario: str) -> dict:
                 off_ms = t_ms + _scaled(MORNING_WINDOW_MS, pct) + SLEEP_FLOW_MS
         elif op == "alarm":
             alarm_s = args[0]
+        elif op == "vcmd" and words[1] == "SLEEP_REQUEST":
+            # V6-02: the sleep flow powers off unless a key press cancels it.
+            if not keys_after[i] and off_ms is None:
+                off_ms = t_ms + SLEEP_FLOW_MS
         elif op == "battery" and len(words) == 3 and words[2] == "0" and args[0] < 8:
             if off_ms is None:  # critical on battery: safe shutdown
                 off_ms = t_ms + _scaled(CRITICAL_DEBOUNCE_MS, pct) + SLEEP_FLOW_MS
