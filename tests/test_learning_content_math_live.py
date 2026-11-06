@@ -47,7 +47,7 @@ class MathLivePilot(unittest.TestCase):
         self.assertIn("NOT APPROVED", html)
         self.assertIn("第 15 题", html)
         self.assertIn("正确选项（仅审核者可见）", html)
-        self.assertIn("不是固件内置 GameArt 的实际像素", html)
+        self.assertIn("并非固件内置 GameArt 的实际像素", html)
         self.assertIn("../clips/clip_", html)
         self.assertTrue((self.root / "smoke/README-RESEARCH-ONLY.txt").exists())
 
