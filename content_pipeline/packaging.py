@@ -143,6 +143,8 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
         img = _asset(base, assets["image"], max_size=MAX_IMAGE_INPUT)
         wav = _asset(base, assets["audio"], max_size=MAX_WAV_INPUT)
         _verify_wav(wav)
+        if img.is_relative_to(output_root) or wav.is_relative_to(output_root):
+            raise ContentError("source assets must not be inside stage directory")
         provenance_assets.append({
             "page": n, "image_ref": page["image_ref"],
             "image_source": assets["image"], "image_sha256": _sha_file(img, MAX_IMAGE_INPUT),
