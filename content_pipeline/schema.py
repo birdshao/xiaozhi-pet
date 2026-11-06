@@ -131,8 +131,19 @@ def validate_document(doc: Any) -> dict:
         if not isinstance(f["sha256"], str) or not HASH.fullmatch(f["sha256"]):
             raise ContentError("source_file.sha256: invalid")
 
-    if not isinstance(d["transformations"], list) or d["transformations"]:
-        raise ContentError("transformations: LCP-01/02 importer only accepts unmodified drafts")
+    transformations = d["transformations"]
+    if not isinstance(transformations, list) or len(transformations) > 1:
+        raise ContentError("transformations: only one explicit translation step is supported")
+    for change in transformations:
+        _keys(change, {"kind", "source_locale", "target_locale",
+                       "source_digest", "method", "notes"}, "translation")
+        if change["kind"] != "translation" or change["source_locale"] != "en" or \
+                change["target_locale"] != "zh-Hans" or d["locale"] != "zh-Hans" or \
+                s["provider"] != "bookdash" or change["method"] != "manual_draft" or \
+                not isinstance(change["source_digest"], str) or \
+                not HASH.fullmatch(change["source_digest"]):
+            raise ContentError("translation: unsupported or unpinned transformation")
+        _string(change["notes"], "translation.notes", 300)
     pages = d["pages"]
     if not isinstance(pages, list) or not 1 <= len(pages) <= 32:
         raise ContentError("pages: expected 1..32 (KPB2 bound)")
