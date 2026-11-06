@@ -217,7 +217,7 @@ class SelfTestReportTests(unittest.TestCase):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
                  "morning", "voice", "battery", "temp", "book", "game", "timescale", "twait",
-                 "waitidle", "micgame", "envelope", "end"}
+                 "waitidle", "micgame", "envelope", "vcmd", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
         for path in sorted(root.glob("*.pettest")):
@@ -383,6 +383,12 @@ class SelfTestReportTests(unittest.TestCase):
         critical = "PETSELFTEST1\nalarm 30\nbattery 5 0\nwait 1000\nend\n"
         self.assertTrue(plan(critical)["power_off"])
         self.assertFalse(plan(critical.replace("battery 5 0", "battery 5 1"))["power_off"])
+        # V6-02: a voice sleep request powers off unless a key press follows.
+        voice = "PETSELFTEST1\nalarm 30\nvcmd SLEEP_REQUEST\nwait 1000\nend\n"
+        self.assertTrue(plan(voice)["power_off"])
+        cancelled = voice.replace("wait 1000", "tap press 1000")
+        self.assertFalse(plan(cancelled)["power_off"])
+        self.assertFalse(plan("PETSELFTEST1\nvcmd TELL_TIME\nwait 1000\nend\n")["power_off"])
 
 
 if __name__ == "__main__":

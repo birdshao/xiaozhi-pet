@@ -136,6 +136,23 @@ int main() {
         assert(!script.Parse("PETSELFTEST1\nvoice listen now\nend\n"));
     }
 
+    // vcmd <NAME>: inject a fixed voice command (V6-02).
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nvcmd TELL_TIME\nvcmd SLEEP_REQUEST\nvcmd NOPE_x1\n"
+                            "wait 10\nend\n"));
+        assert(script.Count() == 4 && script.TotalMs() == 10);  // not a delay
+        for (int i = 0; i < 3; ++i) assert(script.Steps()[i].op == SelfTestOp::VoiceCmd);
+        assert(std::strcmp(script.Steps()[0].name, "TELL_TIME") == 0);
+        assert(std::strcmp(script.Steps()[1].name, "SLEEP_REQUEST") == 0);
+        assert(std::strcmp(script.Steps()[2].name, "NOPE_x1") == 0);
+        assert(!script.Parse("PETSELFTEST1\nvcmd\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvcmd TELL TIME\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvcmd TELL-TIME\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nvcmd ABCDEFGHIJKLMNOP\nend\n"));  // 16 chars
+        assert(script.Parse("PETSELFTEST1\nvcmd ABCDEFGHIJKLMNO\nend\n"));    // 15 chars
+    }
+
     // combo <ms> [gap]: BOOT + dial press together (V3-06 parent entry).
     {
         SelfTestScript script;

@@ -1438,6 +1438,41 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('# expect min:PET_MOTION_FOUND 3', scenario)
         self.assertIn('# expect commits 0', scenario)
 
+    def test_v6_voice_commands_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/voice_command.h"', patched)
+        # Any task posts a wire name; unknown ones are dropped at the door.
+        post = self._body(patched, 'void RequestVoiceCommand(')
+        self.assertIn('kid_app::ParseVoiceCommand(name)', post)
+        self.assertIn('result=unknown', post)
+        # pet_input decides with the pure dispatcher and runs the button paths.
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertIn('UpdateVoiceCommand();', loop)
+        run = self._body(patched, 'void UpdateVoiceCommand(')
+        self.assertIn('kid_app::DecideVoiceCommand(command, context)', run)
+        self.assertIn('HandleSleepAction(sleep_flow_.Request(NowMs()))', run)
+        self.assertIn('pet_service_.PostLocal(kid_app::PetAction::StartStory)', run)
+        self.assertIn('book_.OnInput(kid_app::InputKind::DialDown, NowMs())', run)
+        self.assertIn('PET_VOICE_CMD name=%s result=%s', run)
+        # Voice never writes memory or adds rewards.
+        for needle in ('RecordBookMemory', 'MemorySource', 'PetAction::Feed'):
+            self.assertNotIn(needle, run)
+        scene = self._body(patched, 'kid_app::VoiceScene CurrentVoiceScene()')
+        for needle in ('ParentMenuOpen()', 'sleep_flow_.Active()', 'GameActive()',
+                       'PetMode::Story'):
+            self.assertIn(needle, scene)
+        step = self._body(patched, 'void MaybeRunSelfTest()')
+        self.assertIn('case kid_app::SelfTestOp::VoiceCmd:', step)
+        self.assertIn('RequestVoiceCommand(step.name)', step)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v6_voice_commands.pettest').read_text(
+            encoding='ascii')
+        for name in ('PAGE_NEXT', 'TELL_TIME', 'TELL_BATTERY', 'OPEN_READER', 'SLEEP_REQUEST'):
+            self.assertIn(f'\nvcmd {name}\n', scenario)
+        # Sleep is cancelled by a key press, with an alarm as the safety net.
+        self.assertLess(scenario.index('alarm 30'), scenario.index('vcmd SLEEP_REQUEST'))
+        self.assertIn('vcmd SLEEP_REQUEST\nwait 1500\ntap press', scenario)
+        self.assertIn('\nvolume 15\n', scenario)
+
 
 if __name__ == "__main__":
     unittest.main()

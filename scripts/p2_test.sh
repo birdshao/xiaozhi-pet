@@ -396,6 +396,13 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
 
+# V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/voice_command.cc" \
+  "$ROOT/tests/cpp/test_voice_command.cc" \
+  -o "$BUILD/test_voice_command"
+"$BUILD/test_voice_command"
+
 # V5-04 memory-driven lines: yesterday's book at good morning, a chosen like
 # on pickup; frequency cap, quiet hours, no-memory fallback.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

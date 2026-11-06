@@ -33,6 +33,13 @@ namespace kid_app {
 //                           power-off it leads to always wakes the board again.
 //   voice <phase>           as if XiaoZhi were: listen, think, speak; off hands
 //                           the voice face back to XiaoZhi's real state (V6-01)
+//   vcmd <NAME>             V6-02: as if the server had sent that fixed voice
+//                           command (SLEEP_REQUEST, TELL_TIME, TELL_BATTERY,
+//                           PAGE_NEXT, OPEN_READER). Any other name made of
+//                           [A-Za-z0-9_] (<= 15 chars) is injected too and
+//                           must be ignored. SLEEP_REQUEST starts the sleep
+//                           flow like PWR: after it cancel with a key press,
+//                           or put an "alarm" step before it.
 //   battery <pct> <0|1>     PMIC readings from now on (V3-05): level 0..100,
 //                           1 = charging on USB, 0 = on battery; drives the
 //                           status band and the battery policy. A critical
@@ -73,7 +80,8 @@ namespace kid_app {
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
-    Combo, Book, Game, TimeScale, WaitIdle, TimerWait, Envelope, MicGame, Temp
+    Combo, Book, Game, TimeScale, WaitIdle, TimerWait, Envelope, MicGame, Temp,
+    VoiceCmd
 };
 
 struct SelfTestStep {
@@ -88,7 +96,7 @@ struct SelfTestStep {
                           // Game: the seed; Envelope: duration ms;
                           // Temp: whole degrees or kTempOff
     uint32_t gap_ms = 0;  // pause after releasing the key
-    char name[16] = {};   // Mark; Book: book id; Envelope / MicGame: kind name
+    char name[16] = {};   // Mark; Book: book id; VoiceCmd: wire name; Envelope / MicGame: kind name
 };
 
 class SelfTestScript {
