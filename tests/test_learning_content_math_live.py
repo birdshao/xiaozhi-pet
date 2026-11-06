@@ -108,7 +108,7 @@ class MathLivePilot(unittest.TestCase):
                 out.setnchannels(1)
                 out.setsampwidth(2)
                 out.setframerate(24000)
-                out.writeframes(b"\\x00\\x00" * 2400)
+                out.writeframes(b"\x00\x00" * 2400)
             analyze_wav(path, max_seconds=10)
 
         clipped = self.root / "clipped.wav"
@@ -116,7 +116,7 @@ class MathLivePilot(unittest.TestCase):
             out.setnchannels(1)
             out.setsampwidth(2)
             out.setframerate(24000)
-            out.writeframes(b"\\xff\\x7f" * 2400)
+            out.writeframes(b"\xff\x7f" * 2400)
         report = analyze_wav(clipped, max_seconds=10)
         self.assertIn("possible_clipping", report["warnings"])
         self.assertIn("dc_offset", report["warnings"])
@@ -130,7 +130,7 @@ class MathLivePilot(unittest.TestCase):
             out.setnchannels(1)
             out.setsampwidth(2)
             out.setframerate(24000)
-            out.writeframes(b"\\x00\\x00" * 4800)
+            out.writeframes(b"\x00\x00" * 4800)
         with self.assertRaisesRegex(ContentError, "all-silent"):
             make_game_review_packet(stage)
 
