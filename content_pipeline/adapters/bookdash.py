@@ -69,8 +69,8 @@ def import_bookdash(markdown: str, *, source_item_id: str, source_url: str,
         next_start = marks[i + 1].start() if i + 1 < len(marks) else len(rest)
         text = rest[mark.end():next_start].strip()
         text = re.sub(r"\n{3,}", "\n\n", text)
-        if not text:
-            raise ContentError(f"Book Dash: no text for image {i + 1}")
+        # Image-only pages are intentional, e.g. Come Back, Cat! page 5.
+        # Preserve exactly as empty instead of fabricating original text.
         pages.append((text, _image_path(mark.group(2))))
     return make_book_draft(
         provider="bookdash", source_text=markdown,
