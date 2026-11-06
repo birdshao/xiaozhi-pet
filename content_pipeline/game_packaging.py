@@ -87,6 +87,29 @@ def stage_game(lesson_file: Path, audio_map_file: Path, stage_dir: Path) -> dict
             "clip_key": key, "spoken_text": text, "source_path": ref,
             "source_sha256": _sha_file(source, MAX_GAME_WAV),
         })
+    audio_test_only = False
+    spoken_manifest_file = audio_map_file.parent / "audio.manifest.json"
+    if spoken_manifest_file.exists():
+        spoken = json.loads(spoken_manifest_file.read_text(encoding="utf-8"))
+        if spoken.get("schema_version") != "GAMEAUDIO1" or \
+                spoken.get("status") not in ("draft", "test_only") or \
+                spoken.get("lesson_uid") != lesson["lesson_uid"] or \
+                spoken.get("lesson_sha256") != _hash(lesson_file.read_bytes()):
+            raise ContentError("game: generated audio manifest stale or invalid")
+        entries = spoken.get("audio")
+        if not isinstance(entries, list) or len(entries) != len(provenance):
+            raise ContentError("game: audio manifest incomplete")
+        by_key = {entry.get("clip_key"): entry for entry in entries if isinstance(entry, dict)}
+        if len(by_key) != len(provenance):
+            raise ContentError("game: audio manifest duplicate clips")
+        for record in provenance:
+            manifest_record = by_key.get(record["clip_key"])
+            if manifest_record is None or \
+                    manifest_record.get("path") != record["source_path"] or \
+                    manifest_record.get("sha256") != record["source_sha256"] or \
+                    manifest_record.get("spoken_text") != record["spoken_text"]:
+                raise ContentError("game: TTS clip mismatched or tampered")
+        audio_test_only = spoken["status"] == "test_only"
     rounds = []
     for r in lesson["rounds"]:
         rounds.append({
@@ -109,7 +132,8 @@ def stage_game(lesson_file: Path, audio_map_file: Path, stage_dir: Path) -> dict
     write_json(stage_dir / "game.json", game)
     write_json(stage_dir / "attribution.json", {
         "lesson_uid": lesson["lesson_uid"], "source": lesson["source"],
-        "audio_sources": provenance, "notice": (
+        "audio_sources": provenance, "audio_test_only": audio_test_only,
+        "notice": (
             "Original game prompts and builtin artwork. WAV recordings and "
             "educational content must be reviewed by an adult."),
     })
@@ -145,6 +169,9 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
     if not isinstance(attests, dict) or set(attests) != required or any(
             attests[item] is not True for item in required):
         raise ContentError("review: five explicit checks required")
+    attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
+    if attribution.get("audio_test_only") is True and not smoke_only:
+        raise ContentError("game: synthetic test-only TTS requires smoke_only packaging")
     game = copy.deepcopy(json.loads((stage_dir / "game.json").read_text(encoding="utf-8")))
     game["approved"] = True
     game["reviewer"] = reviewer.strip()
