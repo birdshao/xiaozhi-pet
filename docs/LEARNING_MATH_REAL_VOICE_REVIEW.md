@@ -10,7 +10,7 @@
 - 所有题目只使用**固件已有** `match_shape` / `count` / `big_small` 及已定义的图案标识，**没有复制 GCompris QML、图像或语音**。
 - 题干和选项口播按中文文本哈希去重；使用 Edge TTS 及本地 ffmpeg 或 Python `imageio-ffmpeg` 转成 **24 kHz/单声道/PCM16**。
 - `content_pipeline/game_packaging.py` 会逐轮核对题目语义、选项、标准答案、图标和对应录音，不能只检查文件哈希。
-- `content_pipeline/audio_qc.py` 检查 PCM16 时长、全静音和异常音量：**全静音硬拒绝**，过低音量、削波、过长首尾静音等记录为建议检查事项，不自动批准或判定发音正确。
+- `content_pipeline/audio_qc.py` 检查 PCM16 时长、全静音和异常音量：**全静音硬拒绝**，过低音量、削波、过长首尾静音等记录为建议检查事项，列入 `review-summary.json.technical_warnings`，不自动批准或判定发音正确。
 - `content_pipeline/game_review.py` 生成只读审核网页，逐题展示问题、图标示意、正确选项与每条本地录音的试听控件，附 SHA/音频质量摘要。
 - `tools/learning_live_math_pilot.py` 将这些步骤串成一条命令，但**不创建 `reviewed=true`，也不会生成 `default.kpg`**。
 
@@ -74,6 +74,16 @@ python -m content_pipeline.cli make-game-review-packet \
 ```
 
 如果录音、题目、答案或内容映射被修改，`candidate.json` 的原始审核 SHA 不再匹配，必须重新生成工作区再审核，不能复用旧的确认。
+
+**生成待签署审核清单**（严格默认全部未通过）：
+
+```bash
+python -m content_pipeline.cli make-review-template \
+  --kind game \
+  --stage-dir research_content/math_game_real/staged
+```
+
+输出 `staged/review.template.json` 中，`checked_hash` 已绑定当前素材；但 `status=review_pending`、`reviewer=""`，五项 attestations 全是 `false`。直接将此模板交给正式 `build-game` 会失败。成人可以复制成独立的 `math-review.json`，在实际检查全部内容后填写真实姓名/称呼、改变状态并逐项确认。这个过程必须由人执行，不能由流水线自动批量替换为 true。
 
 **切勿提交研究目录到公开仓库。** GitHub Actions 只上传 `live-report.json`、无音频的审核 HTML 和元数据，**不上传真实 WAV**。本地 HTML 的播放控件引用本地 `staged/clips` 文件；仅下载 CI 的元数据无法直接播放语音，需在联网研究 PC 上运行上述命令。
 
