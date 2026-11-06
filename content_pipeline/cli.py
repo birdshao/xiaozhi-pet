@@ -134,8 +134,19 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("make-game-review-packet",
                        help="Review 15 math game rounds and play staged local WAVs")
     p.add_argument("--stage-dir", type=Path, required=True)
+    p = sub.add_parser("make-review-template",
+                       help="Generate unsigned, all-false parent review checklist")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p.add_argument("--kind", choices=("book", "game"), required=True)
+    p.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "make-review-template":
+            from content_pipeline.review_templates import make_review_template
+            result = make_review_template(args.stage_dir, kind=args.kind,
+                                          output=args.output)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command == "make-game-review-packet":
             from content_pipeline.game_review import make_game_review_packet
             result = make_game_review_packet(args.stage_dir)
