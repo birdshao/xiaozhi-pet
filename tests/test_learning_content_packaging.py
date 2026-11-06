@@ -71,6 +71,9 @@ class Packaging(unittest.TestCase):
             license_id=license_id,
             skills=["math.shapes_basic"],
         )
+        doc["source"]["creators"] = {"text": ["Test Writer"],
+                                     "illustration": ["Test Artist"],
+                                     "translation": []}
         write_json(self.lcir, doc)
 
     def review(self, hash):
