@@ -6,15 +6,22 @@ Never print the token or children's personal information.
 """
 from __future__ import annotations
 import argparse
+import getpass
 import os
+from services.pet_learning.auth import ParentAuth
+from services.pet_learning.config import Settings
+from services.pet_learning.totp import new_secret, provisioning_uri
 from services.pet_learning.store import PetStore
 from services.pet_learning.quiz import QuizEngine
 
 
 def main() -> None:
+    settings = Settings.load()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=os.getenv("KID_PET_DB", "data/pet_learning.sqlite3"))
+    parser.add_argument("--db", default=settings.database)
     sub = parser.add_subparsers(dest="command", required=True)
+    parent = sub.add_parser("create-parent", help="Create the single administrator and bind TOTP locally")
+    parent.add_argument("--username", required=True)
     enroll = sub.add_parser("enroll", help="Register a single new device using env credential")
     enroll.add_argument("--device-id", required=True)
     book = sub.add_parser("import-page", help="Locally import a parent-reviewed book page")
@@ -34,7 +41,21 @@ def main() -> None:
     quiz.add_argument("--approved", action="store_true", help="Explicit trusted-adult approval")
     args = parser.parse_args()
     store = PetStore(args.db)
-    if args.command == "enroll":
+    if args.command == "create-parent":
+        auth = ParentAuth(args.db, settings)
+        settings.cipher()  # Fail before prompting if the separate encryption key is missing.
+        password = os.environ.get("KID_PET_PARENT_PASSWORD") or getpass.getpass("Parent password: ")
+        secret = new_secret()
+        print("Bind this secret in your authenticator (local terminal only): " + secret)
+        print(provisioning_uri(args.username, secret))
+        confirmation = getpass.getpass("Authenticator TOTP code: ")
+        try:
+            recovery = auth.create_account(args.username, password, secret, confirmation)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+        print("PARENT_CREATED. Store these one-time recovery codes offline:")
+        print("\n".join(recovery))
+    elif args.command == "enroll":
         token = os.environ.get("KID_PET_DEVICE_TOKEN", "")
         if len(token) < 32:
             raise SystemExit("KID_PET_DEVICE_TOKEN environment variable missing or too short")

@@ -5,6 +5,8 @@ Only parent-reviewed content is spoken; no raw speech or child PII is stored.
 """
 from __future__ import annotations
 
+from .db import migrate
+
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -30,25 +32,7 @@ class QuizEngine:
 
     def __init__(self, filename: str | Path) -> None:
         self.path = str(filename)
-        if self.path != ":memory:":
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS quiz_cards (
-                    card_id TEXT PRIMARY KEY, prompt TEXT NOT NULL,
-                    first_text TEXT NOT NULL, second_text TEXT NOT NULL,
-                    correct INTEGER NOT NULL CHECK(correct IN (1,2)),
-                    success_text TEXT NOT NULL, retry_text TEXT NOT NULL,
-                    approved INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS quiz_sessions (
-                    device_id TEXT PRIMARY KEY,
-                    active_card TEXT,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_cursor INTEGER NOT NULL DEFAULT 0,
-                    completed INTEGER NOT NULL DEFAULT 0
-                );
-            """)
+        migrate(self.path)
 
     @contextmanager
     def _db(self):
