@@ -112,8 +112,39 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--revision", type=int, default=1)
     p.add_argument("--registry", type=Path)
     p.add_argument("--output", type=Path, required=True)
+    p = sub.add_parser("fetch-bookdash-source",
+                       help="Fetch pinned upstream Markdown and import real wordless pages")
+    p.add_argument("--source-path", required=True)
+    p.add_argument("--ref", required=True, help="Full 40-char upstream Git SHA")
+    p.add_argument("--content-id", type=int, required=True)
+    p.add_argument("--license-id", default="unknown")
+    p.add_argument("--skill", action="append", default=[])
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("prepare-cat-pilot",
+                       help="Apply verified Book Dash author credits and Chinese draft")
+    p.add_argument("--input", type=Path, required=True, help="Original English LCIR1")
+    p.add_argument("--translations", type=Path, required=True)
+    p.add_argument("--credits", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command == "fetch-bookdash-source":
+            from content_pipeline.source_snapshots import fetch_bookdash_source
+            result = fetch_bookdash_source(
+                source_item_id=args.source_path, source_ref=args.ref,
+                content_id=args.content_id, output_dir=args.output_dir,
+                license_id=args.license_id, skills=args.skill, replace=args.replace)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "prepare-cat-pilot":
+            from content_pipeline.pilot import prepare_cat_pilot
+            result = prepare_cat_pilot(
+                args.input, args.translations, args.credits, args.output_dir,
+                replace=args.replace)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command == "localize-bookdash":
             from content_pipeline.localize import localize_bookdash
             document = localize_bookdash(args.input, args.translations,
