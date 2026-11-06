@@ -25,7 +25,10 @@ SAMPLE_SCENES = (
 ROUND_SCENES = tuple(f"math_round_{i:02d}_1bit" for i in range(1, 16))
 
 
-def make_preview_report(source: Path, output: Path, lesson_file: Path) -> dict:
+def make_preview_report(source: Path, output: Path, lesson_file: Path,
+                        *, narration: str = "synthetic") -> dict:
+    if narration not in ("synthetic", "edge"):
+        raise ContentError("native report: unsupported narration")
     try:
         from PIL import Image
     except ImportError as exc:
@@ -99,7 +102,8 @@ def make_preview_report(source: Path, output: Path, lesson_file: Path) -> dict:
         '<p>此图由原版 C++ SceneComposer 在 PC 上绘制，是 GameArt 实际像素，'
         '不是 ESP32 或电子纸面板拍摄的画面。</p>'
         '<p>展示的是 KPG1 原始选项顺序，真实游戏会随机打乱。'
-        '对应 KPG1 音频全部为纯测试音调，不能给儿童当成中文课程。</p>'
+        ('对应 KPG1 音频为纯测试音调。</p>' if narration == "synthetic" else
+         '对应 KPG1 音频为未经成人试听审核的在线中文 TTS。</p>')
         '<p>以下正确答案仅供成人审阅，不是儿童屏幕的一部分。</p></div>' +
         ''.join(cards) + '</body></html>'
     )
@@ -109,11 +113,14 @@ def make_preview_report(source: Path, output: Path, lesson_file: Path) -> dict:
         "engine": "firmware SceneComposer::Render via native C++",
         "resolution": [800, 480],
         "rounds": len(lesson["rounds"]),
+        "narration": narration,
         "scenes": records,
         "gallery": "index.html",
         "notice": (
-            "Actual firmware GameArt 1bit frame pixels, NOT physical EPD; "
-            "all voices are synthetic tones and no content is approved."),
+            "Actual firmware GameArt 1bit pixels, NOT physical EPD. "
+            + ("Synthetic tone audio." if narration == "synthetic" else
+               "Online Mandarin TTS is unreviewed.")
+            + " No content approved."),
     }
     write_json(output / "device-scenes.json", result)
     return result
@@ -124,8 +131,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--lesson", type=Path, required=True)
+    parser.add_argument("--narration", choices=("synthetic", "edge"),
+                        default="synthetic")
     args = parser.parse_args(argv)
-    result = make_preview_report(args.source, args.output, args.lesson)
+    result = make_preview_report(args.source, args.output, args.lesson,
+                                 narration=args.narration)
     print(json.dumps({
         "status": result["status"], "scenes": len(result["scenes"]),
         "rounds": result["rounds"], "engine": result["engine"],
