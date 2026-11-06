@@ -79,6 +79,25 @@ def _render(image_path: Path, target: Path) -> None:
         raise ContentError(f"cannot render {image_path.name}: {exc}") from exc
 
 
+def _write_epaper_previews(stage_dir: Path, image_name: str, page: int) -> None:
+    """Use the *same* KPB2 quantization/dither as the shipped reader pack."""
+    from PIL import Image
+    from tools import kpb2
+    mono, gray = kpb2.page_frames(stage_dir / image_name, "grey")
+    if gray is None:
+        raise ContentError("EPD preview: expected 4-level gray page")
+    pdir = stage_dir / "preview"
+    pdir.mkdir(exist_ok=True)
+    mono_pixels = kpb2.unpack_bits(mono)
+    gray_pixels = kpb2.unpack_grey(gray)
+    Image.frombytes("L", (WIDTH, HEIGHT),
+                    bytes(255 if v else 0 for v in mono_pixels)).save(
+                        pdir / f"page_{page:02d}_mono.png")
+    Image.frombytes("L", (WIDTH, HEIGHT),
+                    bytes(v * 85 for v in gray_pixels)).save(
+                        pdir / f"page_{page:02d}_grey.png")
+
+
 def _asset_map(mapping: dict, page_count: int) -> dict:
     if not isinstance(mapping, dict) or set(mapping) != {"schema_version", "pages"} or \
             mapping["schema_version"] != 1 or not isinstance(mapping["pages"], dict):
@@ -107,6 +126,12 @@ def _core_manifest(stage: Path) -> dict[str, Any]:
                        else MAX_WAV_INPUT)
             files[page[key]] = _sha_file(f, MAX_IMAGE_INPUT if key == "image"
                                          else MAX_WAV_INPUT)
+    previews = {}
+    for page in book["pages"]:
+        for mode in ("mono", "grey"):
+            rel = f"preview/page_{page['number']:02d}_{mode}.png"
+            preview = _asset(stage, rel, max_size=MAX_IMAGE_INPUT)
+            previews[rel] = _sha_file(preview, MAX_IMAGE_INPUT)
     return {
         "schema_version": 1,
         "lcir_digest": content_digest(lcir),
@@ -114,6 +139,7 @@ def _core_manifest(stage: Path) -> dict[str, Any]:
         "lcir_json_sha256": _hash(lcir_file.read_bytes()),
         "attribution_sha256": _hash(attribution_file.read_bytes()),
         "stage_files": files,
+        "preview_files": previews,
     }
 
 
@@ -164,6 +190,7 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
         image_target = f"page_{n:02d}.png"
         audio_target = f"page_{n:02d}.wav"
         _render(img, stage_dir / image_target)
+        _write_epaper_previews(stage_dir, image_target, n)
         shutil.copyfile(wav, stage_dir / audio_target)
         pages.append({
             "number": n, "text": page["text"], "approved": False,
