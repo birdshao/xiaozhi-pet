@@ -134,6 +134,15 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
     output_root, asset_root = stage_dir.resolve(), base.resolve(strict=True)
     if asset_root == output_root or asset_root.is_relative_to(output_root):
         raise ContentError("stage directory must not contain the source asset directory")
+    audio_provenance = None
+    original_audio_manifest = base / "audio.manifest.json"
+    if original_audio_manifest.exists():
+        audio_provenance = json.loads(original_audio_manifest.read_text(encoding="utf-8"))
+        if audio_provenance.get("schema_version") != "BOOKAUDIO1" or \
+                audio_provenance.get("status") not in ("draft", "test_only") or \
+                audio_provenance.get("item_uid") != doc["item_uid"] or \
+                audio_provenance.get("content_digest") != content_digest(doc):
+            raise ContentError("book: audio manifest is stale or invalid")
     stage_dir.mkdir(parents=True, exist_ok=True)
     pages = []
     provenance_assets = []
@@ -173,6 +182,8 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
         "title": doc["title"], "locale": doc["locale"],
         "source": doc["source"], "transformations": doc["transformations"],
         "assets": provenance_assets,
+        "audio_test_only": audio_provenance is not None and
+                           audio_provenance["status"] == "test_only",
         "notice": "Check source/license/illustration/audio before distributing.",
     })
     manifest = _core_manifest(stage_dir)
@@ -205,6 +216,9 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
     doc = json.loads((stage_dir / "lcir.json").read_text(encoding="utf-8"))
     if doc["source"]["license_id"] == "unknown":
         raise ContentError("review: exact source license required")
+    attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
+    if attribution.get("audio_test_only") is True:
+        raise ContentError("review: synthetic test-only narration cannot be published")
     if not doc["source"]["creators"]["text"] or not doc["source"]["creators"]["illustration"]:
         raise ContentError("review: verified text and illustration credits required")
     # No approved manifest is saved to the stage. The trusted build is temporary
