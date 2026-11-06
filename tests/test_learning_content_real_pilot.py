@@ -202,7 +202,7 @@ class PinnedBookDashPilot(unittest.TestCase):
                 fetch=lambda url, limit: _jpeg(int(
                     url.rsplit("/", 1)[-1].replace(".jpg", ""))))
 
-        with patch.object(live, "fetch_bookdash_source", side_effect=source_stub), \\
+        with patch.object(live, "fetch_bookdash_source", side_effect=source_stub), \
              patch.object(live, "fetch_bookdash_images", side_effect=image_stub):
             result = live.build_research_preview(self.root / "orchestrated")
         self.assertEqual(result["status"], "test_only")
