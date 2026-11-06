@@ -128,16 +128,26 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
     book_id = re.sub(r"[^a-z0-9_-]+", "_", doc["item_uid"].replace(":", "_"))[:63]
     if not BOOK_ID.fullmatch(book_id):
         raise ContentError("stage: could not derive valid book_id")
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    # Only these fixed names are written. Do not write into a source asset folder.
+    # Do not accidentally overwrite source assets if the stage path is an
+    # ancestor of the asset directory or the asset directory itself.
     base = assets_file.parent
+    output_root, asset_root = stage_dir.resolve(), base.resolve(strict=True)
+    if asset_root == output_root or asset_root.is_relative_to(output_root):
+        raise ContentError("stage directory must not contain the source asset directory")
+    stage_dir.mkdir(parents=True, exist_ok=True)
     pages = []
+    provenance_assets = []
     for page in doc["pages"]:
         n = page["number"]
         assets = mapping[str(n)]
         img = _asset(base, assets["image"], max_size=MAX_IMAGE_INPUT)
         wav = _asset(base, assets["audio"], max_size=MAX_WAV_INPUT)
         _verify_wav(wav)
+        provenance_assets.append({
+            "page": n, "image_ref": page["image_ref"],
+            "image_source": assets["image"], "image_sha256": _sha_file(img, MAX_IMAGE_INPUT),
+            "audio_source": assets["audio"], "audio_sha256": _sha_file(wav, MAX_WAV_INPUT),
+        })
         if len(page["text"]) > 320:
             raise ContentError(f"page {n}: >320 chars; manual editing/splitting required")
         image_target = f"page_{n:02d}.png"
@@ -160,6 +170,7 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
     write_json(stage_dir / "attribution.json", {
         "title": doc["title"], "locale": doc["locale"],
         "source": doc["source"], "transformations": doc["transformations"],
+        "assets": provenance_assets,
         "notice": "Check source/license/illustration/audio before distributing.",
     })
     manifest = _core_manifest(stage_dir)
@@ -192,6 +203,8 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
     doc = json.loads((stage_dir / "lcir.json").read_text(encoding="utf-8"))
     if doc["source"]["license_id"] == "unknown":
         raise ContentError("review: exact source license required")
+    if not doc["source"]["creators"]["text"] or not doc["source"]["creators"]["illustration"]:
+        raise ContentError("review: verified text and illustration credits required")
     # No approved manifest is saved to the stage. The trusted build is temporary
     # and calls the existing story_pack implementation, not a second encoder.
     from tools.story_pack import make_pack
