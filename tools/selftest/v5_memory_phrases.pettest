@@ -1,0 +1,45 @@
+PETSELFTEST1
+# V5-04 memory-driven lines. Three pickups 6 s apart, then good morning.
+# Every pickup / morning line asks MemoryPhraseSelector once and logs the
+# answer: PET_MEMORY_PHRASE (a real memory: a like the child chose on a
+# dial question, or yesterday's book) or PET_MEMORY_DECISION used=0 with
+# the reason (no_memory, too_soon, quiet, day_limit). Which one depends on
+# what this device's ledger remembers, so the scenario only requires that
+# each trigger gets exactly one answer and that nothing is invented or
+# fails; the cap, quiet hours and no-memory fallback are host-tested
+# (tests/cpp/test_memory_phrases.cc). With a like in the ledger, the 2nd
+# and 3rd pickup read reason=too_soon. No sound pack clips exist for slot
+# lines, so a used line logs src=text and the plain line plays.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:PET_MEMORY_ 4
+# expect min:ctx=pickup_like 3
+# expect min:ctx=morning_recap 1
+# expect min:PET_MORNING_STAYED 1
+# expect none:PET_PHRASE_FAILED 0
+# expect none:PET_MORNING_FALLBACK 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# Quiet sounds while testing (RAM only, this boot).
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+# Safety net: a morning that is not touched would power off; this alarm
+# wakes the board again.
+alarm 60
+mark begin
+gesture pickup
+wait 6000
+gesture pickup
+wait 6000
+gesture pickup
+wait 6000
+# Good morning, then a dial touch keeps TuanTuan awake.
+morning
+wait 15000
+tap down 6000
+wait 4000
+end

@@ -395,3 +395,14 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   "$ROOT/tests/cpp/test_motion_game.cc" \
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
+
+# V5-04 memory-driven lines: yesterday's book at good morning, a chosen like
+# on pickup; frequency cap, quiet hours, no-memory fallback.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/memory_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_memory_phrases.cc" \
+  -o "$BUILD/test_memory_phrases"
+"$BUILD/test_memory_phrases"

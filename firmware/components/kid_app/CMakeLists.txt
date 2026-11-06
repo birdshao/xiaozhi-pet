@@ -18,7 +18,7 @@ idf_component_register(
          "src/status_bar.cc"
          "src/memory_store.cc" "src/personality.cc"
          "src/voice_face.cc"
-         "src/sound_pack_reader.cc" "src/sound_bank.cc" "src/pet_phrases.cc"
+         "src/sound_pack_reader.cc" "src/sound_bank.cc" "src/pet_phrases.cc" "src/memory_phrases.cc"
          "src/content_pack_reader.cc"
          "src/book_reader.cc" "src/icon_choice.cc"
          "src/battery_policy.cc"
