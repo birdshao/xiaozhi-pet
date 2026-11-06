@@ -94,7 +94,11 @@ def bookdash_url(doc: dict, image_ref: str) -> str:
     source = doc["source"]
     if source["provider"] != "bookdash":
         raise ContentError("image download: provider must be Book Dash")
-    if doc["locale"] != source["source_item_id"].split("/")[1]:
+    source_locale = source["source_item_id"].split("/")[1]
+    if doc["locale"] != source_locale and not (
+            doc["locale"] == "zh-Hans" and source_locale == "en" and
+            len(doc["transformations"]) == 1 and
+            doc["transformations"][0]["kind"] == "translation"):
         raise ContentError("image download: source locale mismatch")
     rel = safe_relpath(image_ref, "image_ref")
     if not rel.startswith("images/") or not rel.lower().endswith(".jpg"):
