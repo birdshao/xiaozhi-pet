@@ -123,6 +123,8 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
                         *, smoke_only: bool = False) -> dict:
     """Use the existing KPG1 encoder only after review bound to staged bytes."""
     stage_dir, review_file, output = map(Path, (stage_dir, review_file, output))
+    if output.name != "default.kpg":
+        raise ContentError("current firmware only loads /games/default.kpg")
     candidate = json.loads((stage_dir / "candidate.json").read_text(encoding="utf-8"))
     current = _manifest(stage_dir)
     current["checked_hash"] = _hash(canonical_json(current))
