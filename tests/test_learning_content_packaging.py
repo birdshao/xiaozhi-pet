@@ -96,6 +96,12 @@ class Packaging(unittest.TestCase):
         self.assertTrue(all(not p["approved"] for p in staged_book["pages"]))
         with Image.open(self.stage / "page_01.png") as im:
             self.assertEqual(im.size, (800, 480))
+        for mode in ("mono", "grey"):
+            preview = self.stage / "preview" / f"page_01_{mode}.png"
+            self.assertIn(f"preview/page_01_{mode}.png", candidate["preview_files"])
+            with Image.open(preview) as im:
+                self.assertEqual(im.size, (800, 480))
+                self.assertEqual(im.mode, "L")
         result = build_reviewed_book(self.stage, self.review(candidate["checked_hash"]),
                                      self.root / "book.kpb")
         self.assertGreater(result["package_bytes"], 0)
@@ -113,6 +119,15 @@ class Packaging(unittest.TestCase):
             f.write(b"modification")
         with self.assertRaisesRegex(ContentError, "changed"):
             build_reviewed_book(self.stage, review, self.root / "book.kpb")
+
+    def test_modified_epaper_preview_rejected(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        review = self.review(candidate["checked_hash"])
+        preview = self.stage / "preview" / "page_01_mono.png"
+        with preview.open("ab") as output:
+            output.write(b"tampered")
+        with self.assertRaisesRegex(ContentError, "changed"):
+            build_reviewed_book(self.stage, review, self.root / "untrusted.kpb")
 
     def test_not_reviewed_and_unknown_license_rejected(self):
         candidate = stage_book(self.lcir, self.map_file, self.stage)
