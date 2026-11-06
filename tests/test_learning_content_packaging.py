@@ -15,6 +15,7 @@ from PIL import Image
 from content_pipeline.adapters import import_bookdash
 from content_pipeline.packaging import build_reviewed_book, stage_book
 from content_pipeline.review_packet import make_review_packet
+from content_pipeline.review_templates import make_review_template
 from content_pipeline.schema import ContentError, write_json
 from tools import kpb2
 
@@ -140,6 +141,17 @@ class Packaging(unittest.TestCase):
             f.write(b"modification")
         with self.assertRaisesRegex(ContentError, "changed"):
             build_reviewed_book(self.stage, review, self.root / "book.kpb")
+
+    def test_review_template_defaults_false_and_cannot_publish_book(self):
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        report = make_review_template(self.stage, kind="book")
+        self.assertEqual(report["checked_hash"], candidate["checked_hash"])
+        template_file = self.stage / "review.template.json"
+        values = json.loads(template_file.read_text(encoding="utf-8"))
+        self.assertEqual(values["status"], "review_pending")
+        self.assertTrue(all(check is False for check in values["attestations"].values()))
+        with self.assertRaisesRegex(ContentError, "not approved"):
+            build_reviewed_book(self.stage, template_file, self.root / "book.kpb")
 
     def test_modified_epaper_preview_rejected(self):
         candidate = stage_book(self.lcir, self.map_file, self.stage)
