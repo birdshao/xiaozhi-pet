@@ -11,9 +11,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import wave
 from unittest.mock import patch
 
 from content_pipeline.cli import main
+from content_pipeline.audio_qc import analyze_wav
 from content_pipeline.game_packaging import _manifest
 from content_pipeline.game_review import make_game_review_packet
 from content_pipeline.schema import ContentError, write_json
@@ -98,6 +100,39 @@ class MathLivePilot(unittest.TestCase):
         self.assertIn("尚未经真人完整试听", page)
         self.assertNotIn("这些音频是合成测试音调", page)
         self.assertFalse(list((self.root / "mock_online").rglob("*.kpg")))
+
+    def test_audio_qc_rejects_silence_and_warns_on_clipping(self):
+        with self.assertRaisesRegex(ContentError, "all-silent"):
+            path = self.root / "silence.wav"
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(24000)
+                out.writeframes(b"\\x00\\x00" * 2400)
+            analyze_wav(path, max_seconds=10)
+
+        clipped = self.root / "clipped.wav"
+        with wave.open(str(clipped), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(24000)
+            out.writeframes(b"\\xff\\x7f" * 2400)
+        report = analyze_wav(clipped, max_seconds=10)
+        self.assertIn("possible_clipping", report["warnings"])
+        self.assertIn("dc_offset", report["warnings"])
+        self.assertEqual(report["duration_ms"], 100)
+
+    def test_silent_clip_in_real_game_draft_never_reaches_review(self):
+        build_math_research(self.root / "smoke")
+        stage = self.root / "smoke/staged"
+        silent = next((stage / "clips").glob("*.wav"))
+        with wave.open(str(silent), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(24000)
+            out.writeframes(b"\\x00\\x00" * 4800)
+        with self.assertRaisesRegex(ContentError, "all-silent"):
+            make_game_review_packet(stage)
 
     def test_cli_review_game_generated_from_synthetic_assets(self):
         """The CLI must only render a review file; never approve staged game."""
