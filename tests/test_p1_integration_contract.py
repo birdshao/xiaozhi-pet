@@ -694,6 +694,26 @@ class DisplayOverlayTest(unittest.TestCase):
         from scripts import p1_integrate
         self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
 
+    def test_plain_power_on_opens_pet_mode(self):
+        patched = self._board()
+        run = self._body(patched, 'void MaybeRunSelfTest()')
+        # No trial script (or not on ota_1): open Pet mode at boot. A trial
+        # script keeps the old start outside Pet mode; an alarm wake goes
+        # through the morning flow instead.
+        no_script = run[run.index('reason=no_script'):run.index('selftest_seen_.store(true)')]
+        self.assertIn('EnterPetAtBoot();', no_script)
+        not_ota1 = run[run.index('reason=not_ota1'):run.index('woke_by_alarm_.load() == 1')]
+        self.assertIn('EnterPetAtBoot();', not_ota1)
+        alarm = run[run.index('woke_by_alarm_.load() == 1'):run.index('heap_caps_malloc')]
+        self.assertNotIn('EnterPetAtBoot', alarm)
+        self.assertEqual(run.count('EnterPetAtBoot();'), 2)
+        enter = self._body(patched, 'void EnterPetAtBoot()')
+        self.assertIn('RequestPetModeToggle()', enter)
+        self.assertIn('kMorningEnterTries', enter)
+        self.assertIn('PET_BOOT_ENTER result=pet', enter)
+        self.assertIn('PET_BOOT_ENTER result=timeout', enter)
+        self.assertNotIn('morning_request_', enter)
+
     def test_v3_morning_flow_wiring(self):
         patched = self._board()
         run = self._body(patched, 'void MaybeRunSelfTest()')
