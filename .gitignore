@@ -15,3 +15,6 @@ __pycache__/
 !.env.example
 sdkconfig
 sdkconfig.old
+
+# Local educational source snapshots, unpublished previews and study outputs.
+/research_content/

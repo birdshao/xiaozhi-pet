@@ -1316,6 +1316,7 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = self._board()
         self.assertIn('#include "kid_app/mini_game.h"', patched)
         self.assertIn('#include "kid_app/game_pack_reader.h"', patched)
+        self.assertIn('#include "kid_app/game_course_loader.h"', patched)
         # The Game rail item starts a game (UI only) after the lock is
         # released; quiet hours or a low battery fall back to "say hi".
         rail = self._body(patched, 'kid_app::PetInputDecision HandleHomeRailLocked(')
@@ -1371,8 +1372,14 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('0x47414D45u', player)
         self.assertEqual(patched.count('kid_app::ScalePcm(chunk, n, PromptVolumePct())'), 1)
         self.assertIn('LoadGamePack();', self._body(patched, 'void LoadSoundPack()'))
-        self.assertIn('game_file_.Open("/sdcard/games", "default", "kpg")',
-                      self._body(patched, 'void LoadGamePack()'))
+        loader = self._body(patched, 'void LoadGamePack()')
+        self.assertIn('game_courses_.LoadAtBoot("/sdcard/games")', loader)
+        self.assertIn('game_pack_state_.store(game_courses_.Ready()', loader)
+        self.assertIn('game_courses_.LoadedName()', loader)
+        self.assertIn('game_courses_.Selection()', loader)
+        self.assertNotIn('game_file_.Open(', loader)
+        self.assertNotIn('game_pack_.Open(', loader)
+        self.assertIn('game_courses_.Pack()', self._body(patched, 'kid_app::GamePackReader* GamePackNow()'))
         # Self-test "game" step fixes the next seed.
         run = self._body(patched, 'void MaybeRunSelfTest()')
         self.assertIn('case kid_app::SelfTestOp::Game:', run)

@@ -2,10 +2,11 @@ import ipaddress
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import Field
 
 from ..models import EventBatch, QuizAnswer, StrictModel, VoiceQuery
+from ..pairing import device_auth
 from ..voice import PageContext
 from ..intent import resolve
 
@@ -22,18 +23,12 @@ class ReaderContext(StrictModel):
 
 def create_router(store, quiz, reader):
     router = APIRouter()
-    def require_device(device_id: str, authorization: str | None) -> None:
-        # No user identity or bearer token is returned in error messages.
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
-        token = authorization[7:]
-        if not store.authenticated(device_id, token):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
+    # Device-token routes; the shared device_auth dependency authenticates all of them.
+    devices = APIRouter(dependencies=[Depends(device_auth)])
 
-    @router.post("/v1/devices/{device_id}/intent")
+    @devices.post("/v1/devices/{device_id}/intent")
     def classify_intent(device_id: str, query: VoiceQuery,
                         authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
         context = store.snapshot(device_id)
         learning_reply = quiz.intent(device_id, query.text, quiet=context["quiet"])
         if learning_reply is not None:
@@ -49,13 +44,13 @@ def create_router(store, quiz, reader):
             return story_reply
         return resolve(query.text, context, store.page)
 
-    @router.put("/v1/devices/{device_id}/context")
-    def put_context(device_id: str, body: ReaderContext, request: Request,
-                    authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
+    @devices.put("/v1/devices/{device_id}/context")
+    def put_context(device_id: str, body: ReaderContext, request: Request) -> dict:
         request.app.state.voice_turns.contexts.put(device_id, PageContext(**body.model_dump()))
         return {"status": "ok", "expires_in": 120}
 
+    # Voice-service route: authenticated by the separate voice token (the XiaoZhi server
+    # holds no device token), so it deliberately does not use device_auth.
     @router.post("/v1/voice/{device_id}/turn")
     async def voice_turn(device_id: str, request: Request,
                          authorization: str | None = Header(default=None)) -> dict:
@@ -83,4 +78,5 @@ def create_router(store, quiz, reader):
             "X-Voice-Signature": turns.sign(turns.turn_id_of(body), content),
             "Cache-Control": "no-store"})
 
+    router.include_router(devices)
     return router
