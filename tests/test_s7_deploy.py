@@ -123,7 +123,7 @@ class DeployFilesTests(unittest.TestCase):
         example = text("ingress", "dnspod.env.example")
         self.assertRegex(example, r"(?m)^DP_Id=$")
         self.assertRegex(example, r"(?m)^DP_Key=$")
-        for path in (DEPLOY / "ingress").iterdir():
+        for path in (p for p in (DEPLOY / "ingress").iterdir() if p.is_file()):
             self.assertNotRegex(path.read_text(encoding="utf-8"), r"DP_Key=[0-9a-f]{8,}", path.name)
         self.assertIn("rotate 14", text("ingress", "pet-ingress.logrotate"))
 
