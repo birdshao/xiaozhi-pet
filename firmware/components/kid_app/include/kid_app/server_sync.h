@@ -20,7 +20,7 @@ namespace kid_app {
 constexpr size_t kSnapshotMaxBytes = 5120;  // server MAX_STATE_BYTES
 constexpr size_t kMaxAwaitingConfirm = 8;   // server MAX_AWAITING
 constexpr size_t kMaxReceipts = 16;         // server MAX_RECEIPTS
-constexpr size_t kMaxCommandsPerReply = 8;  // the rest arrive with the next reply
+constexpr size_t kMaxCommandsPerReply = 16;  // the rest arrive with the next reply
 constexpr uint64_t kMaxCommandId = (uint64_t{1} << 53) - 1;
 constexpr size_t kTokenMax = 190;           // device bearer token (S1: token_urlsafe(32))
 constexpr size_t kDeviceIdMax = 63;
@@ -42,6 +42,23 @@ bool OriginOfUrl(const char* url, char* out, size_t capacity);
 // fw_version for the snapshot: 1..40 of [A-Za-z0-9._+-]; anything else
 // becomes '_', empty becomes "unknown".
 void SanitizeFwVersion(const char* in, char* out, size_t capacity);
+// A token is only ever sent to the origin it was issued for: stored with
+// the credentials at pairing, compared on every boot (empty = never bound).
+bool OriginBound(const char* bound, const char* current);
+
+// Verdicts on the answers of the pairing / rotation endpoints (S1).
+enum class RotateVerdict : uint8_t {
+    Done,        // 200 with a usable token
+    RepairSoon,  // 409 ROTATE_WITH_CURRENT_TOKEN: the current token was lost; the
+                 // previous one dies within 24 h, so the parent must pair again
+    AuthFailed,  // 401
+    Retry,       // anything else (network, 5xx, 429, garbled reply)
+};
+RotateVerdict ClassifyRotate(int http_status, bool parsed);
+// Only a 401 on confirm proves the server does not know the token (a 5xx or
+// a timeout says nothing): the only case that may erase a pending token.
+bool ConfirmRefusesToken(int http_status);
+
 // RFC 7231 IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT") -> Unix seconds.
 bool ParseHttpDate(const char* text, int64_t* unix_seconds);
 
@@ -301,6 +318,11 @@ public:
     // new_generation: the snapshot to send carries a generation the server
     // has not accepted yet (those are kept kMinGenerationGapMs apart).
     bool Due(uint32_t now_ms, bool new_generation) const;
+    // Before power-off: upload as soon as the generation gap allows.
+    void Flush(uint32_t now_ms) {
+        pending_ = true;
+        due_ms_ = now_ms;
+    }
     // An upload ran: ok = 200 with a parsed reply. new_generation as for
     // Due. retry_after_s from a 429 (0 = none).
     void OnUploaded(uint32_t now_ms, bool ok, bool new_generation, uint32_t retry_after_s);

@@ -62,6 +62,9 @@ public:
     // network task stores the refusal in NVS, then reports "rejected".
     // False if the request is gone (expired, answered) or the inbox is full.
     bool ConfirmRequest(uint64_t id);
+    // Before power-off: asks the network task for one last snapshot and
+    // waits up to timeout_ms for it (returns at once when it cannot sync).
+    bool FlushBeforePowerOff(uint32_t timeout_ms);
     bool RejectRequest(uint64_t id);
 
 private:
@@ -75,7 +78,7 @@ private:
     struct Buffers {
         JsonDoc doc;
         char body[kSnapshotMaxBytes + 64];
-        char reply[6144];
+        char reply[12288];
         StateSnapshotInput input;
         PetSyncView view;
         StateReply state;
@@ -94,17 +97,22 @@ private:
     void Run();
     void HandleEvent(const Event& event, uint32_t now_ms);
     void LoadNvs();
-    bool SaveCredentials(const char* device_id, const char* token, bool confirmed);
-    void EraseCredentials();
     bool SaveRejected();
     bool SaveApplied();
     bool SaveAppliedSeq(uint64_t seq);
+    bool SavePending();
+    void ErasePending();
+    bool PromotePending();
+    bool SaveToken();
+    void SetRepairFlag(uint8_t value);
+    void EnterRepair();
+    bool CanSync() const;
+    void ConfirmPending(uint32_t now_ms);
     bool ResolveOrigin();
     // method "GET"/"POST"/"PUT"; bearer null = no Authorization.
     int Request(const char* method, const char* path, const char* body, size_t size,
                 const char* bearer, Http* out);
     void RunPairing(uint32_t now_ms);
-    void ConfirmStored(uint32_t now_ms);
     void Upload(uint32_t now_ms);
     void PollCommands(uint32_t now_ms);
     void MaybeRotate(uint32_t now_ms);
@@ -136,9 +144,16 @@ private:
     char device_id_[kDeviceIdMax + 1]{};
     char token_[kTokenMax + 1]{};          // never logged
     bool have_credentials_ = false;
-    bool confirmed_ = false;
     bool needs_repair_ = false;
     bool origin_ok_ = false;
+    char bound_origin_[160]{};            // origin the stored token was issued for
+    bool repair_notice_ = false;          // 24 h left on the previous token: pair again
+    bool pending_loaded_ = false;         // boot found an unconfirmed pairing in NVS
+    bool token_dirty_ = false;            // a rotated token not yet stored
+    bool flush_pending_ = false;
+    bool stack_logged_ = false;
+    std::atomic<bool> flush_requested_{false};
+    std::atomic<bool> flush_done_{true};
     char pending_id_[kDeviceIdMax + 1]{};  // id of the pairing in progress
     char pending_token_[kTokenMax + 1]{};  // claimed, not yet stored
     uint8_t auth_failures_ = 0;

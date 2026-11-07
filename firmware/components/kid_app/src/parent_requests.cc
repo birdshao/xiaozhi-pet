@@ -148,6 +148,7 @@ void ConfirmDialog::Open(const DeviceCommand& command, uint8_t more, uint32_t no
     confirm_ = false;  // a stray press refuses
     more_ = more;
     last_input_ms_ = now_ms;
+    changed_ms_ = now_ms;
     command_ = command;
 }
 
@@ -156,10 +157,15 @@ ConfirmAction ConfirmDialog::OnInput(InputKind kind, uint32_t now_ms) {
     last_input_ms_ = now_ms;
     switch (kind) {
         case InputKind::DialUp:
-        case InputKind::DialDown:
-            confirm_ = !confirm_;
+        case InputKind::DialDown: {
+            const bool want = kind == InputKind::DialUp;
+            if (want == confirm_) return ConfirmAction::None;  // already there
+            confirm_ = want;
+            changed_ms_ = now_ms;
             return ConfirmAction::Redraw;
+        }
         case InputKind::DialPress:
+            if (now_ms - changed_ms_ < kSettleMs) return ConfirmAction::None;  // not on screen yet
             open_ = false;
             return confirm_ ? ConfirmAction::Confirm : ConfirmAction::Reject;
         case InputKind::DialLong:

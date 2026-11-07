@@ -81,12 +81,17 @@ enum class ConfirmAction : uint8_t {
 };
 
 // The "待确认请求" page: what is asked (wipe memory / new temperament) and
-// two choices, check and cross. The highlight starts on the cross, the dial
-// moves it, a press decides; a long press or kInputIdleMs without input
-// leaves without deciding. Single owner (board input task).
+// two choices, check and cross. The highlight starts on the cross. Dial up
+// selects the check, dial down the cross (a direction, never a toggle: what
+// the parent turned to is what is chosen). A press decides, but only once
+// kSettleMs have passed since the highlight last moved (the e-paper needs
+// that long to show it), so a press can never decide something the parent
+// has not seen. A long press or kIdleExitMs without input leaves without
+// deciding. Single owner (board input task).
 class ConfirmDialog {
 public:
     static constexpr uint32_t kIdleExitMs = 30000;
+    static constexpr uint32_t kSettleMs = 3000;
 
     void Open(const DeviceCommand& command, uint8_t more, uint32_t now_ms);
     void Close() { open_ = false; }
@@ -101,6 +106,7 @@ private:
     bool confirm_ = false;
     uint8_t more_ = 0;
     uint32_t last_input_ms_ = 0;
+    uint32_t changed_ms_ = 0;  // when the highlight last moved (or the page opened)
     DeviceCommand command_{};
 };
 

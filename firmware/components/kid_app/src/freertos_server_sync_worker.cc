@@ -22,10 +22,10 @@ namespace kid_app {
 namespace {
 constexpr const char* kTag = "kid_srv";
 constexpr const char* kNamespace = "kid_srv";
-constexpr uint32_t kStackBytes = 8192;
+constexpr uint32_t kStackBytes = 10240;
 constexpr UBaseType_t kEventCapacity = 16;
 constexpr uint32_t kTickMs = 1000;
-constexpr uint32_t kPollMs = 120000;        // GET commands when nothing else is sent
+constexpr uint32_t kPollMs = 15 * 60 * 1000u;  // GET commands when nothing else is sent
 constexpr uint32_t kStaleMs = 60000;        // an outcome that never came back
 constexpr uint32_t kConfirmRetryMs = 10000;
 constexpr uint32_t kRotateCheckMs = 6 * 3600 * 1000u;
@@ -232,8 +232,14 @@ void FreertosServerSyncWorker::LoadNvs() {
     if (nvs_open(kNamespace, NVS_READONLY, &handle) == ESP_OK) {
         ReadStr(handle, "dev_id", device_id_, sizeof(device_id_));
         ReadStr(handle, "token", token_, sizeof(token_));
+        ReadStr(handle, "bound", bound_origin_, sizeof(bound_origin_));
+        ReadStr(handle, "pend_id", pending_id_, sizeof(pending_id_));
+        ReadStr(handle, "pend_tok", pending_token_, sizeof(pending_token_));
         uint8_t flag = 0;
-        confirmed_ = nvs_get_u8(handle, "confirmed", &flag) == ESP_OK && flag == 1;
+        if (nvs_get_u8(handle, "repair", &flag) == ESP_OK) {
+            needs_repair_ = flag == 2;
+            repair_notice_ = flag == 1;
+        }
         int64_t rotated = 0;
         if (nvs_get_i64(handle, "rot_at", &rotated) == ESP_OK) rotated_at_ = rotated;
         ReadStr(handle, "origin", origin_, sizeof(origin_));
@@ -253,63 +259,130 @@ void FreertosServerSyncWorker::LoadNvs() {
         nvs_close(handle);
     }
     have_credentials_ = ValidDeviceId(device_id_) && ValidDeviceToken(token_);
-    if (!have_credentials_) {
-        std::memset(token_, 0, sizeof(token_));
-        confirmed_ = false;
+    if (!have_credentials_) std::memset(token_, 0, sizeof(token_));
+    pending_loaded_ = ValidDeviceId(pending_id_) && ValidDeviceToken(pending_token_);
+    if (!pending_loaded_) {
+        pending_id_[0] = '\0';
+        std::memset(pending_token_, 0, sizeof(pending_token_));
     }
     origin_ok_ = ResolveOrigin();
-    ESP_LOGI(kTag, "PET_SYNC_BOOT paired=%d confirmed=%d origin=%s origin_ok=%d",
-             have_credentials_ ? 1 : 0, confirmed_ ? 1 : 0, origin_[0] ? origin_ : "-",
+    // A token is only valid for the origin it was issued for: a changed
+    // address means "pair again", the token is never sent anywhere else.
+    if (have_credentials_ && !needs_repair_ && !OriginBound(bound_origin_, origin_)) {
+        needs_repair_ = true;
+        ESP_LOGW(kTag, "PET_SYNC_ORIGIN_CHANGED bound=%s now=%s",
+                 bound_origin_[0] ? bound_origin_ : "-", origin_[0] ? origin_ : "-");
+    }
+    ESP_LOGI(kTag, "PET_SYNC_BOOT paired=%d pending=%d repair=%d origin=%s origin_ok=%d",
+             have_credentials_ ? 1 : 0, pending_loaded_ ? 1 : 0,
+             needs_repair_ ? 2 : repair_notice_ ? 1 : 0, origin_[0] ? origin_ : "-",
              origin_ok_ ? 1 : 0);
 }
 
+// The server address is configured on its own (NVS kid_srv/origin, else the
+// Kconfig default KID_PET_SERVER_ORIGIN) and is never derived from the OTA
+// URL: that one is a plain-http LAN address today. HTTPS with a public CA
+// certificate only.
 bool FreertosServerSyncWorker::ResolveOrigin() {
-    if (!origin_[0]) {
-        // The XiaoZhi OTA URL points at the same gateway (DEPLOY_PET_SERVER).
-        char url[200]{};
-        nvs_handle_t handle = 0;
-        if (nvs_open("wifi", NVS_READONLY, &handle) == ESP_OK) {
-            ReadStr(handle, "ota_url", url, sizeof(url));
-            nvs_close(handle);
-        }
-#ifdef CONFIG_OTA_URL
-        if (!url[0]) std::snprintf(url, sizeof(url), "%s", CONFIG_OTA_URL);
+#ifdef CONFIG_KID_PET_SERVER_ORIGIN
+    if (!origin_[0]) std::snprintf(origin_, sizeof(origin_), "%s", CONFIG_KID_PET_SERVER_ORIGIN);
 #endif
-        if (!OriginOfUrl(url, origin_, sizeof(origin_))) origin_[0] = '\0';
-    }
     const bool ok = AllowedServerOrigin(origin_);
-    // Plain http (e.g. a LAN OTA URL) is refused: set kid_srv/origin to the
-    // public https origin, or point the OTA URL at it.
     if (origin_[0] && !ok) ESP_LOGW(kTag, "PET_SYNC_ORIGIN_REFUSED origin=%s", origin_);
     return ok;
 }
 
-bool FreertosServerSyncWorker::SaveCredentials(const char* device_id, const char* token,
-                                               bool confirmed) {
+// Pairing token waiting for its confirm: kept apart from the working
+// credentials, which stay untouched until the new ones are confirmed.
+bool FreertosServerSyncWorker::SavePending() {
     nvs_handle_t handle = 0;
     if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
-    const bool ok = nvs_set_str(handle, "dev_id", device_id) == ESP_OK &&
-                    nvs_set_str(handle, "token", token) == ESP_OK &&
-                    nvs_set_u8(handle, "confirmed", confirmed ? 1 : 0) == ESP_OK &&
+    const bool ok = nvs_set_str(handle, "pend_id", pending_id_) == ESP_OK &&
+                    nvs_set_str(handle, "pend_tok", pending_token_) == ESP_OK &&
                     nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
-    if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=credentials");
+    if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=pending");
     return ok;
 }
 
-void FreertosServerSyncWorker::EraseCredentials() {
+void FreertosServerSyncWorker::ErasePending() {
     nvs_handle_t handle = 0;
     if (nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
-        for (const char* key : {"dev_id", "token", "confirmed", "rot_at"}) nvs_erase_key(handle, key);
+        for (const char* key : {"pend_id", "pend_tok"}) nvs_erase_key(handle, key);
         nvs_commit(handle);
         nvs_close(handle);
     }
-    std::memset(device_id_, 0, sizeof(device_id_));
+    pending_id_[0] = '\0';
+    std::memset(pending_token_, 0, sizeof(pending_token_));
+    pending_loaded_ = false;
+}
+
+// Confirm answered 200: the pending pairing becomes the working credentials.
+bool FreertosServerSyncWorker::PromotePending() {
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool ok = nvs_set_str(handle, "dev_id", pending_id_) == ESP_OK &&
+                    nvs_set_str(handle, "token", pending_token_) == ESP_OK &&
+                    nvs_set_str(handle, "bound", origin_) == ESP_OK &&
+                    nvs_set_u8(handle, "repair", 0) == ESP_OK &&
+                    nvs_erase_key(handle, "rot_at") != ESP_FAIL &&
+                    nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) {
+        ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=credentials");
+        return false;
+    }
+    std::memcpy(device_id_, pending_id_, sizeof(device_id_));
+    std::memcpy(token_, pending_token_, sizeof(token_));
+    std::snprintf(bound_origin_, sizeof(bound_origin_), "%s", origin_);
+    have_credentials_ = true;
+    needs_repair_ = false;
+    repair_notice_ = false;
+    auth_failures_ = 0;
+    rotated_at_ = 0;
+    accepted_generation_ = 0;  // a new device on the server: its cursor is empty
+    next_rotate_check_ms_ = NowMs();
+    ErasePending();
+    ESP_LOGI(kTag, "PET_PAIR_PROMOTED");
+    return true;
+}
+
+// A rotated token that must reach NVS (retried until it does).
+bool FreertosServerSyncWorker::SaveToken() {
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool ok = nvs_set_str(handle, "token", token_) == ESP_OK &&
+                    nvs_set_i64(handle, "rot_at", rotated_at_) == ESP_OK &&
+                    nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=token");
+    return ok;
+}
+
+// 0 = fine, 1 = pair again within 24 h (still working), 2 = pair again now.
+void FreertosServerSyncWorker::SetRepairFlag(uint8_t value) {
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_u8(handle, "repair", value);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+// The server refuses the token (revoked): forget it for good and show
+// "pair again"; the flag survives a reboot.
+void FreertosServerSyncWorker::EnterRepair() {
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_erase_key(handle, "token");
+        nvs_set_u8(handle, "repair", 2);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
     std::memset(token_, 0, sizeof(token_));
     have_credentials_ = false;
-    confirmed_ = false;
-    rotated_at_ = 0;
-    ESP_LOGI(kTag, "PET_SYNC_CREDENTIALS_ERASED");
+    needs_repair_ = true;
+    ESP_LOGW(kTag, "PET_SYNC_AUTH_REFUSED needs_repair=1");
 }
 
 bool FreertosServerSyncWorker::SaveApplied() {
@@ -417,6 +490,10 @@ void FreertosServerSyncWorker::Run() {
     next_rotate_check_ms_ = NowMs();
     next_confirm_ms_ = NowMs();
     LoadNvs();
+    if (!stack_logged_) {
+        stack_logged_ = true;
+        ESP_LOGI(kTag, "PET_SYNC_STACK free=%u", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    }
     applied_saved_rev_ = tracker_.Revision();
     PublishLink();
     Event event{};
@@ -435,6 +512,7 @@ void FreertosServerSyncWorker::Run() {
                 std::snprintf(pending_id_, sizeof(pending_id_), "tt-%02x%02x%02x%02x%02x%02x-%04x",
                               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                               static_cast<unsigned>(esp_random() & 0xFFFF));
+                pending_loaded_ = false;  // a fresh pairing replaces one found at boot
                 pairing_.Begin(now);
                 ESP_LOGI(kTag, "PET_PAIR_BEGIN device=%s", pending_id_);
             } else {
@@ -446,12 +524,21 @@ void FreertosServerSyncWorker::Run() {
             // Deadlines run offline too, so the pairing page cannot hang.
             pairing_.Tick(now);
             if (!pairing_.Active()) {
-                if (pairing_.DiscardStored()) EraseCredentials();
+                if (pairing_.DiscardStored()) ErasePending();
                 std::memset(pending_token_, 0, sizeof(pending_token_));
                 PublishLink();
             }
         }
         const bool online = hooks_.online && hooks_.online(hooks_.context);
+        const bool can_sync = online && CanSync();
+        if (flush_requested_.exchange(false)) {
+            if (can_sync) {
+                schedule_.Flush(now);
+                flush_pending_ = true;
+            } else {
+                flush_done_.store(true);  // nothing to send: do not hold up the power-off
+            }
+        }
         if (!online || !origin_ok_) {
             was_online_ = false;
             continue;
@@ -465,11 +552,12 @@ void FreertosServerSyncWorker::Run() {
             RunPairing(now);
             continue;
         }
-        if (!have_credentials_ || needs_repair_) continue;
-        if (!confirmed_) {
-            ConfirmStored(now);
+        if (pending_loaded_) {
+            ConfirmPending(now);  // an unconfirmed pairing found at boot
             continue;
         }
+        if (!have_credentials_ || needs_repair_) continue;
+        if (token_dirty_ && SaveToken()) token_dirty_ = false;
         SweepStale(now);
         int64_t utc = 0;
         const bool clock = UtcNow(&utc);
@@ -498,10 +586,16 @@ void FreertosServerSyncWorker::Run() {
         MaybeRotate(now);
         if (needs_repair_) continue;
         const bool new_generation = generation != accepted_generation_;
-        if (schedule_.Due(now, new_generation)) {
+        const bool due = schedule_.Due(now, new_generation);
+        if (due) {
             Upload(now);
             next_poll_ms_ = NowMs() + kPollMs;
-        } else if (Reached(now, next_poll_ms_)) {
+        }
+        if (flush_pending_ && (due || !schedule_.Due(NowMs(), new_generation))) {
+            flush_pending_ = false;
+            flush_done_.store(true);
+        }
+        if (!due && Reached(now, next_poll_ms_)) {
             PollCommands(now);
             next_poll_ms_ = NowMs() + kPollMs;
         }
@@ -632,9 +726,9 @@ void FreertosServerSyncWorker::OnAuthResult(int status) {
     }
     if (status != 401) return;
     if (++auth_failures_ >= kAuthFailuresForRepair && !needs_repair_) {
-        // S1: revoked or unknown token. Show "pair again"; never re-pair alone.
-        needs_repair_ = true;
-        ESP_LOGW(kTag, "PET_SYNC_AUTH_REFUSED needs_repair=1");
+        // S1: revoked or unknown token. Forget it, show "pair again"; never
+        // re-pair alone.
+        EnterRepair();
         PublishLink();
     }
 }
@@ -687,6 +781,18 @@ void FreertosServerSyncWorker::Upload(uint32_t now_ms) {
                  static_cast<unsigned>(in.awaiting_count),
                  static_cast<unsigned>(reply.command_count));
         RouteCommands(reply.commands, reply.command_count, NowMs());
+        return;
+    }
+    if (http.status == 200) {
+        // Accepted, but the reply is too big or unreadable (a long command
+        // list). The snapshot is in: do not send it again; the commands are
+        // delivered in smaller pieces on the next replies.
+        OnAuthResult(200);
+        accepted_generation_ = view.generation;
+        seen_requests_rev_ = requests_rev;
+        schedule_.OnUploaded(NowMs(), true, new_generation, 0);
+        ESP_LOGW(kTag, "PET_SYNC_REPLY_UNPARSED gen=%" PRIu64 " bytes=%u overflow=%d",
+                 view.generation, static_cast<unsigned>(http.length), http.overflow ? 1 : 0);
         return;
     }
     OnAuthResult(http.status);
@@ -754,66 +860,49 @@ void FreertosServerSyncWorker::RunPairing(uint32_t now_ms) {
             break;
         }
         case PairingFlow::Action::Save: {
-            const bool saved = SaveCredentials(pending_id_, pending_token_, false);
-            if (saved) {
-                std::memcpy(device_id_, pending_id_, sizeof(device_id_));
-                std::memcpy(token_, pending_token_, sizeof(token_));
-                have_credentials_ = true;
-                confirmed_ = false;
-                needs_repair_ = false;
-                auth_failures_ = 0;
-            }
-            std::memset(pending_token_, 0, sizeof(pending_token_));
+            // Stored apart from the working credentials (a failed pairing
+            // must never cost the device the ones it has).
+            const bool saved = SavePending();
             pairing_.OnSaved(saved, NowMs());
             ESP_LOGI(kTag, "PET_PAIR_SAVED ok=%d", saved ? 1 : 0);
             break;
         }
         case PairingFlow::Action::Confirm: {
-            const int n = std::snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", device_id_);
-            Request("POST", "/v1/pairing/confirm", body, static_cast<size_t>(n), token_, &http);
-            pairing_.OnConfirm(http.status, NowMs());
+            const int n = std::snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", pending_id_);
+            Request("POST", "/v1/pairing/confirm", body, static_cast<size_t>(n), pending_token_, &http);
             ESP_LOGI(kTag, "PET_PAIR_CONFIRM status=%d", http.status);
-            if (http.status == 200) {
-                confirmed_ = true;
-                SaveCredentials(device_id_, token_, true);
-                // A new device on the server: its generation cursor is empty.
-                accepted_generation_ = 0;
-                rotated_at_ = 0;
-                next_rotate_check_ms_ = NowMs();
-                schedule_.OnConnected(NowMs());
+            if (http.status == 200 && !PromotePending()) {
+                // Confirmed on the server but not storable here: the pending
+                // copy stays in NVS and is promoted on a later boot / retry.
+                pending_loaded_ = true;
             }
+            pairing_.OnConfirm(http.status, NowMs());
+            if (http.status == 200) schedule_.OnConnected(NowMs());
             break;
         }
     }
     if (!pairing_.Active()) {
-        if (pairing_.DiscardStored()) EraseCredentials();
-        std::memset(pending_token_, 0, sizeof(pending_token_));
+        if (pairing_.DiscardStored()) ErasePending();
+        else if (!pending_loaded_) std::memset(pending_token_, 0, sizeof(pending_token_));
         ESP_LOGI(kTag, "PET_PAIR_DONE state=%u", static_cast<unsigned>(pairing_.View().state));
     }
     PublishLink();
 }
 
-// Credentials written but the confirm never answered (reboot mid-pairing).
-void FreertosServerSyncWorker::ConfirmStored(uint32_t now_ms) {
+// A pairing whose confirm never got an answer (reboot in between), or one
+// confirmed on the server but not yet stored.
+void FreertosServerSyncWorker::ConfirmPending(uint32_t now_ms) {
     if (!Reached(now_ms, next_confirm_ms_)) return;
     next_confirm_ms_ = now_ms + kConfirmRetryMs;
     char body[96];
-    const int n = std::snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", device_id_);
+    const int n = std::snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", pending_id_);
     Http http{};
-    Request("POST", "/v1/pairing/confirm", body, static_cast<size_t>(n), token_, &http);
-    if (http.status != 200 && http.status != 0) {
-        // Maybe it is active already (the confirmed flag was not stored).
-        char path[96];
-        std::snprintf(path, sizeof(path), "/v1/devices/%s/commands", device_id_);
-        Request("GET", path, nullptr, 0, token_, &http);
-    }
-    ESP_LOGI(kTag, "PET_PAIR_CONFIRM_STORED status=%d", http.status);
+    Request("POST", "/v1/pairing/confirm", body, static_cast<size_t>(n), pending_token_, &http);
+    ESP_LOGI(kTag, "PET_PAIR_CONFIRM_PENDING status=%d", http.status);
     if (http.status == 200) {
-        confirmed_ = true;
-        SaveCredentials(device_id_, token_, true);
-        schedule_.OnConnected(NowMs());
-    } else if (http.status == 401 || http.status == 404) {
-        EraseCredentials();  // the server dropped the unconfirmed device
+        if (PromotePending()) schedule_.OnConnected(NowMs());
+    } else if (ConfirmRefusesToken(http.status)) {
+        ErasePending();  // the server dropped the unconfirmed device
     }
     PublishLink();
 }
@@ -826,14 +915,9 @@ void FreertosServerSyncWorker::MaybeRotate(uint32_t now_ms) {
         next_rotate_check_ms_ = now_ms + 60000;
         return;
     }
-    nvs_handle_t handle = 0;
     if (!rotated_at_) {  // first check after pairing: start counting now
         rotated_at_ = utc;
-        if (nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
-            nvs_set_i64(handle, "rot_at", utc);
-            nvs_commit(handle);
-            nvs_close(handle);
-        }
+        token_dirty_ = true;  // stored with the token by SaveToken
         return;
     }
     if (utc - rotated_at_ < kRotateAfterS) return;
@@ -842,38 +926,58 @@ void FreertosServerSyncWorker::MaybeRotate(uint32_t now_ms) {
     Http http{};
     Request("POST", path, nullptr, 0, token_, &http);
     char fresh[kTokenMax + 1]{};
-    if (http.status == 200 && !http.overflow &&
-        ParseTokenRotate(buf_->reply, http.length, &buf_->doc, fresh, sizeof(fresh))) {
-        std::memset(buf_->reply, 0, sizeof(buf_->reply));
-        // Stored first; only then does the old token stop working (confirm).
-        bool stored = SaveCredentials(device_id_, fresh, true);
-        if (stored && nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
-            nvs_set_i64(handle, "rot_at", utc);
-            nvs_commit(handle);
-            nvs_close(handle);
-        }
-        if (stored) {
+    const bool parsed = http.status == 200 && !http.overflow &&
+                        ParseTokenRotate(buf_->reply, http.length, &buf_->doc, fresh, sizeof(fresh));
+    std::memset(buf_->reply, 0, sizeof(buf_->reply));
+    switch (ClassifyRotate(http.status, parsed)) {
+        case RotateVerdict::Done: {
+            // Use the new token from now on, even before it is stored: the old
+            // one stops working once the new one is confirmed.
             std::memcpy(token_, fresh, sizeof(token_));
             rotated_at_ = utc;
+            token_dirty_ = !SaveToken();
+            if (token_dirty_) ESP_LOGW(kTag, "PET_TOKEN_ROTATE_STORE_RETRY");
             std::snprintf(path, sizeof(path), "/v1/devices/%s/token/confirm", device_id_);
             Request("POST", path, nullptr, 0, token_, &http);
             ESP_LOGI(kTag, "PET_TOKEN_ROTATED confirm=%d", http.status);
-        } else {
-            // The old token stays valid for 24 h (S1); after that: pair again.
-            ESP_LOGW(kTag, "PET_TOKEN_ROTATE_STORE_FAILED");
-            next_rotate_check_ms_ = now_ms + kRotateRetryMs;
+            break;
         }
-        std::memset(fresh, 0, sizeof(fresh));
-        return;
+        case RotateVerdict::RepairSoon:
+            // 409 ROTATE_WITH_CURRENT_TOKEN: a rotation went through earlier
+            // but its answer was lost, so only the previous token is left,
+            // and it dies within 24 h. Pair again soon; keep working until then.
+            rotated_at_ = utc;
+            repair_notice_ = true;
+            SetRepairFlag(1);
+            ESP_LOGW(kTag, "PET_TOKEN_ROTATE_LOST repair_notice=1");
+            PublishLink();
+            break;
+        case RotateVerdict::AuthFailed:
+            OnAuthResult(http.status);
+            next_rotate_check_ms_ = now_ms + kRotateRetryMs;
+            break;
+        case RotateVerdict::Retry:
+            LogDetail("rotate", http);
+            next_rotate_check_ms_ = now_ms + kRotateRetryMs;
+            break;
     }
-    OnAuthResult(http.status);
-    if (http.status == 409) {
-        rotated_at_ = utc;  // ROTATE_WITH_CURRENT_TOKEN (via_previous): do not retry
-        ESP_LOGW(kTag, "PET_TOKEN_ROTATE_REFUSED status=409");
-    } else {
-        LogDetail("rotate", http);
-        next_rotate_check_ms_ = now_ms + kRotateRetryMs;
+    std::memset(fresh, 0, sizeof(fresh));
+}
+
+bool FreertosServerSyncWorker::CanSync() const {
+    return origin_ok_ && have_credentials_ && !needs_repair_ && !pairing_.Active() &&
+           !pending_loaded_;
+}
+
+bool FreertosServerSyncWorker::FlushBeforePowerOff(uint32_t timeout_ms) {
+    if (!events_ || !task_) return true;
+    flush_done_.store(false);
+    flush_requested_.store(true);
+    for (uint32_t waited = 0; waited < timeout_ms; waited += 100) {
+        if (flush_done_.load()) return true;
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
+    return flush_done_.load();
 }
 
 void FreertosServerSyncWorker::PublishLink() {
@@ -881,10 +985,9 @@ void FreertosServerSyncWorker::PublishLink() {
     LinkView view{};
     if (pairing_.Active()) view = flow;
     else if (!origin_ok_) view.state = LinkState::NoServer;
-    else if (needs_repair_) view.state = LinkState::NeedsRepair;
-    else if (have_credentials_ && confirmed_) view.state = LinkState::Paired;
+    else if (needs_repair_ || repair_notice_) view.state = LinkState::NeedsRepair;
+    else if (have_credentials_) view.state = LinkState::Paired;
     else if (flow.state == LinkState::Failed || flow.state == LinkState::NoServer) view = flow;
-    else if (have_credentials_) view.state = LinkState::Saving;
     link_bits_.store(PackLinkView(view));
 }
 

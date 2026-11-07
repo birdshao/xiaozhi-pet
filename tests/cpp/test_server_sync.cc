@@ -365,12 +365,23 @@ void TestReplies() {
            reply.commands[5].temperament == Temperament::Curious);
     // More than kMaxCommandsPerReply: the rest come with the next reply.
     std::string many = "{\"result\":\"accepted\",\"generation\":5,\"commands\":[";
-    for (int k = 1; k <= 12; ++k)
+    for (int k = 1; k <= 40; ++k)
         many += std::string(k > 1 ? "," : "") + "{\"command_id\":" + std::to_string(k) +
                 ",\"kind\":\"MEMORY_CLEAR\",\"expires_at\":9,\"payload\":{\"clear_epoch\":1}}";
     many += "]}";
+    // 40 commands in one reply (about 560 nodes, 7 KB): parsed, the first
+    // kMaxCommandsPerReply are taken, the rest come with later replies.
+    assert(many.size() < 12288);
     assert(parse(many.c_str()) && reply.command_count == kMaxCommandsPerReply &&
-           reply.commands[7].id == 8);
+           reply.commands[0].id == 1 && reply.commands[kMaxCommandsPerReply - 1].id == kMaxCommandsPerReply);
+    // Past the node pool the parse fails as a whole: callers treat a 200 with
+    // an unreadable body as "uploaded, no commands" (never re-upload).
+    std::string flood = "{\"result\":\"accepted\",\"generation\":5,\"commands\":[";
+    for (int k = 1; k <= 80; ++k)
+        flood += std::string(k > 1 ? "," : "") + "{\"command_id\":" + std::to_string(k) +
+                 ",\"kind\":\"MEMORY_CLEAR\",\"expires_at\":9,\"payload\":{\"clear_epoch\":1}}";
+    flood += "]}";
+    assert(!parse(flood.c_str()));
 
     // Pairing.
     PairingStartReply start{};
@@ -466,6 +477,23 @@ void TestTracker() {
     blob[4 + 8 * 3] = 1;  // garbage after the last id
     assert(!back.DecodeRejected(blob, sizeof(blob)));
     assert(back.Rejected(30));  // a failed decode changes nothing
+}
+
+void TestDecisions() {
+    // A token is only used for the origin it was issued for.
+    assert(OriginBound("https://pet.example.cn", "https://pet.example.cn"));
+    assert(!OriginBound("https://pet.example.cn", "https://other.example.cn"));
+    assert(!OriginBound("", "https://pet.example.cn") && !OriginBound(nullptr, "https://x.cn") &&
+           !OriginBound("https://x.cn", nullptr) && !OriginBound("", ""));
+    // Rotation answers (a lost rotation shows up as 409 on the next try).
+    assert(ClassifyRotate(200, true) == RotateVerdict::Done);
+    assert(ClassifyRotate(200, false) == RotateVerdict::Retry);  // garbled: not a new token
+    assert(ClassifyRotate(409, false) == RotateVerdict::RepairSoon);
+    assert(ClassifyRotate(401, false) == RotateVerdict::AuthFailed);
+    for (int status : {0, 429, 500, 503, 404}) assert(ClassifyRotate(status, false) == RotateVerdict::Retry);
+    // Only 401 erases a pending pairing token.
+    assert(ConfirmRefusesToken(401));
+    for (int status : {0, 200, 404, 409, 429, 500, 503}) assert(!ConfirmRefusesToken(status));
 }
 
 void TestRouting() {
@@ -663,6 +691,12 @@ void TestUploadSchedule() {
     for (int k = 0; k < 20; ++k) s.OnUploaded(80000, false, true, 0);
     assert(s.NextDueMs(80000, false) == U::kMaxBackoffMs);
     s.OnUploaded(90000, true, true, 0);
+    // Flush (before power-off): due at once, still held back by the generation gap.
+    U fl;
+    fl.OnConnected(0);
+    fl.OnUploaded(0, true, true, 0);
+    fl.Flush(100);
+    assert(!fl.Due(100, true) && fl.Due(100, false) && fl.Due(U::kMinGenerationGapMs, true));
     // Heartbeat after a quiet half hour.
     assert(!s.Due(90000 + U::kHeartbeatMs - 1, false) && s.Due(90000 + U::kHeartbeatMs, false));
     // Wrap-safe millisecond clock.
@@ -805,17 +839,31 @@ void TestRequests() {
     RequestView v = d.View();
     assert(d.IsOpen() && v.kind == RequestKind::Temperament && !v.confirm && v.more == 2 &&
            v.temperament == static_cast<uint8_t>(Temperament::Lively));
-    // A stray press refuses.
-    assert(d.OnInput(InputKind::DialPress, 1100) == ConfirmAction::Reject && !d.IsOpen());
+    // A press before the page has been on the panel for kSettleMs is ignored
+    // (the e-paper is still drawing): nothing is decided that was not seen.
+    assert(d.OnInput(InputKind::DialPress, 1100) == ConfirmAction::None && d.IsOpen());
+    assert(d.OnInput(InputKind::DialPress, 1000 + ConfirmDialog::kSettleMs - 1) == ConfirmAction::None);
+    // After that a stray press refuses (the highlight starts on the cross).
+    assert(d.OnInput(InputKind::DialPress, 1000 + ConfirmDialog::kSettleMs) == ConfirmAction::Reject &&
+           !d.IsOpen());
     d.Open(Command(8, CommandKind::MemoryClear), 0, 2000);
     assert(d.View().kind == RequestKind::MemoryClear);
     assert(d.OnInput(InputKind::Talk, 2100) == ConfirmAction::None && d.IsOpen());
-    assert(d.OnInput(InputKind::DialDown, 2200) == ConfirmAction::Redraw && d.View().confirm);
-    assert(d.OnInput(InputKind::DialUp, 2300) == ConfirmAction::Redraw && !d.View().confirm);
-    d.OnInput(InputKind::DialUp, 2400);
-    assert(d.OnInput(InputKind::DialPress, 2500) == ConfirmAction::Confirm && d.Command().id == 8);
-    d.Open(Command(9, CommandKind::MemoryClear), 0, 3000);
-    assert(d.OnInput(InputKind::DialLong, 3100) == ConfirmAction::Exit && !d.IsOpen());
+    // Direction picks the answer: up = check, down = cross, never a toggle.
+    assert(d.OnInput(InputKind::DialDown, 2150) == ConfirmAction::None && !d.View().confirm);
+    assert(d.OnInput(InputKind::DialUp, 2200) == ConfirmAction::Redraw && d.View().confirm);
+    assert(d.OnInput(InputKind::DialUp, 2300) == ConfirmAction::None && d.View().confirm);
+    // The press right after the move is ignored until the new frame is up.
+    assert(d.OnInput(InputKind::DialPress, 2500) == ConfirmAction::None && d.IsOpen());
+    assert(d.OnInput(InputKind::DialPress, 2200 + ConfirmDialog::kSettleMs - 1) == ConfirmAction::None);
+    // Turning back and pressing at once decides nothing; once settled it is a refusal.
+    assert(d.OnInput(InputKind::DialDown, 5000) == ConfirmAction::Redraw && !d.View().confirm);
+    assert(d.OnInput(InputKind::DialPress, 5100) == ConfirmAction::None);
+    assert(d.OnInput(InputKind::DialUp, 5200) == ConfirmAction::Redraw && d.View().confirm);
+    assert(d.OnInput(InputKind::DialPress, 5200 + ConfirmDialog::kSettleMs) == ConfirmAction::Confirm &&
+           d.Command().id == 8);
+    d.Open(Command(9, CommandKind::MemoryClear), 0, 9000);
+    assert(d.OnInput(InputKind::DialLong, 9100) == ConfirmAction::Exit && !d.IsOpen());
     d.Open(Command(9, CommandKind::MemoryClear), 0, 4000);
     assert(d.Tick(4000 + ConfirmDialog::kIdleExitMs - 1) == ConfirmAction::None);
     assert(d.Tick(4000 + ConfirmDialog::kIdleExitMs) == ConfirmAction::Exit && !d.IsOpen());
@@ -919,6 +967,7 @@ int main(int argc, char** argv) {
     TestBase64AndHelpers();
     TestReplies();
     TestTracker();
+    TestDecisions();
     TestRouting();
     TestPairingFlow();
     TestUploadSchedule();

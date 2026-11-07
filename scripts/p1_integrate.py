@@ -1011,6 +1011,9 @@ BOARD_WORKER = r'''
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
         // Let any queued Pet event commit to NVS first (bounded wait).
         for (int i = 0; i < 20 && !pet_service_.Settled(); ++i) vTaskDelay(pdMS_TO_TICKS(100));
+        // One last state snapshot for the parent panel (bounded; at once when
+        // there is no link): the commit above is what it will carry.
+        server_sync_.FlushBeforePowerOff(6000);
         // ADR-010: the RTC alarm powers TuanTuan on at the plan's wake time;
         // a self-test "alarm" step wins so unattended trials come back soon.
         uint32_t wake_s = sleep_alarm_s_.exchange(0);
@@ -2588,6 +2591,11 @@ BOARD_WORKER = r'''
     kid_app::ParentPage parent_page_ = kid_app::ParentPage::Menu;
     kid_app::ConfirmDialog confirm_dialog_;
     uint32_t link_input_ms_ = 0;
+    // Pairing again over a working link needs a second press (it replaces
+    // the credentials): armed by the first press, shown as the "pair again" icon.
+    bool repair_armed_ = false;
+    uint32_t repair_armed_ms_ = 0;
+    static constexpr uint32_t kRepairArmMs = 10000;
     uint32_t parent_link_shown_ = 0;  // packed LinkView last published
     kid_app::ParentSettings parent_settings_;      // guarded by parent_mutex_
     mutable std::mutex parent_mutex_;
@@ -2640,6 +2648,8 @@ BOARD_WORKER = r'''
         scene.parent = parent_menu_.View();
         scene.parent.page = parent_page_;
         scene.parent.link = server_sync_.Link();
+        if (repair_armed_ && parent_page_ == kid_app::ParentPage::Link)
+            scene.parent.link = kid_app::LinkView{kid_app::LinkState::NeedsRepair, 0};
         if (parent_page_ == kid_app::ParentPage::Request)
             scene.parent.request = confirm_dialog_.View();
         parent_link_shown_ = kid_app::PackLinkView(scene.parent.link);
@@ -2653,6 +2663,7 @@ BOARD_WORKER = r'''
 
     void ShowParentPage(kid_app::ParentPage page) {
         parent_page_ = page;
+        repair_armed_ = false;
         if (page != kid_app::ParentPage::Request) confirm_dialog_.Close();
         parent_menu_.Touch(NowMs());
         link_input_ms_ = NowMs();
@@ -2688,8 +2699,18 @@ BOARD_WORKER = r'''
             if (kind == kid_app::InputKind::DialLong) {
                 ShowParentPage(kid_app::ParentPage::Menu);
             } else if (kind == kid_app::InputKind::DialPress && !LinkBusy()) {
-                // (Re)pair: stored credentials change only once a new token
-                // is claimed and saved.
+                // Linked already: the first press only asks "pair again?" (the
+                // icon changes), the second one within kRepairArmMs does it.
+                // Credentials change only once the new token is confirmed.
+                const bool linked = server_sync_.Link().state == kid_app::LinkState::Paired;
+                if (linked && !repair_armed_) {
+                    repair_armed_ = true;
+                    repair_armed_ms_ = NowMs();
+                    ESP_LOGI(TAG, "PET_PARENT_PAIR_ARMED");
+                    RepublishParent();
+                    return;
+                }
+                repair_armed_ = false;
                 server_sync_.BeginPairing();
                 ESP_LOGI(TAG, "PET_PARENT_PAIR");
                 RepublishParent();
@@ -2844,6 +2865,10 @@ BOARD_WORKER = r'''
             }
         } else {
             HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
+        }
+        if (repair_armed_ && NowMs() - repair_armed_ms_ >= kRepairArmMs) {
+            repair_armed_ = false;  // not confirmed in time
+            RepublishParent();
         }
         // The server link changed (code shown, paired, failed): redraw.
         if (parent_menu_.IsOpen() && parent_page_ != kid_app::ParentPage::Request &&

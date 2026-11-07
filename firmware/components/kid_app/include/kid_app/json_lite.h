@@ -16,7 +16,7 @@ namespace kid_app {
 // Int()/Uint() only accept integer tokens (no fraction or exponent) that fit.
 class JsonDoc {
 public:
-    static constexpr size_t kMaxNodes = 384;
+    static constexpr size_t kMaxNodes = 768;
     static constexpr int kMaxDepth = 12;
     enum class Type : uint8_t { Null, Bool, Number, String, Array, Object };
 

@@ -227,6 +227,19 @@ bool AllowedServerOrigin(const char* origin) {
     return true;
 }
 
+bool OriginBound(const char* bound, const char* current) {
+    return bound && current && bound[0] && std::strcmp(bound, current) == 0;
+}
+
+RotateVerdict ClassifyRotate(int http_status, bool parsed) {
+    if (http_status == 200 && parsed) return RotateVerdict::Done;
+    if (http_status == 409) return RotateVerdict::RepairSoon;
+    if (http_status == 401) return RotateVerdict::AuthFailed;
+    return RotateVerdict::Retry;
+}
+
+bool ConfirmRefusesToken(int http_status) { return http_status == 401; }
+
 bool OriginOfUrl(const char* url, char* out, size_t capacity) {
     if (!url || !out || !capacity) return false;
     size_t skip = 0;
