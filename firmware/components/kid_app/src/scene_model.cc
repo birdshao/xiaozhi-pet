@@ -1054,16 +1054,45 @@ void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
         case ParentItem::Server:  // the home server
             Cloud(f, cx, cy, 1, ink);
             break;
+        case ParentItem::Habit:  // a tick in a box
+            RoundRectRing(f, cx - 17, cy - 17, 34, 34, 7, 4, ink);
+            CheckMark(f, cx, cy, 10, 5, ink);
+            break;
+        case ParentItem::BirthMonth:  // a cake
+        case ParentItem::BirthDay:    // a cake with a candle
+            FillRoundRect(f, cx - 18, cy - 2, 36, 18, 5, ink);
+            FillRect(f, cx - 18, cy + 4, 36, 3, !ink);
+            if (item == ParentItem::BirthDay) {
+                FillRect(f, cx - 2, cy - 16, 4, 14, ink);
+                Disk(f, cx, cy - 20, 3, ink);
+            }
+            break;
     }
+}
+
+void HabitIcon(MonoFrame& f, uint8_t habit, int cx, int cy, int r);  // V8, below
+
+// Two seven-segment digits (a month or a day); 0 = not set, a dash.
+void TwoDigits(MonoFrame& f, int x, int cy, uint8_t value, bool ink) {
+    const int y = cy - kDigitH / 2;
+    if (!value) {
+        FillRect(f, x, cy - 3, 2 * kDigitW + 8, 6, ink);
+        return;
+    }
+    Digit(f, x, y, value / 10, ink);
+    Digit(f, x + kDigitW + 8, y, value % 10, ink);
 }
 
 void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
     const auto item = static_cast<ParentItem>(row);
-    const int top = kParentRowTop + row * kParentRowH, cy = top + kParentRowH / 2;
+    // V8: kParentRowsPerPage rows a page; the page follows the cursor.
+    const uint8_t slot = row % kParentRowsPerPage;
+    const int top = kParentRowTop + slot * kParentRowH, cy = top + kParentRowH / 2;
     const bool selected = row == view.cursor, editing = selected && view.editing;
+    const bool last_on_page = slot + 1 == kParentRowsPerPage || row + 1 == kParentItemCount;
     if (editing) FillRoundRect(f, 12, top + 2, 776, kParentRowH - 4, 14);
     else if (selected) RoundRectRing(f, 12, top + 2, 776, kParentRowH - 4, 14, 5);
-    else if (row + 1 < kParentItemCount) FillRect(f, 40, top + kParentRowH - 1, 720, 1);
+    else if (!last_on_page) FillRect(f, 40, top + kParentRowH - 1, 720, 1);
     const bool ink = !editing;
     ParentIcon(f, item, 72, cy, ink);
     const auto& s = view.settings;
@@ -1087,6 +1116,12 @@ void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
             else
                 LinkGlyph(f, view.link.state, kParentValueX + 40, cy, 1, ink);
             break;
+        case ParentItem::Habit:
+            if (view.care.habit) HabitIcon(f, view.care.habit, kParentValueX + 20, cy, 18);
+            else FillRect(f, kParentValueX, cy - 3, 40, 6, ink);
+            break;
+        case ParentItem::BirthMonth: TwoDigits(f, kParentValueX, cy, view.care.birth_month, ink); break;
+        case ParentItem::BirthDay: TwoDigits(f, kParentValueX, cy, view.care.birth_day, ink); break;
     }
     if (editing) {  // the dial changes this value
         FillTriangle(f, 740, cy - 4, 760, cy - 4, 750, cy - 18, false);
@@ -1189,7 +1224,15 @@ void ParentScene(MonoFrame& f, const ParentView& view) {
     for (int a = 0; a < 360; a += 45) Ray(f, 44, 32, a, 16, 22, true);
     Disk(f, 44, 32, 7, false);
     ParentHeader(f);
-    for (uint8_t row = 0; row < kParentItemCount; ++row) ParentRow(f, view, row);
+    // V8: two pages; dots under the header say which one (page 1 first).
+    const uint8_t page = static_cast<uint8_t>(view.cursor / kParentRowsPerPage);
+    for (uint8_t p = 0; p < 2; ++p) {
+        if (p == page) Disk(f, 388 + p * 24, 36, 7);
+        else Ring(f, 388 + p * 24, 36, 7, 7, 3);
+    }
+    const uint8_t first = static_cast<uint8_t>(page * kParentRowsPerPage);
+    for (uint8_t row = first; row < kParentItemCount && row < first + kParentRowsPerPage; ++row)
+        ParentRow(f, view, row);
 }
 
 // ---- Mini games (V4-06) ----------------------------------------------------------
