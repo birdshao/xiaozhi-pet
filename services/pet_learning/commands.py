@@ -28,6 +28,7 @@ CONFIRM_TTL = 7 * DAY_SECONDS
 DEFAULT_TTL = DAY_SECONDS
 COMPLETED_RETENTION = 30 * DAY_SECONDS
 ID_BITS = 53
+MAX_DELIVER = 8  # device reply buffer: 8 commands, 384 JSON nodes, 6 KB
 RESULTS = frozenset({"applied", "rejected", "expired"})
 
 
@@ -141,18 +142,24 @@ def apply_receipts(db: sqlite3.Connection, device_id: str,
 
 def deliverable(db: sqlite3.Connection, device_id: str, now: int, *,
                 mark: bool = True) -> list[dict[str, Any]]:
-    """Pending, unexpired commands in creation order; marks first delivery.
+    """Pending, unexpired commands in creation order, at most MAX_DELIVER; marks first delivery.
+
+    Commands the device reports in awaiting_confirm (waiting for the parent on the
+    device) are not sent again, so they cannot fill the window and starve later
+    commands. The cap keeps the reply inside the device's buffer (8 commands).
 
     requires_confirm is derived from the kind and is informational: the
     device decides by kind itself (MEMORY_CLEAR and SET_TEMPERAMENT always
     need the parent on the device, D5), so the server can never weaken it.
     """
-    rows = db.execute("SELECT * FROM commands WHERE device_id=? AND state='pending' AND expires_at>? "
-                      "ORDER BY seq", (device_id, now)).fetchall()
-    if not mark:
-        return [_wire(r) for r in rows]
-    db.execute("UPDATE commands SET delivered_at=? WHERE device_id=? AND state='pending' "
-               "AND expires_at>? AND delivered_at IS NULL", (now, device_id, now))
+    state = db.execute("SELECT awaiting_json FROM device_state WHERE device_id=?", (device_id,)).fetchone()
+    awaiting = set(json.loads(state[0])) if state else set()
+    rows = [r for r in db.execute("SELECT * FROM commands WHERE device_id=? AND state='pending' "
+                                  "AND expires_at>? ORDER BY seq", (device_id, now)).fetchall()
+            if r["command_id"] not in awaiting][:MAX_DELIVER]
+    if mark and rows:
+        db.executemany("UPDATE commands SET delivered_at=? WHERE command_id=? AND delivered_at IS NULL",
+                       [(now, r["command_id"]) for r in rows])
     return [_wire(r) for r in rows]
 
 

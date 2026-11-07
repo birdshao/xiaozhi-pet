@@ -98,3 +98,7 @@ bash scripts/p2_test.sh   # 含 tests/cpp/test_memory_golden.cc，校验 tests/f
 - 清空记忆的"再次输入密码 + TOTP"（§9 敏感操作）：需要 `ParentAuth` 提供统一的二次验证原语（删除设备、备注也要用），本 PR 只要求会话 + CSRF；设备上的家长确认（D5）仍是必经的第二道。
 - `SET_TEMPERAMENT`、`SET_PARENT_SETTINGS`、`SELECT_VOICE_PACK` 已在命令通道里（含确认/过期规则），家长接口和保守合并由 S3 提供；`SYNC_CONTENT` 由 S4 下发。
 - 喜好名取自 S4 的 `like_topics` / `like_options`，书名取自 S4 的 `content_packages.title`（kind=book，取最新修订），都只认 `approved` 的包；`name` 取自 S3 的 `profiles`（表存在时）。没有审核名的 id 一律省略。
+
+## 命令下发窗口（S3 补充）
+
+每次响应（快照响应和 `GET .../commands`）最多带 **8 条**命令，按创建顺序；设备回复缓冲只有 8 条 / 384 个 JSON 节点 / 6 KB。快照里 `awaiting_confirm` 列出的命令（设备上正等家长确认）**不再重复下发**，免得它们占满窗口、让后面的命令一直发不出去；它们在服务端仍是 `pending`，面板显示"等待在设备上确认"，设备忘记它们（不再列在 `awaiting_confirm`）后会重新下发。已发出但设备还没回执的命令会在后续响应里继续出现，直到回执或过期。只有真正下发出去的命令才记 `delivered_at`。

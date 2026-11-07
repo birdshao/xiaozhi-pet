@@ -222,6 +222,19 @@ class CredentialTests(PairingBase):
         self.assertIn(("token.rotate", "via_previous"),
                       [(x["action"], x["result"]) for x in self.audit_rows()])
 
+    def test_lost_rotation_response_cannot_be_recovered_with_the_previous_token(self):
+        """Rotation is deliberately not idempotent: tokens are stored hashed, and handing the new
+        token to whoever holds the previous one would let a leaked old token take the device over.
+        The device gets an explicit code and the previous token keeps working for the overlap."""
+        old = self.pair()
+        self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old))  # reply lost
+        retry = self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old))
+        self.assertEqual((retry.status_code, retry.json()["detail"]), (409, "ROTATE_WITH_CURRENT_TOKEN"))
+        self.assertNotIn("token", retry.json())
+        self.assertEqual(self.device_status("pet-aaa", old), 200)  # still usable until the overlap ends
+        self.now += pairing.ROTATION_OVERLAP + 1
+        self.assertEqual(self.device_status("pet-aaa", old), 401)
+
     def test_revoked_token_rejected_everywhere(self):
         token = self.pair()
         new = self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(token)).json()["token"]
