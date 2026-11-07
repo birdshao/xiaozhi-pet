@@ -47,6 +47,29 @@ CXX="${CXX:-g++}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
   "$ROOT/tests/cpp/test_audio_coordinator.cc" -o "$BUILD/test_audio_coordinator"
+
+# V8 sound and routines: parrot (RAM-only recording, wiped on every exit),
+# nursery-rhyme / lullaby player with sleep timer, brushing / hand-washing
+# companion, and the audio arbiter's preemption of all of them.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/parrot_session.cc" \
+  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
+  "$ROOT/tests/cpp/test_parrot_session.cc" \
+  -o "$BUILD/test_parrot_session"
+"$BUILD/test_parrot_session"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/song_player.cc" \
+  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
+  "$ROOT/tests/cpp/test_song_player.cc" \
+  -o "$BUILD/test_song_player"
+"$BUILD/test_song_player"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/routine_timer.cc" \
+  "$ROOT/tests/cpp/test_routine_timer.cc" \
+  -o "$BUILD/test_routine_timer"
+"$BUILD/test_routine_timer"
 "$BUILD/test_audio_coordinator"
 
 # E-paper full-refresh pacing and scene coalescing without any framebuffer heap.
@@ -412,29 +435,6 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   "$ROOT/tests/cpp/test_motion_game.cc" \
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
-
-# V8 sound and routines: parrot (RAM-only recording, wiped on every exit),
-# nursery-rhyme / lullaby player with sleep timer, brushing / hand-washing
-# companion, and the audio arbiter's preemption of all of them.
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
-  "$ROOT/firmware/components/kid_app/src/parrot_session.cc" \
-  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
-  "$ROOT/tests/cpp/test_parrot_session.cc" \
-  -o "$BUILD/test_parrot_session"
-"$BUILD/test_parrot_session"
-
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
-  "$ROOT/firmware/components/kid_app/src/song_player.cc" \
-  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
-  "$ROOT/tests/cpp/test_song_player.cc" \
-  -o "$BUILD/test_song_player"
-"$BUILD/test_song_player"
-
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
-  "$ROOT/firmware/components/kid_app/src/routine_timer.cc" \
-  "$ROOT/tests/cpp/test_routine_timer.cc" \
-  -o "$BUILD/test_routine_timer"
-"$BUILD/test_routine_timer"
 
 # V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
