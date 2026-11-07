@@ -3,6 +3,13 @@ name: P4 offline SD story packages
 on:
   pull_request:
     paths:
+      - 'tools/make_branch_test_book.py'
+      - 'tools/tuantuan_series.py'
+      - 'curriculum/stories/**'
+      - 'tests/test_v8_books.py'
+      - 'tests/cpp/test_branch_book.cc'
+      - 'docs/V8_BOOKS.md'
+      - 'docs/V8_STORY_REVIEW.md'
       - 'tools/story_pack.py'
       - 'tools/make_story_sd_fixture.py'
       - 'tools/story_pack_requirements.txt'
@@ -20,11 +27,21 @@ on:
       - 'docs/V4_KPB2_CONTENT_FORMAT.md'
       - 'tools/game_pack.py'
       - 'tests/test_v4_game_pack.py'
+      - 'tools/v8_quiz_content.py'
+      - 'tests/test_v8_quiz_content.py'
+      - 'docs/V8_QUIZ_REVIEW_CHECKLIST.md'
       - 'tests/fixtures/kpg1/**'
       - '.github/workflows/p4-story-pack.yml'
   push:
     branches: [main]
     paths:
+      - 'tools/make_branch_test_book.py'
+      - 'tools/tuantuan_series.py'
+      - 'curriculum/stories/**'
+      - 'tests/test_v8_books.py'
+      - 'tests/cpp/test_branch_book.cc'
+      - 'docs/V8_BOOKS.md'
+      - 'docs/V8_STORY_REVIEW.md'
       - 'tools/story_pack.py'
       - 'tools/make_story_sd_fixture.py'
       - 'tools/story_pack_requirements.txt'
@@ -40,6 +57,9 @@ on:
       - 'tests/cpp/test_story_pack_reader.cc'
       - 'tools/game_pack.py'
       - 'tests/test_v4_game_pack.py'
+      - 'tools/v8_quiz_content.py'
+      - 'tests/test_v8_quiz_content.py'
+      - 'docs/V8_QUIZ_REVIEW_CHECKLIST.md'
       - 'tests/fixtures/kpg1/**'
       - '.github/workflows/p4-story-pack.yml'
   workflow_dispatch:
@@ -67,10 +87,14 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_p4_story_pack.py' -v
       - name: KPB2 grey pages and choice questions; golden packs; compiled C++ reader
         run: python -m unittest discover -s tests -p 'test_v4_kpb2.py' -v
+      - name: V8 branching books, bedtime story contract, TuanTuan series (draft, offline)
+        run: python -m unittest discover -s tests -p 'test_v8_books.py' -v
       - name: V4-05 reader test book, board reader contract and self-test scenario
         run: python -m unittest discover -s tests -p 'test_v4_book_reader.py' -v
       - name: KPG1 mini-game packs (V4-06); golden pack; shared art and clip ids
         run: python -m unittest discover -s tests -p 'test_v4_game_pack.py' -v
+      - name: V8 voice-kind quiz banks (20+ rounds), packs compile, review checklist in sync
+        run: python -m unittest discover -s tests -p 'test_v8_quiz_content.py' -v
       - name: Check distinct page graphics and test tones in SD smoke fixture
         run: python -m unittest discover -s tests -p 'test_p4_story_sd_smoke_fixture.py' -v
       - name: Generate downloadable TF card diagnostic book

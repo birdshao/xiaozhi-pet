@@ -274,6 +274,8 @@ def main() -> None:
     render.add_argument("--output", type=Path, required=True)
     validate = sub.add_parser("validate", help="Strictly re-check a KPB1/KPB2 file")
     validate.add_argument("--package", type=Path, required=True)
+    shelf = sub.add_parser("shelf", help="List the .kpb books in a folder in bookshelf order")
+    shelf.add_argument("--dir", type=Path, required=True)
     preview = sub.add_parser("preview", help="Write PNGs of what the device will show")
     preview.add_argument("--package", type=Path, required=True)
     preview.add_argument("--output", type=Path, required=True)
@@ -286,8 +288,30 @@ def main() -> None:
             info = kpb2.parse(args.package.read_bytes())
         except ValueError as error:
             raise SystemExit(f"PACKAGE_INVALID {error}")
+        extra = ""
+        if info["format"] == "KPB2":
+            series = info["series"]
+            extra = " branching=%d" % info["branching"]
+            if series["id"]:
+                extra += " series=%d:%d/%d next=%d" % (series["id"], series["index"],
+                                                      series["count"], series["next_content_id"])
         print("PACKAGE_VALID", info["format"], "pages=%d" % len(info["pages"]),
-              "questions=%d" % info["question_count"])
+              "questions=%d" % info["question_count"] + extra)
+    elif args.cmd == "shelf":
+        books = []
+        for path in sorted(args.dir.glob("*.kpb")):
+            try:
+                info = kpb2.parse(path.read_bytes())
+            except ValueError as error:
+                print("SKIPPED", path.name, error)
+                continue
+            if info["format"] == "KPB2":
+                books.append({**info, "file": path.name})
+        for book in kpb2.shelf_order(books):
+            series = book["series"]
+            tag = ("series %d: %d/%d" % (series["id"], series["index"], series["count"])
+                   if series["id"] else "standalone")
+            print("SHELF", book["file"], book["content_id"], tag, book["title"])
     elif args.cmd == "preview":
         for path in kpb2.preview(args.package, args.output):
             print("PREVIEW", path)

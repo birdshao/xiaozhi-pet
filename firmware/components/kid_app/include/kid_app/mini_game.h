@@ -20,8 +20,20 @@ enum class GameKind : uint8_t {
     AnimalSound = 3,  // which animal makes this sound?
     BigSmall = 4,     // which one is big / small?
     EnglishWord = 5,  // English word card: which picture is "cat"?
+    // V8 built-in learning rounds (never in a KPG1 pack): docs/V8_MINI_GAMES.md.
+    SpotDiff = 6,   // two rows, one cell differs: which position?
+    MamaBaby = 7,   // which baby belongs to this animal?
+    SizeOrder = 8,  // big-medium-small strip with a hole: which size fits?
+    Pattern = 9,    // circle triangle circle triangle ... what comes next?
+    Classify = 10,  // which one can be eaten / cannot be eaten?
+    Shadow = 11,    // which shadow belongs to this picture?
+    LeftRight = 12, // which box has the dot on the side the arrow points to?
+    Clock = 13,     // what do we do at this time?
+    Weather = 14,   // what should TuanTuan wear?
 };
+// KPG1 packs and tools/game_pack.py only know kinds 1..5.
 constexpr bool GameKindValid(uint8_t kind) { return kind >= 1 && kind <= 5; }
+constexpr bool GameKindBuiltinValid(uint8_t kind) { return kind >= 1 && kind <= 14; }
 const char* GameKindName(GameKind kind);
 
 // Clip ids, shared with tools/game_pack.py. 1..15: session lines a pack may
@@ -49,8 +61,14 @@ struct GameRound {
     std::array<uint16_t, 3> option_clip{};
 };
 
-// Same rules as the KPG1 reader and tools/game_pack.py.
+// Same rules as the KPG1 reader and tools/game_pack.py for kinds 1..5;
+// kinds 6..14 (built-in only) may also use PlayArt pictures.
 bool GameRoundValid(const GameRound& round);
+
+// Full wordless question banks (>= 20 rounds each, deterministic tables):
+// MatchShape and Count. The 8 rounds of BuiltinGameRounds() are the first
+// of each, kept as they were so the hardware self-test order stays put.
+const GameRound* BuiltinGameBank(GameKind kind, size_t* count);
 
 // Built-in set: works without a TF card. Wordless picture matching (same
 // shape, same number) with generated tones, so it needs no recordings.

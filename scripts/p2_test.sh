@@ -385,6 +385,12 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   -o "$BUILD/test_book_reader"
 "$BUILD/test_book_reader" "$ROOT/tests/fixtures/kpb2" "$BUILD/reader-test/books"
 
+# V8 branching books (KPB2 v3 links, graph validation, history paging, series)
+# and bedtime story mode, on the synthetic branch test book.
+PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branch-test" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/book_reader.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc"   "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc"   "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/tests/cpp/test_branch_book.cc"   -o "$BUILD/test_branch_book"
+"$BUILD/test_branch_book" "$BUILD/branch-test/books" "$ROOT/tests/fixtures/kpb2"
+
 # V4-06 mini games: built-in rounds, deterministic sessions, rewards only
 # for correct dial answers, growth memory, tones, game scene and its
 # refresh regions; KPG1 game packs read from the golden pack the tool made.
@@ -430,6 +436,7 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
 # scene regions of the ball track and the peekaboo card.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/motion_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
   "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
   "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
@@ -440,6 +447,25 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   "$ROOT/tests/cpp/test_motion_game.cc" \
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
+
+# V8 mini games: 20+ round banks per game, live clock / weather rounds,
+# memory flip, tilt maze (always solvable), shake dice / tree, wooden man,
+# day and night, four-way tilt, resting board stays quiet, the game list and
+# the scene regions. Rewards only from the dial or the asked-for motion.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/play_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/motion_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/gesture_detector.cc" \
+  "$ROOT/firmware/components/kid_app/src/motion_stats.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_play_games.cc" \
+  -o "$BUILD/test_play_games"
+"$BUILD/test_play_games"
 
 # V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

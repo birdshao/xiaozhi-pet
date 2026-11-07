@@ -25,7 +25,15 @@
 
 ## 2. 防火墙（N10）
 
-CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780。Docker 发布的端口绕过 ufw 的 INPUT 链，所以在 `/etc/ufw/after.rules` 里加了 `DOCKER-USER` 规则：来自 eth0 且不在 192.168.1.0/24 的流量一律丢弃。公网入口（端口转发、反向代理）不在本机配置，由用户实施。
+CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780。Docker 发布的端口绕过 ufw 的 INPUT 链，所以在 `/etc/ufw/after.rules` 里加了 `DOCKER-USER` 规则：来自 eth0 且不在 192.168.1.0/24 的流量一律丢弃。公网入口（2026-11-07 加）：`ufw allow 8443/tcp`，并在 `DOCKER-USER` 里给 eth0 上目的端口 8443 的 TCP 开例外（`deploy/ingress/firewall.sh`，幂等）；其余端口规则不变，8780/8000/8003/8765 仍不对外。
+
+## 2.1 公网 HTTPS 入口
+
+`https://pet.birdshao.cn:8443`：compose 服务 `ingress`（nginx，固定地址 172.28.0.3，profile `ingress`，`.env` 里 `COMPOSE_PROFILES=ingress`）终止 TLS，转发到 gateway。`KID_PET_TRUSTED_PROXY=172.28.0.3`（入口是容器，不是 172.28.0.1）。DDNS 和证书由局域网里的 Lucky（192.168.1.224）管：Lucky 同步 A 记录、用腾讯云 DNS 验证签发并续期 `*.birdshao.cn` 泛域名证书；CT 108 的 `pet-cert-pull.timer` 每天通过 SSH 拉取 Lucky 导出的证书，校验后 reload 入口。安装、授权方式、回滚见 [deploy/ingress/README.md](../deploy/ingress/README.md)。
+
+- 已落地：入口容器运行（healthy）、ufw/DOCKER-USER、从 Lucky（`nps`，192.168.1.224）拉到的 `*.birdshao.cn` 正式 Let's Encrypt 证书（到期 2027-01-20）与已启用的 `pet-cert-pull.timer`（每日，校验后才替换）、logrotate；局域网 `curl --resolve`（正式证书，不加 `-k`）验证了路由白名单、`/v1/voice/*` 等 404、WSS 101、413、HSTS、TLS1.1 被拒、429 限流（`verify.sh` 全部通过）。
+- Lucky 里 `pet.birdshao.cn` 的 DDNS 记录已加（A → 223.166.24.116），拉取公钥已在 `nps` 授权（`restrict,command` 受限）。等用户：光猫转发 WAN TCP 8443 → 192.168.1.110:8443，外网验证；之后改 `KID_PET_PUBLIC_ORIGIN`、清空 `XZ_WEBSOCKET_URL`（这两项**尚未改**，板子的 OTA 仍下发局域网地址）。
+- 升级（2026-11-07）：先备份（`pet-20261107-082642.enc`，恢复到临时目录验证 `RESTORE_OK`；`.env`、旧 compose 与旧应用目录副本在 CT 的 `/root/pet-upgrade-20261107/`），再把应用同步到最新 main 并重建 pet-learning、xiaozhi-server：数据库 `user_version` 5 → 6，生成 `KID_PET_NOTES_KEY`，`check-config` 为 `CHECK_OK`，OTA 仍下发局域网地址。
 
 ## 3. 应用与提供商
 
@@ -51,14 +59,14 @@ CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780�
 
 评审后补充（同日）：`check-config` 在 CT 上用镜像运行输出 `CHECK_OK`；`pet-maintenance.timer` 已安装并手动触发一次，备份写出 `pet-<时间>.enc`（600 权限，只有备份任务容器拿到 `KID_PET_BACKUP_KEY`）、清理任务正常，下次运行 03:30 左右；gateway 对 `/xiaozhi/ota/` 限流生效（突发约 10 次后返回 429）。
 
-没有验证的：真实音频经 ASR/TTS（EdgeTTS 需出网）的完整对话、真实设备连接、gateway 对语音路由的 403（只确认了坏 token 得 401）、公网入口（用户实施）。
+没有验证的：真实音频经 ASR/TTS（EdgeTTS 需出网）的完整对话、真实设备连接、gateway 对语音路由的 403（只确认了坏 token 得 401）、外网（光猫转发后）能否连通入口。
 上线时小坑：上游在导入时会创建 `config/assets/wakeup_words`，只读根文件系统下用 tmpfs 解决（见 compose）。
 
 ## 5. 待办与未决项
 
 - pin 不一致已由 S5（#91）统一为 `8f2dda09…`，不再是未决项。
 - **定时备份和清理**：`deploy/host/pet-maintenance.{service,timer}` 已入库，CT 108 上需按 SERVER_S7.md §3 安装并手动验证一次（见下方「验证」）。
-- 公网接入（DNS、公信证书、端口转发/IPv6、反向代理、限流、HSTS）由用户按 SERVER_S7.md §5 实施并逐条验收。
-- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`（单个 IP；入口在本机就填 172.28.0.1）、设备 id 目前是占位值（`KID_PET_VOICE_TOKEN` 是本机生成的随机值，两侧同值，只在 `.env`），配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
+- 公网接入：反向代理、限流、HSTS、防火墙、证书流程、DDNS 已就位（§2.1）；待用户光猫转发 8443、外网验证，逐条验收见 SERVER_S7.md §5 状态表。IPv6 未开（原因见 deploy/ingress/README.md）。局域网 DNS 要把 `pet.birdshao.cn` 指到 192.168.1.110（N1）。
+- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`（单个 IP；现已设为入口容器 172.28.0.3）、设备 id 目前是占位值（`KID_PET_VOICE_TOKEN` 是本机生成的随机值，两侧同值，只在 `.env`），配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
 - 家长账号尚未创建（需要用户在本地终端设置密码并绑定 TOTP，见 SERVER_S7.md §2）。
 - 备份：`pet-backups` 卷只是同机副本，请在 PVE 上对 CT 108 做 `vzdump`，并把加密归档拷到另一块存储；`KID_PET_BACKUP_KEY` 单独离线保管。

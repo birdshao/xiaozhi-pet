@@ -93,7 +93,7 @@ class BookMissingContractTests(unittest.TestCase):
                         init.index("book_outline_ready_.store(true)"))
         self.assertIn("book_missing_ = kid_app::BookMissing::BadBook;", init)
         update = _body(BOARD_WORKER, "void UpdateBook()")
-        self.assertIn("book_.Open(&book_outline_, now, book_missing_);", update)
+        self.assertIn("book_.Open(&book_outline_, now, book_missing_, bedtime);", update)
         self.assertIn('PET_BOOK_MISSING reason=%s book=%s', update)
         # The picture is a plain scene: never a card read for "page 0".
         self.assertIn("kid_app::BookMissingOf(scene) == kid_app::BookMissing::None",

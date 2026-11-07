@@ -257,7 +257,7 @@ void TestCorruption(const std::string& dir) {
             {"grey crc", [&](std::vector<uint8_t>& b) { b[p1.grey.offset + 10] ^= 1; }},
             {"padding", [&](std::vector<uint8_t>& b) { b[label.offset + label.bytes] = 1; }},
             {"sound pack type", [](std::vector<uint8_t>& b) { Put16(b, 8, 2); Reseal(b); }},
-            {"version", [](std::vector<uint8_t>& b) { Put16(b, 4, 3); Reseal(b); }},
+            {"version", [](std::vector<uint8_t>& b) { Put16(b, 4, 4); Reseal(b); }},
             {"content id 0", [](std::vector<uint8_t>& b) { Put16(b, 16, 0); Reseal(b); }},
             {"page flags", [](std::vector<uint8_t>& b) { Put16(b, 96 + 2, 3); Reseal(b); }},
             {"3 questions", [](std::vector<uint8_t>& b) { Put16(b, 96 + 6, 3); Reseal(b); }},

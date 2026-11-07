@@ -1,6 +1,6 @@
 # S7 application stack. Run from this directory:  docker compose --env-file .env up -d --build
-# The only published port is the gateway (PET_GATEWAY_BIND:PET_GATEWAY_PORT); TLS, DNS and the
-# public reverse proxy are the operator's job (docs/V5_V6_SERVER_PLAN.md §3.3).
+# Published ports: the gateway (PET_GATEWAY_BIND:PET_GATEWAY_PORT, plain HTTP, LAN only) and, with
+# COMPOSE_PROFILES=ingress, the TLS ingress on 8443 (docs/V5_V6_SERVER_PLAN.md §3.3, deploy/ingress/README.md).
 name: pet-server
 
 x-hardening: &hardening
@@ -140,6 +140,33 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+
+  # Public TLS ingress (N1-N12). Needs deploy/ingress/install.sh to have put a certificate in
+  # /etc/pet-ingress/certs first. Its fixed address is what KID_PET_TRUSTED_PROXY must be.
+  ingress:
+    <<: *hardening
+    profiles: [ingress]
+    image: nginx:1.27-alpine
+    container_name: pet-ingress
+    cap_add: [CHOWN, SETUID, SETGID]
+    depends_on:
+      gateway: {condition: service_healthy}
+    ports:
+      - "0.0.0.0:${PET_INGRESS_PORT:-8443}:8443"
+    environment:
+      PET_INGRESS_HOST: ${PET_INGRESS_HOST:-pet.birdshao.cn}
+    volumes:
+      - ./nginx/ingress.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - /etc/pet-ingress/certs:/etc/nginx/certs:ro
+      - /var/log/pet-ingress:/var/log/nginx
+    tmpfs: [/var/cache/nginx, /var/run, /tmp, /etc/nginx/conf.d]
+    networks:
+      pet: {ipv4_address: 172.28.0.3}
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8443"]   # an HTTPS probe by IP is refused (no SNI)
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 networks:
   pet:

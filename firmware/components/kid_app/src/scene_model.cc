@@ -1255,12 +1255,18 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
     }
 }
 
-void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8, below
+#include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
+
+void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8 sound, below
 void SoundScene(MonoFrame& f, const GameView& g);
 
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
     if (SoundArtValid(art)) {  // V8 sound activities
         SoundArtIcon(f, art, cx, cy, r);
+        return;
+    }
+    if (PlayArtValid(art)) {
+        PlayArtIcon(f, art, cx, cy, r);
         return;
     }
     if (MicArtValid(art)) {
@@ -1429,6 +1435,12 @@ void GameScene(MonoFrame& f, const GameView& g) {
             Ring(f, x, y, 9, 9, 3);
         }
     }
+    // V8 games: their own boards, or the answer cards once the shake game asks.
+    if (g.play != 0 && g.play != 5) {
+        PlayBoard(f, g);
+        return;
+    }
+    if (g.play == 5 && g.option_count == 0) return;
     // Motion games draw their own rail (no answer cards).
     if (g.motion == 1) {
         BallTrack(f, g);
@@ -1501,6 +1513,15 @@ void ReaderScene(MonoFrame& f, const SceneModel& model) {
         const int x = 520 + i * 30, y = 400;
         if (static_cast<int>(model.book_page % indicators) == i) Disk(f, x, y, 9);
         else Ring(f, x, y, 7, 7, 3);
+    }
+    // V8 series: a small book with an arrow, "the next book is waiting"
+    // (book_page bit 14, see BookScene).
+    if ((model.book_page & 0x4000) != 0) {
+        FillRoundRect(f, 640, 330, 70, 50, 8);
+        FillRoundRect(f, 646, 336, 58, 38, 4, false);
+        Stroke(f, 722, 355, 756, 355, 6);
+        Stroke(f, 744, 343, 756, 355, 6);
+        Stroke(f, 744, 367, 756, 355, 6);
     }
 }
 
