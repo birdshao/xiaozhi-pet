@@ -37,12 +37,12 @@ public:
     static constexpr uint8_t kDefaultRounds = 3;
     static constexpr uint8_t kMaxTries = 2;
     // Wooden man (500 ms windows): "dance" until kMoveWindows moving windows
-    // were seen, then freeze for kFreezeWindows still windows in a row (3 s).
+    // in a row were seen (a pause starts over; a lift or a carry is not a dance), then freeze for kFreezeWindows still windows in a row (3 s).
     // A window is moving at max_dev >= kMoveDevMg (a lift measured 230-240),
     // still at max_dev <= kStillDevMg (a resting board measured 16-19).
     static constexpr uint16_t kMoveDevMg = 150;
     static constexpr uint16_t kStillDevMg = 60;
-    static constexpr uint8_t kMoveWindows = 3;
+    static constexpr uint8_t kMoveWindows = 4;
     static constexpr uint8_t kFreezeWindows = 6;
     static constexpr uint16_t kMinWindowSamples = 5;
     // Day and night: stay face down this long before "day" is called.

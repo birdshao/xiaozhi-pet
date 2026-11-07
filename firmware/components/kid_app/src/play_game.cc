@@ -294,6 +294,14 @@ GameOutput PlaySession::Input(GameInput input, uint32_t now_ms) {
         }
         return out;
     }
+    // Waiting for a shake (parents may switch motion off meanwhile): a press
+    // rolls too. Rolling is never a reward.
+    if ((game_ == PlayGame::Dice || game_ == PlayGame::Tree) && phase_ == Phase::Waiting &&
+        input == GameInput::Press) {
+        BeginAsk(static_cast<uint8_t>(1 + Next() % (game_ == PlayGame::Dice ? 6 : 5)), now_ms,
+                 &out);
+        return out;
+    }
     return out;  // everything else is not asked of the dial
 }
 
@@ -360,7 +368,10 @@ GameOutput PlaySession::OnWindow(const MotionStats::Summary& w, uint32_t now_ms)
     GameOutput out{};
     if (!WantsWindows() || w.samples < kMinWindowSamples) return out;
     if (phase_ == Phase::Dance) {
-        if (w.max_dev_mg < kMoveDevMg) return out;  // not dancing yet (or on the table)
+        if (w.max_dev_mg < kMoveDevMg) {  // a pause (or a board on the table): start over
+            move_windows_ = 0;
+            return out;
+        }
         last_input_ms_ = now_ms;
         if (++move_windows_ >= kMoveWindows) {
             phase_ = Phase::Freeze;

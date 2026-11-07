@@ -530,10 +530,17 @@ void TestShake() {
         assert(before.play == 5 && before.option_count == 0 && s.Die() == 0);
         assert(before.question_art == static_cast<uint16_t>(PlayArt::ShakeMe));
         uint32_t now = 1000;
-        // Not asked yet: dial and non-shake gestures do nothing.
-        assert(!s.Input(GameInput::Press, now += 10).redraw);
+        // Not asked yet: up/down and non-shake gestures do nothing.
+        assert(!s.Input(GameInput::Down, now += 10).redraw);
         assert(!s.OnGesture(Gesture::FaceDown, now += 10).redraw);
         assert(!s.OnGesture(Gesture::TiltLeft, now += 10).redraw);
+        // The dial press is the fallback when motion was switched off: it rolls too.
+        {
+            PlaySession p = StartPlay(game, 12);
+            const auto rolled = p.Input(GameInput::Press, now += 10);
+            assert(rolled.redraw && !rolled.right && p.Die() >= 1 && p.View().option_count == 3);
+            assert(p.Result().correct == 0);
+        }
         // A shake rolls; rolling is not a reward.
         const auto roll = s.OnGesture(Gesture::HardShake, now += 10);
         assert(roll.redraw && !roll.right && s.Die() >= 1 && s.Die() <= (game == PlayGame::Dice ? 6 : 5));
@@ -623,9 +630,15 @@ void TestStatue() {
     for (int round = 0; round < 3; ++round) {
         // Fidgeting (a bit of noise) is not dancing: needs real motion windows.
         for (int i = 0; i < 6; ++i) assert(!g.OnWindow(Window(0, 0, -983, 100), now += 500).redraw);
+        // Moving, a pause, moving: not a dance (a carried board is not one either).
         g.OnWindow(Moving(), now += 500);
         g.OnWindow(Moving(), now += 500);
-        const auto cue = g.OnWindow(Moving(), now += 500);  // third moving window
+        g.OnWindow(Moving(), now += 500);
+        assert(!g.OnWindow(Still(), now += 500).redraw);
+        g.OnWindow(Moving(), now += 500);
+        g.OnWindow(Moving(), now += 500);
+        g.OnWindow(Moving(), now += 500);
+        const auto cue = g.OnWindow(Moving(), now += 500);  // fourth moving window in a row
         assert(cue.redraw && cue.clip != 0 && !cue.right);
         assert(g.View().question_art == static_cast<uint16_t>(PlayArt::Statue));
         // The window holding the cue is skipped; moving resets the count.
