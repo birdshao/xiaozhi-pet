@@ -1,0 +1,28 @@
+{
+ "acked_commands": [
+  4099
+ ],
+ "commands": [
+  {
+   "command_id": 4097,
+   "expires_at": 1794204800,
+   "kind": "MEMORY_CLEAR",
+   "payload": {
+    "clear_epoch": 3
+   },
+   "requires_confirm": true
+  },
+  {
+   "command_id": 4098,
+   "expires_at": 1794204800,
+   "kind": "SET_TEMPERAMENT",
+   "payload": {
+    "temperament": "lively"
+   },
+   "requires_confirm": true
+  }
+ ],
+ "generation": 1,
+ "result": "accepted",
+ "server_rev": 4
+}

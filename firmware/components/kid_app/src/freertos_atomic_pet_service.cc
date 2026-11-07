@@ -167,6 +167,7 @@ void FreertosAtomicPetService::PublishView() {
     xSemaphoreTake(view_mutex_,portMAX_DELAY);
     parent_view_=ledger_.Parent();
     memory_view_=ledger_.Memory();
+    pet_view_=ledger_.Snapshot();
     generation_view_=ledger_.Generation();
     xSemaphoreGive(view_mutex_);
 }
@@ -203,6 +204,17 @@ uint64_t FreertosAtomicPetService::GenerationNow() const {
     return copy;
 }
 
+bool FreertosAtomicPetService::SyncViewNow(PetSyncView* out) const {
+    if (!out || !view_mutex_ || !ready_.load()) return false;
+    xSemaphoreTake(view_mutex_,portMAX_DELAY);
+    out->generation=generation_view_;
+    out->pet=pet_view_;
+    out->memory=memory_view_;
+    out->parent=parent_view_;
+    xSemaphoreGive(view_mutex_);
+    return true;
+}
+
 bool FreertosAtomicPetService::Enqueue(const Message& msg) {
     // Counted before the send: the worker can take the message the moment it
     // is queued, and Settled() must not read true while it commits.
@@ -233,6 +245,16 @@ bool FreertosAtomicPetService::PostMemory(const MemoryEvent& event) {
     Message msg{};
     msg.kind=Kind::Memory;
     msg.memory=event;
+    return Enqueue(msg);
+}
+
+bool FreertosAtomicPetService::PostCommand(const DeviceCommand& command,
+                                           bool parent_confirmed) {
+    if (!ready_.load() || !IsExternalEventId(command.id)) return false;
+    Message msg{};
+    msg.kind=Kind::Command;
+    msg.command=command;
+    msg.confirmed=parent_confirmed;
     return Enqueue(msg);
 }
 
@@ -399,6 +421,19 @@ bool FreertosAtomicPetService::Process(const Message& pending, bool last_attempt
             ESP_LOGW(kTag,"PET_LEDGER_PERSIST_FAILED err=%s kind=%u attempt=1 dropped=1",
                      NvsErrorName(store_.LastError()),static_cast<unsigned>(pending.kind));
         return false;
+    }
+
+    if (pending.kind==Kind::Command) {
+        const CommandOutcome outcome=
+            ApplyServerCommand(ledger_,pending.command,pending.confirmed,Day());
+        // Same id on a retry: nothing was committed.
+        if (outcome==CommandOutcome::StorageError && !last_attempt) return true;
+        if (outcome==CommandOutcome::Applied) PublishView();
+        ESP_LOGI(kTag,"PET_COMMAND kind=%u confirmed=%d outcome=%s",
+                 static_cast<unsigned>(pending.command.kind),pending.confirmed ? 1 : 0,
+                 CommandOutcomeName(outcome));
+        if (command_cb_) command_cb_(pending.command,outcome,command_context_);
+        return outcome==CommandOutcome::StorageError;
     }
 
     if (pending.kind==Kind::Memory) {

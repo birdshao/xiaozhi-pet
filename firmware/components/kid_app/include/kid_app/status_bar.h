@@ -22,19 +22,23 @@ struct StatusBar {
     bool charging = false;  // bolt next to a known battery
     bool quiet = false;     // quiet hours: small moon
     NetworkState network = NetworkState::Unknown;
+    // D5: a request from the parent panel waits for the parent (envelope).
+    bool parent_request = false;
 };
 
 inline bool operator==(const StatusBar& a, const StatusBar& b) {
     return a.hour == b.hour && a.minute == b.minute && a.temp_c == b.temp_c &&
            a.battery_bars == b.battery_bars && a.charging == b.charging &&
-           a.quiet == b.quiet && a.network == b.network;
+           a.quiet == b.quiet && a.network == b.network &&
+           a.parent_request == b.parent_request;
 }
 inline bool operator!=(const StatusBar& a, const StatusBar& b) { return !(a == b); }
 
 // One-word snapshot shared between board tasks (atomic<uint32_t>), next to
 // the packed scene: bits 0-4 hour (31 = none), 5-10 minute (63 = none),
 // 11-18 temperature (int8), 19-21 battery bars (7 = none), 22 charging,
-// 23 quiet, 24-25 network. Out-of-range values pack as unknown.
+// 23 quiet, 24-25 network, 26 parent request. Out-of-range values pack
+// as unknown.
 uint32_t PackStatus(const StatusBar& status);
 StatusBar UnpackStatus(uint32_t bits);
 
@@ -50,6 +54,7 @@ struct StatusReadings {
     bool charging = false;
     bool quiet = false;
     NetworkState network = NetworkState::Unknown;
+    bool parent_request = false;
 };
 
 // previous: the last value this function returned (hysteresis).

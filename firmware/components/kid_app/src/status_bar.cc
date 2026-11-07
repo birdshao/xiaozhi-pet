@@ -39,7 +39,7 @@ uint32_t PackStatus(const StatusBar& s) {
     const uint32_t network = static_cast<uint32_t>(s.network) & 0x03;
     return hour | (minute << 5) | (uint32_t{static_cast<uint8_t>(s.temp_c)} << 11) |
            (bars << 19) | (uint32_t{s.charging} << 22) | (uint32_t{s.quiet} << 23) |
-           (network << 24);
+           (network << 24) | (uint32_t{s.parent_request} << 26);
 }
 
 StatusBar UnpackStatus(uint32_t bits) {
@@ -51,6 +51,7 @@ StatusBar UnpackStatus(uint32_t bits) {
     s.battery_bars = bars == kPackNoBattery ? StatusBar::kNoBattery : static_cast<uint8_t>(bars);
     s.charging = ((bits >> 22) & 1) != 0;
     s.quiet = ((bits >> 23) & 1) != 0;
+    s.parent_request = ((bits >> 26) & 1) != 0;
     const uint32_t network = (bits >> 24) & 0x03;
     s.network = network <= static_cast<uint32_t>(NetworkState::Online)
                     ? static_cast<NetworkState>(network)
@@ -60,6 +61,7 @@ StatusBar UnpackStatus(uint32_t bits) {
 
 StatusBar MakeStatusBar(const StatusReadings& in, const StatusBar& previous) {
     StatusBar s;
+    s.parent_request = in.parent_request;
     if (in.time_ok && in.hour < 24 && in.minute < 60) {
         s.hour = in.hour;
         s.minute = in.minute;

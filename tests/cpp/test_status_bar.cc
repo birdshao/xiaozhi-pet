@@ -66,6 +66,15 @@ int main() {
         assert(back.hour == StatusBar::kNoTime && back.minute == StatusBar::kNoTime);
         assert(back.battery_bars == StatusBar::kNoBattery);
         assert(UnpackStatus(0x03u << 24).network == NetworkState::Unknown);
+        // D5: the parent-request envelope has its own bit.
+        StatusBar request;
+        request.parent_request = true;
+        assert(PackStatus(request) == (PackStatus(StatusBar{}) | (1u << 26)));
+        assert(UnpackStatus(PackStatus(request)) == request && request != StatusBar{});
+        StatusReadings asked;
+        asked.parent_request = true;
+        assert(MakeStatusBar(asked, StatusBar{}).parent_request);
+        assert(!MakeStatusBar(StatusReadings{}, request).parent_request);
     }
 
     // Readings -> shown values: rounding, quantizing, hiding.

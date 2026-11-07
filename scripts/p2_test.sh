@@ -241,6 +241,12 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_memory_golden"
 "$BUILD/test_memory_golden" "$ROOT/tests/fixtures/memory"
 
+# V5_V6 §11.2 device side of the server: JSON reader, golden state snapshots
+# (the same files the Python server test PUTs), real server replies, command
+# routing, pairing flow, upload schedule, D5 requests and the ledger applier.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc"   "$ROOT/firmware/components/kid_app/src/parent_settings.cc"   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/firmware/components/kid_app/src/json_lite.cc"   "$ROOT/firmware/components/kid_app/src/server_sync.cc"   "$ROOT/firmware/components/kid_app/src/parent_requests.cc"   "$ROOT/firmware/components/kid_app/src/pet_command_apply.cc"   "$ROOT/tests/cpp/test_server_sync.cc"   -o "$BUILD/test_server_sync"
+"$BUILD/test_server_sync" "$ROOT/tests/fixtures/memory" "$ROOT/tests/fixtures/sync"
+
 # V5-01 personality: fixed temperament parameters, reviewed phrase ids and
 # home-item proposals; same input -> same output.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

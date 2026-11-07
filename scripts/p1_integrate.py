@@ -300,6 +300,12 @@ BOARD_WORKER = r'''
     // The one owner of pet state, V5 memory and V3-06 parent settings: the
     // atomic ledger (kid_pet_sync), see StartPetLedger().
     kid_app::FreertosAtomicPetService pet_service_;
+    // V5_V6 §11.2: the PetLearning link (pairing, state snapshots, server
+    // commands) on its own task. It reads ledger copies only and hands
+    // commands to the Pet task (PostCommand); see StartServerSync().
+    kid_app::FreertosServerSyncWorker server_sync_{pet_service_};
+    std::atomic<uint8_t> sync_battery_pct_{0};    // last PMIC reading for snapshots
+    std::atomic<bool> sync_charging_{false};
     // 500 ms pacing: full refreshes are only triggered by scene changes or
     // the planner's ghosting limit; highlights use partial refreshes.
     kid_app::FreertosPetDisplayWorker pet_display_worker_{pet_mailbox_, 500};
@@ -578,6 +584,7 @@ BOARD_WORKER = r'''
         std::lock_guard<std::mutex> lock(pet_ledger_mutex_);
         if (!pet_ledger_ready_) {
             pet_service_.SetDayProvider(&LocalDay, this);
+            server_sync_.Attach();  // command outcomes -> network task
             pet_ledger_ready_ = pet_service_.Start(
                 kid_app::FreertosAtomicPetService::StartMode::MigrateLegacyLocal,
                 "tuantuan-board", &PetCommitted, nullptr, this, &pet_ledger_restored_);
@@ -599,10 +606,28 @@ BOARD_WORKER = r'''
                 // V3-06 settings now live in the ledger (schema v3).
                 ApplyParentSettings(pet_service_.ParentNow(), "ledger");
                 parent_ready_.store(true);
+                StartServerSync();
             }
         }
         if (pet_ledger_ready_ && restored) *restored = pet_ledger_restored_;
         return pet_ledger_ready_;
+    }
+
+    // Once, with the ledger. Hooks only read atomics (Wi-Fi flag, RTC day,
+    // last PMIC reading): the network task never touches I2C or the ledger.
+    void StartServerSync() {
+        kid_app::ServerSyncHooks hooks{};
+        hooks.online = [](void*) { return WifiManager::GetInstance().IsConnected(); };
+        hooks.local_day = &LocalDay;
+        hooks.battery = [](void* context, uint8_t* pct, bool* charging) {
+            auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+            *pct = self->sync_battery_pct_.load();
+            *charging = self->sync_charging_.load();
+        };
+        hooks.context = this;
+        const esp_app_desc_t* app = esp_app_get_description();
+        const bool started = server_sync_.Start(hooks, app ? app->version : "unknown");
+        ESP_LOGI(TAG, "PET_SYNC_START ok=%d", started ? 1 : 0);
     }
 
     // UI-only way out of the reader when "home" cannot be saved (pet worker,
@@ -827,7 +852,7 @@ BOARD_WORKER = r'''
         // V3-06: the open parent menu takes every input: no pet action, no
         // sleep flow (PowerManager counts the menu as busy).
         if (parent_menu_.IsOpen()) {
-            HandleParentAction(parent_menu_.OnInput(event.kind, NowMs()), "long");
+            HandleParentInput(event.kind);
             return;
         }
         // V3-03/V3-04: input is activity; the first dial touch in a nap or
@@ -2511,6 +2536,11 @@ BOARD_WORKER = r'''
         in.quiet = quiet_hours_.load();
         in.network = WifiManager::GetInstance().IsConnected() ? kid_app::NetworkState::Online
                                                                : kid_app::NetworkState::Offline;
+        // D5: "a parent has a request" envelope on the home band.
+        in.parent_request = server_sync_.WaitingRequests() > 0;
+        sync_battery_pct_.store(static_cast<uint8_t>(
+            in.battery_pct < 0 ? 0 : in.battery_pct > 100 ? 100 : in.battery_pct));
+        sync_charging_.store(in.charging);
         const auto bar = kid_app::MakeStatusBar(in, status_latest_);
         if (bar != status_latest_)
             ESP_LOGI(TAG, "PET_STATUS time=%02u:%02u temp_c=%d batt_bars=%u chg=%d quiet=%d net=%u",
@@ -2552,6 +2582,12 @@ BOARD_WORKER = r'''
     // own NVS settings are never touched. Opening, moving and leaving the
     // menu post no pet action.
     kid_app::ParentMenu parent_menu_;              // pet_input task only
+    // D5 / §5.1 pages of the parent entry (pet_input task only): a request
+    // from the parent panel waiting for confirmation, the server link page.
+    kid_app::ParentPage parent_page_ = kid_app::ParentPage::Menu;
+    kid_app::ConfirmDialog confirm_dialog_;
+    uint32_t link_input_ms_ = 0;
+    uint32_t parent_link_shown_ = 0;  // packed LinkView last published
     kid_app::ParentSettings parent_settings_;      // guarded by parent_mutex_
     mutable std::mutex parent_mutex_;
     std::atomic<bool> parent_ready_{false};        // the ledger is running
@@ -2601,7 +2637,102 @@ BOARD_WORKER = r'''
         kid_app::SceneModel scene{};
         scene.kind = kid_app::SceneKind::Parent;
         scene.parent = parent_menu_.View();
+        scene.parent.page = parent_page_;
+        scene.parent.link = server_sync_.Link();
+        if (parent_page_ == kid_app::ParentPage::Request)
+            scene.parent.request = confirm_dialog_.View();
+        parent_link_shown_ = kid_app::PackLinkView(scene.parent.link);
         pet_mailbox_.Publish(scene);
+    }
+
+    void RepublishParent() {
+        SceneStateLock lock(scene_state_mutex_);
+        PublishParentSceneLocked();
+    }
+
+    void ShowParentPage(kid_app::ParentPage page) {
+        parent_page_ = page;
+        if (page != kid_app::ParentPage::Request) confirm_dialog_.Close();
+        parent_menu_.Touch(NowMs());
+        link_input_ms_ = NowMs();
+        RepublishParent();
+    }
+
+    bool LinkBusy() const {
+        const auto state = server_sync_.Link().state;
+        return state == kid_app::LinkState::Connecting || state == kid_app::LinkState::ShowCode ||
+               state == kid_app::LinkState::Saving;
+    }
+
+    // D5: the next request waiting for the parent, else the settings menu.
+    void ShowNextRequestOrMenu() {
+        kid_app::DeviceCommand request{};
+        uint8_t more = 0;
+        if (server_sync_.NextRequest(&request, &more)) {
+            confirm_dialog_.Open(request, more, NowMs());
+            ShowParentPage(kid_app::ParentPage::Request);
+        } else {
+            ShowParentPage(kid_app::ParentPage::Menu);
+        }
+    }
+
+    // pet_input: the open parent entry takes every input, page by page.
+    void HandleParentInput(kid_app::InputKind kind) {
+        if (parent_page_ == kid_app::ParentPage::Request) {
+            HandleRequestAction(confirm_dialog_.OnInput(kind, NowMs()));
+            return;
+        }
+        if (parent_page_ == kid_app::ParentPage::Link) {
+            link_input_ms_ = NowMs();
+            if (kind == kid_app::InputKind::DialLong) {
+                ShowParentPage(kid_app::ParentPage::Menu);
+            } else if (kind == kid_app::InputKind::DialPress && !LinkBusy()) {
+                // (Re)pair: stored credentials change only once a new token
+                // is claimed and saved.
+                server_sync_.BeginPairing();
+                ESP_LOGI(TAG, "PET_PARENT_PAIR");
+                RepublishParent();
+            }
+            return;
+        }
+        HandleParentAction(parent_menu_.OnInput(kind, NowMs()), "long");
+    }
+
+    // "连接服务器": the page starts pairing unless it is linked or busy.
+    void OpenLinkPage() {
+        const auto state = server_sync_.Link().state;
+        if (state != kid_app::LinkState::Paired && !LinkBusy()) server_sync_.BeginPairing();
+        ESP_LOGI(TAG, "PET_PARENT_LINK state=%u", static_cast<unsigned>(state));
+        ShowParentPage(kid_app::ParentPage::Link);
+    }
+
+    // D5: confirm commits on the Pet task with the Parent source; reject is
+    // stored by the network task. Either way the server hears it in the
+    // next snapshot. A long press decides later (the request keeps waiting).
+    void HandleRequestAction(kid_app::ConfirmAction action) {
+        const auto& command = confirm_dialog_.Command();
+        switch (action) {
+            case kid_app::ConfirmAction::None:
+                return;
+            case kid_app::ConfirmAction::Redraw:
+                RepublishParent();
+                return;
+            case kid_app::ConfirmAction::Confirm:
+            case kid_app::ConfirmAction::Reject: {
+                const bool confirm = action == kid_app::ConfirmAction::Confirm;
+                const bool ok = confirm ? server_sync_.ConfirmRequest(command.id)
+                                        : server_sync_.RejectRequest(command.id);
+                ESP_LOGI(TAG, "PET_PARENT_REQUEST decision=%s kind=%u ok=%d",
+                         confirm ? "confirm" : "reject", static_cast<unsigned>(command.kind),
+                         ok ? 1 : 0);
+                ShowNextRequestOrMenu();
+                return;
+            }
+            case kid_app::ConfirmAction::Exit:
+                ESP_LOGI(TAG, "PET_PARENT_REQUEST decision=later");
+                ShowParentPage(kid_app::ParentPage::Menu);
+                return;
+        }
     }
 
     void OpenParentMenu() {
@@ -2617,6 +2748,15 @@ BOARD_WORKER = r'''
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
         EndGame("parent", false);  // V4-06
         parent_menu_.Open(ParentSettingsNow(), NowMs());
+        // D5: a request from the parent panel is shown first.
+        parent_page_ = kid_app::ParentPage::Menu;
+        link_input_ms_ = NowMs();
+        kid_app::DeviceCommand request{};
+        uint8_t more = 0;
+        if (server_sync_.NextRequest(&request, &more)) {
+            confirm_dialog_.Open(request, more, NowMs());
+            parent_page_ = kid_app::ParentPage::Request;
+        }
         {
             SceneStateLock lock(scene_state_mutex_);
             pet_mailbox_.parent_only.store(true);
@@ -2632,6 +2772,8 @@ BOARD_WORKER = r'''
     // Back to the pet's own (durable) picture, as it is now.
     void CloseParentMenu(const char* reason) {
         parent_menu_.Close();
+        confirm_dialog_.Close();
+        parent_page_ = kid_app::ParentPage::Menu;
         input_hub_.SetAutoRepeat(false);
         {
             SceneStateLock lock(scene_state_mutex_);
@@ -2652,6 +2794,9 @@ BOARD_WORKER = r'''
                 return;
             case kid_app::ParentMenuAction::Redraw:
                 break;
+            case kid_app::ParentMenuAction::OpenLink:
+                OpenLinkPage();
+                return;
             case kid_app::ParentMenuAction::Saved: {
                 const auto next = parent_menu_.Settings();
                 const auto saved = pet_service_.SaveParentSettings(next, pdMS_TO_TICKS(3000));
@@ -2684,7 +2829,23 @@ BOARD_WORKER = r'''
             CloseParentMenu("pet_off");
             return;
         }
-        HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
+        if (parent_page_ == kid_app::ParentPage::Request) {
+            HandleRequestAction(confirm_dialog_.Tick(NowMs()));
+        } else if (parent_page_ == kid_app::ParentPage::Link) {
+            // The code stays on screen while the pairing runs.
+            if (LinkBusy()) link_input_ms_ = NowMs();
+            if (NowMs() - link_input_ms_ >=
+                kid_app::SelfTestClock::Scaled(kid_app::ParentMenu::kIdleExitMs)) {
+                CloseParentMenu("idle");
+                return;
+            }
+        } else {
+            HandleParentAction(parent_menu_.Tick(NowMs()), "idle");
+        }
+        // The server link changed (code shown, paired, failed): redraw.
+        if (parent_menu_.IsOpen() && parent_page_ != kid_app::ParentPage::Request &&
+            kid_app::PackLinkView(server_sync_.Link()) != parent_link_shown_)
+            RepublishParent();
         input_hub_.SetAutoRepeat(parent_menu_.Editing());
     }
 
@@ -3637,6 +3798,9 @@ def patch_board(text: str) -> str:
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/env_tips.h"\n'
         '#include "kid_app/parent_menu.h"\n'
+        '#include "kid_app/parent_requests.h"\n'
+        '#include "kid_app/freertos_server_sync_worker.h"\n'
+        '#include "esp_app_desc.h"\n'
         '#include "kid_app/mini_game.h"\n'
         '#include "kid_app/mic_game.h"\n'
         '#include "kid_app/mic_envelope.h"\n'
