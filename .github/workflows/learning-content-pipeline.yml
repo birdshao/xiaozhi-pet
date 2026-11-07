@@ -44,3 +44,4 @@ jobs:
           python -m unittest discover -s tests -p 'test_learning_content_assets_speech.py' -v
           python -m unittest discover -s tests -p 'test_learning_content_real_pilot.py' -v
           python -m unittest discover -s tests -p 'test_learning_content_math_live.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_three_course.py' -v
