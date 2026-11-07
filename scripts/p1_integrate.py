@@ -797,13 +797,14 @@ BOARD_WORKER = r'''
     }
 
     // Three-way dial (active low, pulled up). The schematic labels GPIO4
-    // Button_Up and GPIO6 Button_Down, but the 2026-11-02 V1 trial showed
-    // the direction a child pushes is the opposite: physical up = GPIO6,
-    // physical down = GPIO4. Centre press = GPIO5 (Button_Function).
+    // Button_Up and GPIO6 Button_Down. The 2026-11-02 V1 trial mapped them
+    // the other way round; on 2026-11-07 the user asked to swap up/down
+    // back, so up = GPIO4 and down = GPIO6 again (as the schematic says).
+    // Centre press = GPIO5 (Button_Function).
     // Button callbacks only enqueue raw edges; one task owns InputHub.
-    Button dial_up_{GPIO_NUM_6};
+    Button dial_up_{GPIO_NUM_4};
     Button dial_press_{GPIO_NUM_5};
-    Button dial_down_{GPIO_NUM_4};
+    Button dial_down_{GPIO_NUM_6};
     QueueHandle_t pet_input_queue_ = nullptr;
     kid_app::InputHub input_hub_;
 
@@ -3028,13 +3029,23 @@ BOARD_WORKER = r'''
                 StartMicGame(out.chosen == kid_app::GameChoice::Candle
                                  ? kid_app::MicGameKind::Candle
                                  : kid_app::MicGameKind::ClapRhythm);
-            } else if (!motion_enabled_.load()) {  // parents switched motion off
-                ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
-                OpenGameMenu(static_cast<uint8_t>(static_cast<uint8_t>(out.chosen) - 1));
+            } else if (out.chosen == kid_app::GameChoice::Ball ||
+                       out.chosen == kid_app::GameChoice::Peekaboo) {
+                if (!motion_enabled_.load()) {  // parents switched motion off
+                    ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
+                    OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                } else {
+                    StartMotion(out.chosen == kid_app::GameChoice::Ball
+                                    ? kid_app::MotionKind::Ball
+                                    : kid_app::MotionKind::Peekaboo);
+                }
+            // V8 activity list (activity_list.h): sessions that append a row
+            // add their dispatch branch here, before this fallback.
             } else {
-                StartMotion(out.chosen == kid_app::GameChoice::Ball
-                                ? kid_app::MotionKind::Ball
-                                : kid_app::MotionKind::Peekaboo);
+                // A row without a handler in this build: stay in the menu.
+                ESP_LOGW(TAG, "PET_GAME_REFUSED reason=no_handler game=%s",
+                         kid_app::GameChoiceName(out.chosen));
+                OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
             }
             return;
         }

@@ -88,9 +88,9 @@ class DisplayOverlayTest(unittest.TestCase):
         # Schematic labels Button_Up GP4 / Button_Down GP6, but the
         # 2026-11-02 V1 trial showed the child-facing direction is the
         # opposite: physical up = GPIO6, physical down = GPIO4.
-        self.assertIn('Button dial_up_{GPIO_NUM_6}', patched)
+        self.assertIn('Button dial_up_{GPIO_NUM_4}', patched)
         self.assertIn('Button dial_press_{GPIO_NUM_5}', patched)
-        self.assertIn('Button dial_down_{GPIO_NUM_4}', patched)
+        self.assertIn('Button dial_down_{GPIO_NUM_6}', patched)
         self.assertIn('#include "kid_app/input_hub.h"', patched)
         self.assertIn('kid_app::InputHub input_hub_', patched)
         for key in ('DialUp', 'DialPress', 'DialDown', 'Boot', 'Power'):
@@ -1407,6 +1407,11 @@ class DisplayOverlayTest(unittest.TestCase):
         # Parents switching motion off keeps the child in the menu.
         self.assertIn('!motion_enabled_.load()', choice)
         self.assertIn('PET_GAME_REFUSED reason=motion_off', choice)
+        # V8 activity list: cards come from the table; a row without a
+        # handler keeps the child in the menu instead of starting a game.
+        self.assertIn('kid_app::ActivityIndexOf(out.chosen)', choice)
+        self.assertIn('PET_GAME_REFUSED reason=no_handler', choice)
+        self.assertLess(choice.index('StartMotion('), choice.index('reason=no_handler'))
         start = self._body(patched, 'void StartMotion(kid_app::MotionKind kind)')
         self.assertIn('game_seed_.exchange(0)', start)  # the self-test "game" step
         self.assertIn('motion_active_.store(true)', start)

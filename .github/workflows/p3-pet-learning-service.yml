@@ -65,7 +65,9 @@ jobs:
       - name: Install a CJK font (content pipeline tests draw a Chinese credits page)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
       - name: Check local browser UI JavaScript syntax
-        run: node --check services/pet_learning/playground/play.js
+        run: |
+          node --check services/pet_learning/playground/play.js
+          node --check services/pet_learning/panel/static/panel.js
       - name: Compile service source
         run: python -m compileall -q services integrations/xiaozhi_server scripts/p3_server_overlay.py tools/pet_learning_admin.py deploy/apply_overlay.py tools/seed_sample_content.py
       - name: Run isolated service integration tests (no hardware/cloud)

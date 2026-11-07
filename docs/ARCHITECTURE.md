@@ -94,7 +94,7 @@ scripts/p1_integrate.py    # 小智板卡最薄 overlay：注册拨轮、改 BOO
 
 ### 4.1 物理映射（原理图 + 官方示例 + 2026-11-02 真机核对）
 
-原理图的 Button_Up/Button_Down 是按板子自身方向标的；按孩子推拨轮的方向，V1 第 1 轮试验确认**上 = GPIO6、下 = GPIO4**（[V1 记录](hardware/V1_HARDWARE_ACCEPTANCE.md)）。拨轮中键按住时有触点抖动，InputHub 以 120 ms 释放去抖合并。
+原理图的 Button_Up/Button_Down 是按板子自身方向标的；按孩子推拨轮的方向，V1 第 1 轮试验定为上 = GPIO6、下 = GPIO4（[V1 记录](hardware/V1_HARDWARE_ACCEPTANCE.md)）；2026-11-07 用户在真机上要求上下对调，现为**上 = GPIO4、下 = GPIO6**。拨轮中键按住时有触点抖动，InputHub 以 120 ms 释放去抖合并。
 
 | 物理件 | GPIO | 电平 | 语义（儿童模式） |
 |---|---|---|---|

@@ -46,7 +46,7 @@ CI 工作流见 [P0 upstream firmware baseline](../../.github/workflows/p0-basel
 
 | ID | 测试 | 状态 | 证据路径/观察 |
 |---|---|---|---|
-| P0-01 | 实物板批次、接口、实际是否有拨轮 | 已实测：有三向拨轮；按孩子方向上 = GPIO6、下 = GPIO4、按下 = GPIO5 | §9；[V1 记录](V1_HARDWARE_ACCEPTANCE.md) |
+| P0-01 | 实物板批次、接口、实际是否有拨轮 | 已实测：有三向拨轮；按孩子方向上 = GPIO6、下 = GPIO4、按下 = GPIO5（2026-11-07 按用户要求对调为**上 = GPIO4、下 = GPIO6**） | §9；[V1 记录](V1_HARDWARE_ACCEPTANCE.md) |
 | P0-03 | 自己的板子烧录、上电、串口日志 | 待测 | |
 | P0-04 | 联网、ASR、扬声器、打断、音量 | 待测 | |
 | P0-05 | 全刷、局刷、睡眠唤醒 | 待测 | |
