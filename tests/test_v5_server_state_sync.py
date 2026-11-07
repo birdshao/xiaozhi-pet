@@ -447,6 +447,27 @@ class StateSyncTests(unittest.TestCase):
         (received,), = self.table("SELECT received_at FROM device_state WHERE device_id='pet-001'")
         self.assertEqual(self.app.state.voice_turns.battery.latest("pet-001"), (64, received))
 
+    def test_catalog_names_come_from_approved_s4_packages_only(self):
+        names = CatalogNames()
+        with connect(self.path) as db:
+            for pid, content_id, rev, status, title in ((1, 9, 1, "approved", "旧书名"),
+                                                        (2, 9, 2, "approved", "森林里的朋友"),
+                                                        (3, 9, 3, "draft", "未审核"),
+                                                        (4, 17, 1, "retired", "已下架")):
+                db.execute("INSERT INTO content_packages(package_id,kind,content_id,revision,sha256,header_crc,"
+                           "bytes,path,title,status,created_at) VALUES(?,?,?,?,?,0,1,'p',?,?,0)",
+                           (pid, "book", content_id, rev, f"sha{pid}", title, status))
+            db.execute("INSERT INTO like_topics VALUES(3,7,'animal','最喜欢的动物')")
+            db.execute("INSERT INTO like_options VALUES(3,7,2,'elephant','大象')")
+            self.assertIsNone(names.like(db, 7, 2))  # only a draft package has it
+            db.execute("INSERT INTO like_topics VALUES(2,7,'animal','最喜欢的动物')")
+            db.execute("INSERT INTO like_options VALUES(2,7,2,'elephant','大象')")
+            self.assertEqual(names.like(db, 7, 2), ("最喜欢的动物", "大象"))
+            self.assertIsNone(names.like(db, 7, 3))
+            self.assertEqual(names.book(db, 9), "森林里的朋友")
+            self.assertIsNone(names.book(db, 17))
+            self.assertIsNone(names.book(db, 99))
+
     def test_voice_summary_disabled_without_voice_token(self):
         app = create_app(self.path, settings=Settings(totp_key=self.settings.totp_key))
         with TestClient(app, client=("127.0.0.1", 5000)) as client:

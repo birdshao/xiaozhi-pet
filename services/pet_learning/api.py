@@ -13,6 +13,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
+from . import distribution
 from .config import Settings
 from .auth import ParentAuth
 from . import pairing
@@ -92,6 +93,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(parent.router)
     pairing.mount(app, database)
     app.include_router(sync.create_router(app, store))
+    app.include_router(distribution.create_router(app, database))
 
     return app
 

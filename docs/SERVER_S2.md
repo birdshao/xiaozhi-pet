@@ -97,4 +97,4 @@ bash scripts/p2_test.sh   # 含 tests/cpp/test_memory_golden.cc，校验 tests/f
 
 - 清空记忆的"再次输入密码 + TOTP"（§9 敏感操作）：需要 `ParentAuth` 提供统一的二次验证原语（删除设备、备注也要用），本 PR 只要求会话 + CSRF；设备上的家长确认（D5）仍是必经的第二道。
 - `SET_TEMPERAMENT`、`SET_PARENT_SETTINGS`、`SELECT_VOICE_PACK` 已在命令通道里（含确认/过期规则），家长接口和保守合并由 S3 提供；`SYNC_CONTENT` 由 S4 下发。
-- 喜好名取自 S4 的 `like_topics(slot,label)` / `like_options(slot,option,label)`（表存在时）；书名查找 `CatalogNames.book` 留给 S4；`name` 取自 S3 的 `profiles`（表存在时）。没有审核名的 id 一律省略。
+- 喜好名取自 S4 的 `like_topics` / `like_options`，书名取自 S4 的 `content_packages.title`（kind=book，取最新修订），都只认 `approved` 的包；`name` 取自 S3 的 `profiles`（表存在时）。没有审核名的 id 一律省略。

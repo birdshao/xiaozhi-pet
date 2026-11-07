@@ -143,19 +143,28 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
 class CatalogNames:
     """Reviewed display names (§7.3). Ids without a reviewed name are omitted.
 
-    Reads S4's like_topics(slot,label) / like_options(slot,option,label) when
-    those tables exist. Book titles come from S4's catalog once it has them.
+    Reads S4's like_topics / like_options and book titles, from approved
+    packages only (as ContentCatalog.like_names), when those tables exist.
     """
 
     def like(self, db: sqlite3.Connection, slot: int, option: int) -> tuple[str, str] | None:
         if not (_table_exists(db, "like_topics") and _table_exists(db, "like_options")):
             return None
-        row = db.execute("SELECT t.label, o.label FROM like_options o JOIN like_topics t ON t.slot=o.slot "
-                         "WHERE o.slot=? AND o.option=?", (slot, option)).fetchone()
+        row = db.execute(
+            "SELECT t.label, o.label FROM like_options o "
+            "JOIN like_topics t ON t.package_id=o.package_id AND t.slot=o.slot "
+            "JOIN content_packages k ON k.package_id=o.package_id "
+            "WHERE o.slot=? AND o.option=? AND k.status='approved' "
+            "ORDER BY k.package_id DESC LIMIT 1", (slot, option)).fetchone()
         return (row[0], row[1]) if row else None
 
     def book(self, db: sqlite3.Connection, content_id: int) -> str | None:
-        return None
+        if not _table_exists(db, "content_packages"):
+            return None
+        row = db.execute("SELECT title FROM content_packages WHERE kind='book' AND content_id=? "
+                         "AND status='approved' ORDER BY revision DESC, package_id DESC LIMIT 1",
+                         (content_id,)).fetchone()
+        return row[0] if row else None
 
 
 def civil_day(epoch_seconds: float, tz_name: str) -> int:
