@@ -14,7 +14,7 @@ import shutil
 
 from content_pipeline.audio_qc import analyze_wav
 from content_pipeline.game_lessons import audio_key, audio_script, validate_lesson
-from content_pipeline.packaging import _asset, _hash, _sha_file
+from content_pipeline.packaging import VOICE_PROVENANCE_OPEN, _asset, _hash, _sha_file
 from content_pipeline.schema import ContentError, canonical_json, write_json
 from tools import game_pack
 
@@ -202,14 +202,18 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
     attests = review["attestations"]
     required = {"educational_accuracy", "answer_uniqueness", "audio",
                 "age_safety", "source"}
-    # voice_terms_cleared is optional, but mandatory for edge-tts narration.
-    if not isinstance(attests, dict) or not required <= set(attests) <=             required | {"voice_terms_cleared"} or any(
+    # voice_terms_cleared is optional, but mandatory unless the narration's
+    # provenance is a known non-service source (see VOICE_PROVENANCE_OPEN).
+    allowed = required | {"voice_terms_cleared"}
+    if not isinstance(attests, dict) or not required <= set(attests) <= allowed or any(
             attests[item] is not True for item in attests):
         raise ContentError("review: five explicit checks required")
     attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
-    if attribution.get("audio_provider") == "edge-tts" and not smoke_only and             attests.get("voice_terms_cleared") is not True:
-        raise ContentError("review: edge-tts narration needs attestations.voice_terms_cleared "
-                           "(service terms checked for this distribution)")
+    if not smoke_only and attribution.get("audio_provider") in VOICE_PROVENANCE_OPEN and \
+            attests.get("voice_terms_cleared") is not True:
+        raise ContentError(
+            "review: narration provider is edge-tts or unrecorded (no audio.manifest.json); "
+            "attestations.voice_terms_cleared is required")
     if attribution.get("audio_test_only") is True and not smoke_only:
         raise ContentError("game: synthetic test-only TTS requires smoke_only packaging")
     game = copy.deepcopy(json.loads((stage_dir / "game.json").read_text(encoding="utf-8")))

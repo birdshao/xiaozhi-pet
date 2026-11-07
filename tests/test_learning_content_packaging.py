@@ -94,6 +94,7 @@ class Packaging(unittest.TestCase):
             "attestations": {
                 "source_license": True, "illustrations": True,
                 "text": True, "audio": True, "age_safety": True,
+                "voice_terms_cleared": True,  # fixture has no audio.manifest.json
             }
         })
         return file

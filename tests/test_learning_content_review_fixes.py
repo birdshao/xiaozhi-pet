@@ -8,7 +8,9 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import tempfile
 import unittest
 import wave
@@ -73,6 +75,14 @@ def write_tone(path, frames=12000, amplitude=8000):
         f.writeframes(tone_frames(frames, amplitude))
 
 
+def find_cjk_font():
+    from content_pipeline.packaging import CJK_FONTS
+    import os
+    return any(Path(p).is_file() for p in
+               ([os.environ["LCP_CJK_FONT"]] if os.environ.get("LCP_CJK_FONT") else [])
+               + list(CJK_FONTS))
+
+
 def dash(license_id="CC-BY-4.0", text=MULTI):
     doc = import_bookdash(
         text, source_item_id="two-toy-friends/en/index.md",
@@ -105,9 +115,11 @@ class BookFixtures(unittest.TestCase):
     def put(self, doc):
         write_json(self.lcir, doc)
 
-    def review(self, checked_hash, **extra):
+    def review(self, checked_hash, voice=True, **extra):
         attest = {"source_license": True, "illustrations": True, "text": True,
                   "audio": True, "age_safety": True, **extra}
+        if voice:  # fixtures without audio.manifest.json need the attestation too
+            attest["voice_terms_cleared"] = True
         path = self.root / "review.json"
         write_json(path, {"status": "reviewed", "reviewer": "CI", "attestations": attest,
                           "checked_hash": checked_hash})
@@ -165,8 +177,45 @@ class BookFixtures(unittest.TestCase):
         parsed = kpb2.parse((self.root / "b.kpb").read_bytes())
         self.assertEqual(len(parsed["pages"]), 3)
         self.assertEqual(meta["pages"][-1]["text"], credits_text(credits))
-        for needle in ("Test Writer", "Test Artist", "Test Designer", "CC BY 4.0"):
+        for needle in ("Test Writer", "Test Artist", "Test Designer", "CC BY 4.0",
+                       "github.com/bookdash/bookdash-books/blob/ccccccc/two-toy-friends",
+                       "Modified: resized, narrated"):
             self.assertIn(needle, meta["pages"][-1]["text"])
+
+    def test_credits_are_drawn_into_the_page_image(self):
+        self.put(dash("CC-BY-SA-4.0"))
+        stage_book(self.lcir, self.map_file, self.stage)
+        with Image.open(self.stage / "page_03.png") as page:
+            self.assertEqual(page.size, (800, 480))
+            dark = sum(1 for v in page.convert("L").getdata() if v < 128)
+        with Image.open(self.stage / "page_01.png") as first:
+            self.assertEqual(first.size, (800, 480))
+        frame_only = 2 * (800 + 480) * 4  # the border alone is about this many dark px
+        self.assertGreater(dark, frame_only * 2)  # text pixels far beyond the frame
+        text = json.loads((self.stage / "book.json").read_text(encoding="utf-8"))["pages"][-1]["text"]
+        self.assertIn("ShareAlike", text)
+        self.assertIn("github.com/bookdash", text)
+
+    @unittest.skipUnless(find_cjk_font(), "needs a CJK font (set LCP_CJK_FONT)")
+    def test_chinese_credits_page_is_drawn(self):
+        doc = dash()
+        doc["locale"] = "zh-Hans"
+        doc["title"] = "两个玩具朋友"
+        doc["source"]["creators"]["translation"] = ["译者甲"]
+        doc["source"]["creators"]["text"] = ["作者乙"]
+        doc["transformations"] = [{
+            "kind": "translation", "source_locale": "en", "target_locale": "zh-Hans",
+            "source_digest": "d" * 64, "method": "ai_assisted_draft",
+            "notes": "AI-assisted draft"}]
+        for page in doc["pages"]:
+            page["text"] = "你好。"
+        self.put(doc)
+        stage_book(self.lcir, self.map_file, self.stage)
+        with Image.open(self.stage / "page_03.png") as page:
+            dark = sum(1 for v in page.convert("L").getdata() if v < 128)
+        self.assertGreater(dark, 20000)
+        text = json.loads((self.stage / "book.json").read_text(encoding="utf-8"))["pages"][-1]["text"]
+        self.assertIn("已修改：翻译、缩放、配音", text)
 
     def test_nd_license_refused_and_sa_recorded(self):
         self.put(dash("CC-BY-ND-4.0"))
@@ -200,12 +249,39 @@ class BookFixtures(unittest.TestCase):
             "item_uid": doc["item_uid"], "content_digest": content_digest(doc)})
         candidate = stage_book(self.lcir, self.map_file, self.stage)
         with self.assertRaisesRegex(ContentError, "voice_terms_cleared"):
-            build_reviewed_book(self.stage, self.review(candidate["checked_hash"]),
+            build_reviewed_book(self.stage, self.review(candidate["checked_hash"], voice=False),
                                 self.root / "e.kpb")
         built = build_reviewed_book(
-            self.stage, self.review(candidate["checked_hash"], voice_terms_cleared=True),
-            self.root / "e.kpb")
+            self.stage, self.review(candidate["checked_hash"]), self.root / "e.kpb")
         self.assertGreater(built["package_bytes"], 0)
+
+    @unittest.skipUnless(shutil.which("g++"), "g++ runs this in CI")
+    def test_device_reader_opens_pipeline_book_with_credits_page(self):
+        root = Path(__file__).resolve().parents[1]
+        src = root / "firmware/components/kid_app/src"
+        self.put(dash())
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        build_reviewed_book(self.stage, self.review(candidate["checked_hash"]),
+                            self.root / "device.kpb")
+        binary = self.root / "open_book_check"
+        subprocess.run(["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+                        "-I" + str(root / "firmware/components/kid_app/include"),
+                        str(src / "content_pack_reader.cc"), str(src / "story_pack_reader.cc"),
+                        str(src / "story_pack_file_port.cc"), str(src / "scene_model.cc"),
+                        str(src / "memory_store.cc"),
+                        str(root / "tests/cpp/test_kpb2_open_book.cc"),
+                        "-o", str(binary)], check=True, timeout=120)
+        checked = subprocess.run([str(binary), str(self.root / "device.kpb"), "3"],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("PASS: KPB2 book with credits page", checked.stdout)
+
+    def test_missing_audio_manifest_fails_closed(self):
+        self.put(dash())
+        candidate = stage_book(self.lcir, self.map_file, self.stage)
+        with self.assertRaisesRegex(ContentError, "unrecorded"):
+            build_reviewed_book(self.stage, self.review(candidate["checked_hash"], voice=False),
+                                self.root / "m.kpb")
 
     # 6
     def test_catalog_requires_review_gate_hash(self):

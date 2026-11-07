@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -25,6 +26,9 @@ WIDTH, HEIGHT = 800, 480
 SAMPLE_RATE = 24000
 MAX_IMAGE_INPUT = 20 * 1024 * 1024
 MAX_WAV_INPUT = SAMPLE_RATE * 2 * 60 + 1024
+# Narration provenance that needs a voice_terms_cleared attestation: online TTS
+# or no audio.manifest.json at all (unknown origin fails closed).
+VOICE_PROVENANCE_OPEN = frozenset({None, "edge-tts"})
 BOOK_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 
 
@@ -149,8 +153,21 @@ def credits_record(doc: dict) -> dict:
     }
 
 
+def _short_url(record: dict) -> str:
+    """Source URL without scheme; a full pinned git SHA is shortened (GitHub resolves it)."""
+    url = record["source_url"].removeprefix("https://")
+    short = record["source_ref"][:7]
+    url = url.replace(record["source_ref"], short)
+    return url if short in url else f"{url} ({short})"
+
+
 def credits_text(record: dict) -> str:
     """Single-line text for the generated final credits page (<=320 chars)."""
+    return " ".join(credits_parts(record))
+
+
+def credits_parts(record: dict) -> list[str]:
+    """Credit fields; the page image draws each on its own line(s)."""
     zh = record["locale"].lower().startswith("zh")
     names = record["creators"]
     labels = ({"text": "文", "illustration": "图", "design": "设计", "translation": "译"}
@@ -162,26 +179,94 @@ def credits_text(record: dict) -> str:
             joined = ("、" if zh else ", ").join(names[key])
             parts.append(f"{labels[key]}：{joined}" if zh else f"{labels[key]}: {joined}")
     licence = _license_name(record["license_id"])
+    if record["share_alike"]:
+        licence += "（相同方式共享）" if zh else " (ShareAlike)"
     if record["license_url"]:
-        licence += " " + record["license_url"].removeprefix("https://")
-    modified_zh = {"translated": "翻译", "resized": "调整尺寸", "narrated": "配音"}
+        licence += " " + record["license_url"].removeprefix("https://").rstrip("/")
+    modified_zh = {"translated": "翻译", "resized": "缩放", "narrated": "配音"}
     if zh:
         parts.append(f"许可：{licence}")
-        parts.append(f"来源：{record['source_provider']}")
-        parts.append("本版经" + "、".join(modified_zh[m] for m in record["modified"]) + "改编。")
+        parts.append(f"来源：{_short_url(record)}")
+        parts.append("已修改：" + "、".join(modified_zh[m] for m in record["modified"]))
     else:
         parts.append(f"Licence: {licence}")
-        parts.append(f"Source: {record['source_provider']}")
-        parts.append("Modified: " + ", ".join(record["modified"]) + ".")
-    return " ".join(parts)
+        parts.append(f"Source: {_short_url(record)}")
+        parts.append("Modified: " + ", ".join(record["modified"]))
+    return parts
 
 
-def _credits_page_files(stage_dir: Path, number: int) -> tuple[str, str]:
-    """White framed picture and 0.4 s silent WAV; the text lives in the page text."""
+CJK_FONTS = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
+    "/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Light.ttc",
+)
+
+
+def _credits_font(zh: bool, size: int):
+    from PIL import ImageFont
+    if not zh:  # bundled Latin font keeps the English layout deterministic
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:  # Pillow < 10.1
+            return ImageFont.load_default()
+    candidates = [os.environ["LCP_CJK_FONT"]] if os.environ.get("LCP_CJK_FONT") else []
+    for path in candidates + list(CJK_FONTS):
+        if Path(path).is_file():
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    raise ContentError("stage: the credits page needs a CJK font; install Noto Sans CJK "
+                       "or set LCP_CJK_FONT to a .ttf/.ttc/.otf file")
+
+
+def _wrap(draw, text: str, font, width: int, zh: bool) -> list[str]:
+    tokens = list(text) if zh else [w + " " for w in text.split(" ")]
+    lines, current = [], ""
+    for token in tokens:
+        if draw.textlength((current + token).rstrip(), font=font) <= width:
+            current += token
+            continue
+        if current:
+            lines.append(current.rstrip())
+            current = ""
+        for char in token:  # one over-long word, e.g. a URL: break by character
+            if current and draw.textlength(current + char, font=font) > width:
+                lines.append(current)
+                current = ""
+            current += char
+    if current.strip():
+        lines.append(current.rstrip())
+    return lines
+
+
+def _credits_page_files(stage_dir: Path, number: int, parts: list[str], zh: bool) -> tuple[str, str]:
+    """Framed page with the credits drawn in (the reader never draws page text)
+    and a 0.4 s silent WAV."""
     from PIL import Image, ImageDraw
     canvas = Image.new("RGB", (WIDTH, HEIGHT), "white")
-    ImageDraw.Draw(canvas).rectangle((24, 24, WIDTH - 25, HEIGHT - 25),
-                                     outline="black", width=5)
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((16, 16, WIDTH - 17, HEIGHT - 17), outline="black", width=4)
+    font = _credits_font(zh, 26 if zh else 24)
+    line_height = 34 if zh else 30
+    gap = 8
+    lines: list[str | None] = []
+    for part in parts:
+        lines += _wrap(draw, part, font, WIDTH - 2 * 44, zh) + [None]  # None = field gap
+    used = sum(gap if line is None else line_height for line in lines[:-1])
+    if 32 + used > HEIGHT - 40:
+        raise ContentError("stage: credits text does not fit on one 800x480 page")
+    y = 32
+    for line in lines[:-1]:
+        if line is None:
+            y += gap
+            continue
+        draw.text((44, y), line, fill="black", font=font)
+        y += line_height
     image, audio = f"page_{number:02d}.png", f"page_{number:02d}.wav"
     canvas.save(stage_dir / image, format="PNG")
     with wave.open(str(stage_dir / audio), "wb") as out:
@@ -296,7 +381,9 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
             "questions": [],
         })
     credits_number = len(pages) + 1
-    credits_image, credits_audio = _credits_page_files(stage_dir, credits_number)
+    credits_image, credits_audio = _credits_page_files(
+        stage_dir, credits_number, credits_parts(credits),
+        credits["locale"].lower().startswith("zh"))
     _write_epaper_previews(stage_dir, credits_image, credits_number)
     pages.append({
         "number": credits_number, "text": credits_text(credits), "approved": False,
@@ -351,7 +438,8 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
     attest = review["attestations"]
     required = {"source_license", "illustrations", "text", "audio", "age_safety"}
     # voice_terms_cleared is optional, but mandatory for edge-tts narration.
-    if not isinstance(attest, dict) or not required <= set(attest) <=             required | {"voice_terms_cleared"} or any(
+    allowed = required | {"voice_terms_cleared"}
+    if not isinstance(attest, dict) or not required <= set(attest) <= allowed or any(
             attest[k] is not True for k in attest):
         raise ContentError("review: all five human checks required")
     doc = json.loads((stage_dir / "lcir.json").read_text(encoding="utf-8"))
@@ -361,11 +449,14 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
     attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
     if attribution.get("audio_test_only") is True:
         raise ContentError("review: synthetic test-only narration cannot be published")
-    if attribution.get("audio_provider") == "edge-tts" and             attest.get("voice_terms_cleared") is not True:
-        raise ContentError("review: edge-tts narration needs attestations.voice_terms_cleared "
-                           "(service terms checked for this distribution)")
+    if attribution.get("audio_provider") in VOICE_PROVENANCE_OPEN and \
+            attest.get("voice_terms_cleared") is not True:
+        raise ContentError(
+            "review: narration provider is edge-tts or unrecorded (no audio.manifest.json); "
+            "attestations.voice_terms_cleared is required")
     credits = credits_record(doc)
-    if attribution.get("credits") != credits or             not book_pages_end_with_credits(stage_dir, credits):
+    if attribution.get("credits") != credits or \
+            not book_pages_end_with_credits(stage_dir, credits):
         raise ContentError("review: credits record or credits page does not match source")
     if not doc["source"]["creators"]["text"] or not doc["source"]["creators"]["illustration"]:
         raise ContentError("review: verified text and illustration credits required")
