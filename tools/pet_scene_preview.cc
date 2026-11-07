@@ -1,4 +1,5 @@
 // Host-only PBM preview. The ePaper driver is NOT required for this preview.
+#include "kid_app/activity_list.h"
 #include "kid_app/scene_model.h"
 
 #include <fstream>
@@ -82,7 +83,9 @@ int main(int argc, char** argv) {
             c.kind = kid_app::CareKind::Feed;
             c.option_count = 3;
             c.highlight = 0;
-            c.options = {211, 212, 213};  // CareArt Fish, Milk, Apple
+            c.options = {static_cast<uint16_t>(kid_app::CareArt::Fish),
+                         static_cast<uint16_t>(kid_app::CareArt::Milk),
+                         static_cast<uint16_t>(kid_app::CareArt::Apple)};
             c.hearts = 3;
             c.phase = 1;
         } else if (mode == "v8_bath") {

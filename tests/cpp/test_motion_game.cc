@@ -365,6 +365,16 @@ void TestActivityList() {
     assert(FindActivity(GameChoice::Feed)->group == ActivityGroup::Care);
 }
 
+// A group with no rows never opens: the board sees `finished` and leaves
+// the game frame instead of sticking in a menu that takes no input.
+void TestEmptyGroup() {
+    GameMenu m;
+    const auto out = m.Start(0, 0, static_cast<ActivityGroup>(7));
+    assert(out.finished && !out.redraw && !m.Active() && m.End() == GameEnd::Home);
+    assert(m.View() == GameView{});
+    assert(!m.Input(GameInput::Press, 1).redraw && !m.Tick(999999).finished);
+}
+
 SceneModel GameScene(const GameView& view) {
     SceneModel m{};
     m.kind = SceneKind::Game;
@@ -468,6 +478,7 @@ int main() {
     TestGrowthOnlyForFinishedWins();
     TestMenu();
     TestActivityList();
+    TestEmptyGroup();
     TestScenes();
     // The holes for the hardware script (tools/selftest/v4_motion_games.pettest).
     MotionGameSession s = Started(MotionKind::Ball, 4242);

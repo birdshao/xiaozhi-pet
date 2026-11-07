@@ -39,7 +39,7 @@ uint16_t WardrobeArt(size_t i) {
 }
 uint16_t HabitArt(Habit habit) {
     const uint8_t h = static_cast<uint8_t>(habit);
-    return h >= 1 && h <= kHabitCount ? static_cast<uint16_t>(250 + h)
+    return h >= 1 && h <= kHabitCount ? static_cast<uint16_t>(static_cast<uint16_t>(CareArt::HabitFirst) - 1 + h)
                                       : static_cast<uint16_t>(CareArt::Lock);
 }
 

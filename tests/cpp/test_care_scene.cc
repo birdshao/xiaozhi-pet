@@ -184,7 +184,7 @@ void TestCareScenes() {
     assert(DiffRows(quiet, busy, &top, &bottom) > 0);
     // Every care card picture draws inside its card on the game rail too
     // (the care menu is the GameMenu on the Care group).
-    for (uint16_t art = 200; art <= 262; ++art) {
+    for (uint16_t art = 600; art <= 662; ++art) {
         if (!CareArtValid(art)) continue;
         SceneModel g{};
         g.kind = SceneKind::Game;

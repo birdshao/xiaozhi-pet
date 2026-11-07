@@ -1864,7 +1864,7 @@ void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
         return;
     }
     if (art >= static_cast<uint16_t>(CareArt::HabitFirst) && art <= static_cast<uint16_t>(CareArt::HabitLast)) {
-        HabitIcon(f, static_cast<uint8_t>(art - 250), cx, cy, r);
+        HabitIcon(f, static_cast<uint8_t>(art - static_cast<uint16_t>(CareArt::HabitFirst) + 1), cx, cy, r);
         return;
     }
     if (art >= static_cast<uint16_t>(CareArt::WearFirst) && art <= static_cast<uint16_t>(CareArt::WearLast)) {

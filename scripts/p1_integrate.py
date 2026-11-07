@@ -3205,6 +3205,11 @@ BOARD_WORKER = r'''
 
     void OpenGameMenu(uint8_t start) {
         const auto out = game_menu_.Start(NowMs(), start);
+        if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return;
+        }
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(true);
@@ -3872,6 +3877,11 @@ BOARD_WORKER = r'''
 
     void OpenCareMenu(uint8_t start) {
         const auto out = game_menu_.Start(NowMs(), start, kid_app::ActivityGroup::Care);
+        if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return;
+        }
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(true);

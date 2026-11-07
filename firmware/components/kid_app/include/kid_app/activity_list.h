@@ -40,22 +40,27 @@ enum class GameChoice : uint8_t {
 enum class ActivityGroup : uint8_t { Play, Care };
 enum class ActivityNeeds : uint8_t { None, Motion, Mic };
 
+// Picture id ranges (one per session, docs/V8_CARE_AND_GROWTH.md §5):
+//   1..99 GameArt (KPG1 catalogue)   101..199 MicArt (V4-08)
+//   200..399 and 0x2000..0x3FFF PlayArt (session 2, mini games)
+//   400..499 session 3 (sound)       500..599 session 4 (books)
+//   600..699 CareArt (session 1)     0x4000.. never: tone clip ids (GameArtTone)
 // V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
 enum class CareArt : uint16_t {
-    Bubbles = 201, Comb = 202, Feather = 203, Hanger = 204, Check = 205, Sticker = 206,
-    // Foods (FoodId 1..6 -> 211..216).
-    Fish = 211, Milk = 212, Apple = 213, Carrot = 214, Cookie = 215, RiceBall = 216,
+    Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,
+    // Foods (FoodId 1..6 -> 611..616).
+    Fish = 611, Milk = 612, Apple = 613, Carrot = 614, Cookie = 615, RiceBall = 616,
     // Toys for the bedtime tidy-up.
-    ToyBlock = 221, ToyBall = 222, ToyBear = 223,
-    // Wardrobe cards: 231 + index in the wardrobe table (care_store.cc).
-    WearFirst = 231, WearLast = 242,
-    // Good-habit cards: 250 + Habit (1..8).
-    HabitFirst = 251, HabitLast = 258,
-    Lock = 260,  // nothing unlocked yet
+    ToyBlock = 621, ToyBall = 622, ToyBear = 623,
+    // Wardrobe cards: 631 + index in the wardrobe table (care_store.cc).
+    WearFirst = 631, WearLast = 642,
+    // Good-habit cards: 650 + Habit (1..8).
+    HabitFirst = 651, HabitLast = 658,
+    Lock = 660,  // nothing unlocked yet
 };
 constexpr bool CareArtValid(uint16_t id) {
-    return (id >= 201 && id <= 206) || (id >= 211 && id <= 216) || (id >= 221 && id <= 223) ||
-           (id >= 231 && id <= 242) || (id >= 251 && id <= 258) || id == 260;
+    return (id >= 601 && id <= 606) || (id >= 611 && id <= 616) || (id >= 621 && id <= 623) ||
+           (id >= 631 && id <= 642) || (id >= 651 && id <= 658) || id == 660;
 }
 
 struct Activity {

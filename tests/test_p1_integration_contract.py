@@ -1440,6 +1440,10 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('OpenCareMenu(0);', patched)
         menu = self._body(patched, 'void OpenCareMenu(uint8_t start)')
         self.assertIn('kid_app::ActivityGroup::Care', menu)
+        # An empty group never leaves the board stuck in the game frame.
+        for opener in ('void OpenCareMenu(uint8_t start)', 'void OpenGameMenu(uint8_t start)'):
+            body = self._body(patched, opener)
+            self.assertLess(body.index('EndGame("menu_empty")'), body.index('game_active_.store(true)'))
         self.assertIn('pet_mailbox_.game_only.store(true)', menu)
         # Menu rows dispatch through the activity table; motion rows obey the parent switch.
         choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')

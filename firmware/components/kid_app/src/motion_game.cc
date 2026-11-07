@@ -227,7 +227,11 @@ GameMenuOutput GameMenu::Start(uint32_t now_ms, uint8_t start, ActivityGroup gro
     group_ = group;
     active_ = Count() > 0;
     end_ = GameEnd::None;
-    if (!active_) return out;
+    if (!active_) {  // a group without rows: nothing to pick, straight home
+        end_ = GameEnd::Home;
+        out.finished = true;
+        return out;
+    }
     index_ = std::min<uint8_t>(start, static_cast<uint8_t>(Count() - 1));
     last_input_ms_ = now_ms;
     out.redraw = true;
