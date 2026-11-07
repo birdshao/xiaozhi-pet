@@ -118,7 +118,7 @@ int main() {
         bad.option_art[0] = static_cast<uint16_t>(GameArt::Listen);
         assert(!GameRoundValid(bad));  // a question picture, not an answer
         bad = r;
-        bad.kind = static_cast<GameKind>(9);
+        bad.kind = static_cast<GameKind>(15);
         assert(!GameRoundValid(bad));
         bad = r;
         bad.option_count = 2;  // third slot still filled

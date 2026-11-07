@@ -78,6 +78,12 @@ ART = {"circle": 1, "square": 2, "triangle": 3, "star": 4, "heart": 5,
        "blocks1": 21, "blocks2": 22, "blocks3": 23, "blocks4": 24, "blocks5": 25,
        "ball_big": 31, "ball_small": 32,
        "cat": 41, "dog": 42, "bird": 43, "fish": 44}
+# Sized shapes (game_view.h PlaySizedArt): 0x3000 | shape << 2 | size.
+SIZED_SHAPES = ("circle", "square", "triangle", "star", "heart")
+SIZED_NAMES = ("small", "medium", "large")
+SIZED_ART = {f"{shape}_{size}": 0x3000 | (si << 2) | zi
+             for si, shape in enumerate(SIZED_SHAPES) for zi, size in enumerate(SIZED_NAMES)}
+ART.update(SIZED_ART)
 QUESTION_ONLY_ART = {"listen": 90}
 ART_NAMES = {v: k for k, v in {**ART, **QUESTION_ONLY_ART}.items()}
 

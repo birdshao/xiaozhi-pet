@@ -1254,7 +1254,13 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
     }
 }
 
+#include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
+
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (PlayArtValid(art)) {
+        PlayArtIcon(f, art, cx, cy, r);
+        return;
+    }
     if (MicArtValid(art)) {
         MicArtIcon(f, static_cast<MicArt>(art), cx, cy, r);
         return;
@@ -1417,6 +1423,12 @@ void GameScene(MonoFrame& f, const GameView& g) {
             Ring(f, x, y, 9, 9, 3);
         }
     }
+    // V8 games: their own boards, or the answer cards once the shake game asks.
+    if (g.play != 0 && g.play != 5) {
+        PlayBoard(f, g);
+        return;
+    }
+    if (g.play == 5 && g.option_count == 0) return;
     // Motion games draw their own rail (no answer cards).
     if (g.motion == 1) {
         BallTrack(f, g);

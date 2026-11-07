@@ -2221,6 +2221,8 @@ BOARD_WORKER = r'''
             case kid_app::Gesture::TiltLeft: return "tiltleft";
             case kid_app::Gesture::TiltRight: return "tiltright";
             case kid_app::Gesture::Level: return "level";
+            case kid_app::Gesture::TiltUp: return "tiltup";
+            case kid_app::Gesture::TiltDown: return "tiltdown";
             case kid_app::Gesture::None: break;
         }
         return "none";
@@ -2256,7 +2258,8 @@ BOARD_WORKER = r'''
         if (motion_active_.load() &&
             (gesture == kid_app::Gesture::FaceDown || gesture == kid_app::Gesture::FaceUp ||
              gesture == kid_app::Gesture::TiltLeft || gesture == kid_app::Gesture::TiltRight ||
-             gesture == kid_app::Gesture::Level)) {
+             gesture == kid_app::Gesture::Level ||
+             gesture == kid_app::Gesture::TiltUp || gesture == kid_app::Gesture::TiltDown)) {  // V8 maze
             motion_gesture_.store(static_cast<uint8_t>(gesture));
             if (power_save_timer_) power_save_timer_->WakeUp();
             power_poke_.store(true);
@@ -2264,6 +2267,15 @@ BOARD_WORKER = r'''
             return;
         }
         if (gesture == kid_app::Gesture::FaceDown) face_down_.store(true);
+        // V8 shake dice / tree: a shake only rolls; the dial answer is the reward.
+        if (play_shake_.load() && motion_enabled_.load() &&
+            (gesture == kid_app::Gesture::GentleShake || gesture == kid_app::Gesture::HardShake)) {
+            motion_gesture_.store(static_cast<uint8_t>(gesture));
+            if (power_save_timer_) power_save_timer_->WakeUp();
+            power_poke_.store(true);
+            ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=1 game=1", GestureName(gesture), source);
+            return;
+        }
         bool acted = false;
         // V3-06: parents can switch motion off; the parent menu ignores it.
         const bool motion_off = !motion_enabled_.load();
@@ -2511,6 +2523,10 @@ BOARD_WORKER = r'''
             in.time_ok = true;
             in.hour = rtc.hour;
             in.minute = rtc.minute;
+            live_hour_.store(rtc.hour);  // V8 clock game
+            live_minute_.store(rtc.minute);
+        } else {
+            live_hour_.store(-1);
         }
         if (!env_read_once_ || now - env_read_ms_ >= kEnvReadMs) {
             env_read_once_ = true;
@@ -2527,6 +2543,8 @@ BOARD_WORKER = r'''
                           static_cast<uint16_t>(static_cast<int16_t>(env_temp_c10_)));
         in.temp_ok = env_ok_;
         in.temp_c10 = env_temp_c10_;
+        live_temp_ok_.store(env_ok_);  // V8 weather game
+        live_temp_c10_.store(env_temp_c10_);
         if (pmic_) {
             in.battery_pct = pmic_->GetBatteryLevel();
             in.charging = pmic_->IsCharging();
@@ -2895,7 +2913,7 @@ BOARD_WORKER = r'''
     // V4-07: the Game rail item first opens game_menu_ (quiz / tilt ball /
     // peekaboo); the quiz is game_, the other two are motion_. game_mode_
     // says which one owns the dial and the screen.
-    enum class GameMode : uint8_t { None, Menu, Quiz, Motion };
+    enum class GameMode : uint8_t { None, Menu, Quiz, Motion, Play };
     kid_app::GameMenu game_menu_;              // pet_input only
     kid_app::MotionGameSession motion_;        // pet_input only
     GameMode game_mode_ = GameMode::None;      // pet_input only
@@ -2904,6 +2922,29 @@ BOARD_WORKER = r'''
     std::atomic<bool> motion_tilt_{false};     // the ball game: pet_boot_diag feeds tilt
     std::atomic<uint8_t> motion_gesture_{0};   // latest gesture for motion_, 0 = none
     kid_app::TiltTracker tilt_tracker_;        // pet_boot_diag only
+    // V8 games (docs/V8_MINI_GAMES.md): the non-card ones (memory flip, maze,
+    // shake dice / tree, wooden man, day and night) are play_; the card games
+    // (shapes, counting, spot the difference, ...) are game_ with another pool.
+    // Reward rules are the same: only the dial answer (or the asked-for motion).
+    static kid_app::TiltConfig MazeTiltConfig() {
+        kid_app::TiltConfig config{};
+        config.four_way = true;  // axes and signs: calibrate on hardware
+        return config;
+    }
+    kid_app::PlaySession play_;                 // pet_input only
+    kid_app::TiltTracker maze_tracker_{MazeTiltConfig()};  // pet_boot_diag only
+    std::atomic<bool> play_tilt_{false};        // the maze: pet_boot_diag feeds four-way tilt
+    std::atomic<bool> play_shake_{false};       // dice / tree: shakes reach the game
+    std::atomic<bool> play_window_{false};      // wooden man: pet_boot_diag queues IMU windows
+    std::mutex play_window_mutex_;
+    kid_app::MotionStats::Summary play_windows_[4];
+    uint8_t play_window_count_ = 0;
+    std::array<kid_app::GameRound, 3> live_pool_{};  // clock / weather rounds of this game
+    std::atomic<int> live_hour_{-1};            // RTC hour, -1 = clock not set (pet_boot_diag)
+    std::atomic<int> live_minute_{0};
+    std::atomic<bool> live_temp_ok_{false};     // SHTC3 reading (pet_boot_diag)
+    std::atomic<int> live_temp_c10_{0};
+    uint8_t play_round_logged_ = 0;             // pet_input
     std::atomic<bool> game_active_{false};     // read by the other tasks
     bool game_requested_ = false;              // pet_input: rail press seen
     uint8_t game_round_logged_ = 0;            // pet_input
@@ -2971,6 +3012,7 @@ BOARD_WORKER = r'''
         scene.kind = kid_app::SceneKind::Game;
         scene.game = game_mode_ == GameMode::Menu     ? game_menu_.View()
                      : game_mode_ == GameMode::Motion ? motion_.View()
+                     : game_mode_ == GameMode::Play   ? play_.View()  // V8
                      : mic_session_                   ? mic_game_.View()  // V4-08
                                                       : game_.View();
         pet_mailbox_.Publish(scene);
@@ -3038,6 +3080,15 @@ BOARD_WORKER = r'''
                     StartMotion(out.chosen == kid_app::GameChoice::Ball
                                     ? kid_app::MotionKind::Ball
                                     : kid_app::MotionKind::Peekaboo);
+                }
+            } else if (kid_app::GameChoiceIsPlay(out.chosen)) {  // V8 games (play_content.h)
+                const kid_app::PlayGame game = kid_app::PlayGameOf(out.chosen);
+                const kid_app::Activity* row = kid_app::FindActivity(out.chosen);
+                if (row && row->needs == kid_app::ActivityNeeds::Motion && !motion_enabled_.load()) {
+                    ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
+                    OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                } else {
+                    StartPlayGame(game);
                 }
             // V8 activity list (activity_list.h): sessions that append a row
             // add their dispatch branch here, before this fallback.
@@ -3126,6 +3177,119 @@ BOARD_WORKER = r'''
         if (game_active_.load()) PublishGameSceneLocked();
     }
 
+    // ---- V8 games ----
+    void PushPlayWindow(const kid_app::MotionStats::Summary& window) {  // pet_boot_diag
+        std::lock_guard<std::mutex> lock(play_window_mutex_);
+        if (play_window_count_ < 4) play_windows_[play_window_count_++] = window;
+    }
+
+    void DrainPlayWindows() {  // pet_input
+        kid_app::MotionStats::Summary windows[4];
+        uint8_t count = 0;
+        {
+            std::lock_guard<std::mutex> lock(play_window_mutex_);
+            count = play_window_count_;
+            for (uint8_t i = 0; i < count; ++i) windows[i] = play_windows_[i];
+            play_window_count_ = 0;
+        }
+        for (uint8_t i = 0; i < count && game_active_.load(); ++i)
+            ApplyPlayOutput(play_.OnWindow(windows[i], NowMs()));
+    }
+
+    void ApplyPlayOutput(const kid_app::GameOutput& out) {
+        PostGameClip(out.clip);
+        if (out.right)
+            ESP_LOGI(TAG, "PET_PLAY_RIGHT game=%s correct=%u",
+                     kid_app::FindPlayGame(play_.Game())->name,
+                     static_cast<unsigned>(play_.Result().correct));
+        if (out.finished) {
+            EndGame(kid_app::GameEndName(play_.Result().end));
+            return;
+        }
+        if (!out.redraw) return;
+        const auto view = play_.View();
+        if (view.round != play_round_logged_) {
+            play_round_logged_ = view.round;
+            ESP_LOGI(TAG, "PET_PLAY_ROUND game=%s n=%u/%u",
+                     kid_app::FindPlayGame(play_.Game())->name,
+                     static_cast<unsigned>(view.round), static_cast<unsigned>(view.rounds));
+        }
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    // pet_input, after the menu choice. Card games are a GameSession over a
+    // bank (the clock and weather rounds come from the RTC and the SHTC3);
+    // the others are PlaySession. Nothing is recorded.
+    void StartPlayGame(kid_app::PlayGame game) {
+        const kid_app::PlayGameInfo* info = kid_app::FindPlayGame(game);
+        if (!info) {
+            EndGame("start_failed");
+            return;
+        }
+        uint32_t seed = game_seed_.exchange(0);
+        if (!seed) seed = esp_random();
+        kid_app::GameOutput out{};
+        if (kid_app::IsCardGame(game)) {
+            size_t count = 0;
+            const kid_app::GameRound* pool = kid_app::PlayBank(game, &count);
+            if (game == kid_app::PlayGame::Clock) {
+                const int hour = live_hour_.load();
+                count = kid_app::BuildClockPool(hour >= 0, static_cast<uint8_t>(hour < 0 ? 0 : hour),
+                                                static_cast<uint8_t>(live_minute_.load()),
+                                                live_pool_.data());
+                pool = live_pool_.data();
+            } else if (game == kid_app::PlayGame::Weather) {
+                const int heat = on_battery_.load() ? kid_app::EnvTipPolicy::kBatteryHeatC10
+                                                    : kid_app::EnvTipPolicy::kUsbHeatC10;
+                count = kid_app::BuildWeatherPool(live_temp_ok_.load(),
+                                                  live_temp_c10_.load() - heat, live_pool_.data());
+                pool = live_pool_.data();
+            }
+            if (!pool || !game_.Start(pool, count, info->id, seed,
+                                      kid_app::GameSession::kDefaultRounds, NowMs(), &out)) {
+                ESP_LOGW(TAG, "PET_GAME_START_FAILED src=play game=%s", info->name);
+                EndGame("start_failed");
+                return;
+            }
+            {
+                SceneStateLock lock(scene_state_mutex_);
+                game_mode_ = GameMode::Quiz;
+                PublishGameSceneLocked();
+            }
+            ESP_LOGI(TAG, "PET_GAME_START src=play game=%s id=%u seed=%u rounds=%u", info->name,
+                     static_cast<unsigned>(info->id), static_cast<unsigned>(seed),
+                     static_cast<unsigned>(game_.Result().rounds));
+            LogGameRound();
+            PostGameClip(out.clip);
+            return;
+        }
+        if (!play_.Start(game, seed, NowMs(), &out)) {
+            ESP_LOGW(TAG, "PET_GAME_START_FAILED src=play game=%s", info->name);
+            EndGame("start_failed");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_mode_ = GameMode::Play;
+            motion_gesture_.store(0);
+            play_round_logged_ = 0;
+            {
+                std::lock_guard<std::mutex> window_lock(play_window_mutex_);
+                play_window_count_ = 0;
+            }
+            play_tilt_.store(play_.WantsTilt());
+            play_shake_.store(play_.WantsShake());
+            play_window_.store(play_.WantsWindows());
+            motion_active_.store(play_.WantsTilt() || play_.WantsShake() || play_.WantsFace());
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_START src=play game=%s id=%u seed=%u rounds=%u", info->name,
+                 static_cast<unsigned>(info->id), static_cast<unsigned>(seed),
+                 static_cast<unsigned>(play_.Result().rounds));
+        PostGameClip(out.clip);
+    }
+
     // pet_input, after the menu choice (scene_state_mutex_ released).
     void StartQuiz() {
         kid_app::GamePackReader* pack = GamePackNow();
@@ -3188,6 +3352,7 @@ BOARD_WORKER = r'''
         }
         if (game_mode_ == GameMode::Menu) HandleMenuOutput(game_menu_.Input(input, NowMs()));
         else if (game_mode_ == GameMode::Motion) ApplyMotionOutput(motion_.Input(input, NowMs()));
+        else if (game_mode_ == GameMode::Play) ApplyPlayOutput(play_.Input(input, NowMs()));
     }
 
     void HandleQuizInput(kid_app::InputKind kind) {
@@ -3248,6 +3413,14 @@ BOARD_WORKER = r'''
                 if (game_active_.load()) ApplyMotionOutput(motion_.Tick(NowMs()));
                 break;
             }
+            case GameMode::Play: {  // V8
+                const uint8_t pending = motion_gesture_.exchange(0);
+                if (pending)
+                    ApplyPlayOutput(play_.OnGesture(static_cast<kid_app::Gesture>(pending), NowMs()));
+                DrainPlayWindows();
+                if (game_active_.load()) ApplyPlayOutput(play_.Tick(NowMs()));
+                break;
+            }
             case GameMode::None:
                 break;
         }
@@ -3273,6 +3446,11 @@ BOARD_WORKER = r'''
                 result = motion_.Result();
                 mode = kid_app::MotionKindName(motion_.Kind());
                 break;
+            case GameMode::Play:  // V8
+                play_.Interrupt();
+                result = play_.Result();
+                mode = "play";
+                break;
             case GameMode::Quiz:
             case GameMode::None:
                 if (mic_session_) {
@@ -3292,6 +3470,9 @@ BOARD_WORKER = r'''
             game_mode_ = GameMode::None;
             motion_active_.store(false);
             motion_tilt_.store(false);
+            play_tilt_.store(false);
+            play_shake_.store(false);
+            play_window_.store(false);
             pet_mailbox_.game_only.store(false);
             if (publish_home && pet_mode_.load() && !sleep_active_.load())
                 pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
@@ -3769,6 +3950,14 @@ BOARD_WORKER = r'''
                 } else {
                     tilt_tracker_.Reset();
                 }
+                // V8: the maze tilts four ways, the wooden man reads window means.
+                if (play_tilt_.load() && motion_enabled_.load()) {
+                    const auto tilt = maze_tracker_.OnWindow(s);
+                    if (tilt != kid_app::Gesture::None) HandleGesture(tilt, "imu");
+                } else {
+                    maze_tracker_.Reset();
+                }
+                if (play_window_.load() && motion_enabled_.load()) PushPlayWindow(s);
             }
             SampleBattery(now);
             if (now - last_heartbeat_ms >= 10000) {
@@ -3848,6 +4037,8 @@ def patch_board(text: str) -> str:
         '#include "kid_app/game_pack_reader.h"\n'
         '#include "kid_app/game_course_loader.h"\n'
         '#include "kid_app/motion_game.h"\n'
+        '#include "kid_app/play_game.h"\n'
+        '#include "kid_app/play_content.h"\n'
         '#include "kid_app/memory_store.h"\n'
         '#include "esp_random.h"\n'
         '#include <mutex>\n'

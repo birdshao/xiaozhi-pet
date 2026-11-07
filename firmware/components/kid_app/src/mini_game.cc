@@ -40,6 +40,77 @@ const GameRound kBuiltin[] = {
     Builtin(GameKind::Count, GameArt::Blocks4, GameArt::Dots2, GameArt::Dots5, GameArt::Dots4, 2),
 };
 
+// Full banks (V8): the classic 8 above come first in each bank; the rest are
+// every other distinct question, written out so a reviewer can read them.
+constexpr GameArt kShapes[5] = {GameArt::Circle, GameArt::Square, GameArt::Triangle,
+                                GameArt::Star, GameArt::Heart};
+
+struct Banks {
+    GameRound shape[24];
+    size_t shape_count = 0;
+    GameRound count[24];
+    size_t count_count = 0;
+    Banks() {
+        for (size_t i = 0; i < 4; ++i) shape[shape_count++] = kBuiltin[i];
+        // Every shape asked against every pair of the other four (6 pairs) is
+        // 30; take the pairs and the two-card forms until there are 24.
+        for (int q = 0; q < 5 && shape_count < 24; ++q) {
+            for (int a = 0; a < 5 && shape_count < 24; ++a) {
+                for (int b = a + 1; b < 5 && shape_count < 24; ++b) {
+                    if (a == q || b == q) continue;
+                    // Position of the answer rotates so the table is not one pattern.
+                    const GameArt order[3][3] = {{kShapes[q], kShapes[a], kShapes[b]},
+                                                 {kShapes[a], kShapes[q], kShapes[b]},
+                                                 {kShapes[a], kShapes[b], kShapes[q]}};
+                    const int slot = static_cast<int>(shape_count % 3);
+                    GameRound r = Builtin(GameKind::MatchShape, kShapes[q], order[slot][0],
+                                          order[slot][1], order[slot][2],
+                                          static_cast<uint8_t>(slot));
+                    bool dup = false;
+                    for (size_t k = 0; k < shape_count; ++k)
+                        dup |= shape[k].question_art == r.question_art &&
+                               shape[k].option_art[0] == r.option_art[0] &&
+                               shape[k].option_art[1] == r.option_art[1] &&
+                               shape[k].option_art[2] == r.option_art[2];
+                    if (!dup) shape[shape_count++] = r;
+                }
+            }
+        }
+        for (size_t i = 4; i < 8; ++i) count[count_count++] = kBuiltin[i];
+        // N blocks asked against two other counts (1..5), all combinations.
+        for (int n = 1; n <= 5 && count_count < 24; ++n) {
+            for (int a = 1; a <= 5 && count_count < 24; ++a) {
+                for (int b = a + 1; b <= 5 && count_count < 24; ++b) {
+                    if (a == n || b == n) continue;
+                    const GameArt dots[6] = {GameArt::None, GameArt::Dots1, GameArt::Dots2,
+                                             GameArt::Dots3, GameArt::Dots4, GameArt::Dots5};
+                    const int slot = static_cast<int>(count_count % 3);
+                    const GameArt order[3][3] = {{dots[n], dots[a], dots[b]},
+                                                 {dots[a], dots[n], dots[b]},
+                                                 {dots[a], dots[b], dots[n]}};
+                    GameRound r = Builtin(
+                        GameKind::Count,
+                        static_cast<GameArt>(static_cast<int>(GameArt::Blocks1) + n - 1),
+                        order[slot][0], order[slot][1], order[slot][2],
+                        static_cast<uint8_t>(slot));
+                    bool dup = false;
+                    for (size_t k = 0; k < count_count; ++k)
+                        dup |= count[k].question_art == r.question_art &&
+                               count[k].option_art[0] == r.option_art[0] &&
+                               count[k].option_art[1] == r.option_art[1] &&
+                               count[k].option_art[2] == r.option_art[2];
+                    if (!dup) count[count_count++] = r;
+                }
+            }
+        }
+    }
+};
+
+const Banks& TheBanks() {
+    static const Banks banks;
+    return banks;
+}
+
 // ---- Built-in tones ----
 struct Note {
     uint16_t hz;
@@ -60,7 +131,7 @@ constexpr Note kReveal[] = {{659, 140}, {784, 140}, {659, 240}};
 constexpr Note kBye[] = {{784, 120}, {659, 120}, {523, 260}};
 constexpr Note kPrompt[] = {{659, 120}, {880, 220}};
 // Counting cards say their number as that many beeps.
-constexpr Note kBeeps[] = {{880, 110}, {880, 110}, {880, 110}, {880, 110}, {880, 110}};
+constexpr Note kBeeps[] = {{880, 110}, {880, 110}, {880, 110}, {880, 110}, {880, 110}, {880, 110}};
 constexpr Note kCircle[] = {{523, 300}};
 constexpr Note kSquare[] = {{392, 140}, {392, 140}};
 constexpr Note kTriangle[] = {{659, 100}, {784, 100}, {988, 140}};
@@ -74,7 +145,17 @@ constexpr Note kBird[] = {{1568, 70}, {1760, 70}, {1568, 70}};
 constexpr Note kFish[] = {{440, 90}, {523, 90}, {440, 160}};
 constexpr Note kListen[] = {{523, 120}, {659, 120}};
 
-bool MotifFor(uint16_t clip, Motif* out) {
+// V8 pictures have no hand-made melody: two notes derived from the picture id
+// (deterministic, distinct enough to tell cards apart by ear, no speech).
+bool GenericMotif(uint16_t art, Motif* out, Note* scratch) {
+    if (!PlayArtValid(art)) return false;
+    scratch[0] = {static_cast<uint16_t>(330 + (art * 37u) % 660), 110};
+    scratch[1] = {static_cast<uint16_t>(330 + (art * 91u + 211u) % 660), 160};
+    *out = {scratch, 2};
+    return true;
+}
+
+bool MotifFor(uint16_t clip, Motif* out, Note* scratch) {
     switch (clip) {
         case kGameClipRight: *out = M(kRight); return true;
         case kGameClipTryAgain: *out = M(kTryAgain); return true;
@@ -108,7 +189,11 @@ bool MotifFor(uint16_t clip, Motif* out) {
         case GameArt::Listen: *out = M(kListen); return true;
         default: break;
     }
-    return false;
+    if (art == static_cast<uint16_t>(PlayArt::Dots6)) {
+        *out = {kBeeps, 6};
+        return true;
+    }
+    return GenericMotif(art, out, scratch);
 }
 
 constexpr size_t kRate = 24000;
@@ -136,6 +221,15 @@ const char* GameKindName(GameKind kind) {
         case GameKind::AnimalSound: return "animal_sound";
         case GameKind::BigSmall: return "big_small";
         case GameKind::EnglishWord: return "english_word";
+        case GameKind::SpotDiff: return "spot_diff";
+        case GameKind::MamaBaby: return "mama_baby";
+        case GameKind::SizeOrder: return "size_order";
+        case GameKind::Pattern: return "pattern";
+        case GameKind::Classify: return "classify";
+        case GameKind::Shadow: return "shadow";
+        case GameKind::LeftRight: return "left_right";
+        case GameKind::Clock: return "clock";
+        case GameKind::Weather: return "weather";
     }
     return "unknown";
 }
@@ -152,16 +246,21 @@ const char* GameEndName(GameEnd end) {
 }
 
 bool GameRoundValid(const GameRound& r) {
-    if (!GameKindValid(static_cast<uint8_t>(r.kind)) || r.option_count < 2 ||
-        r.option_count > 3 || r.correct >= r.option_count || r.prompt_clip == 0 ||
-        (r.question_art != 0 && !GameArtIsQuestion(r.question_art)))
+    const uint8_t kind = static_cast<uint8_t>(r.kind);
+    const bool v8 = kind > 5;  // built-in learning rounds may use PlayArt too
+    if (!GameKindBuiltinValid(kind) || r.option_count < 2 || r.option_count > 3 ||
+        r.correct >= r.option_count || r.prompt_clip == 0 ||
+        (r.question_art != 0 && !GameArtIsQuestion(r.question_art) &&
+         !(v8 && PlayArtValid(r.question_art))))
         return false;
     for (uint8_t i = 0; i < 3; ++i) {
         if (i >= r.option_count) {
             if (r.option_art[i] != 0 || r.option_clip[i] != 0) return false;
             continue;
         }
-        if (!GameArtIsOption(r.option_art[i]) || r.option_clip[i] == 0) return false;
+        if ((!GameArtIsOption(r.option_art[i]) && !(v8 && PlayArtValid(r.option_art[i]))) ||
+            r.option_clip[i] == 0)
+            return false;
         for (uint8_t j = 0; j < i; ++j)
             if (r.option_art[j] == r.option_art[i]) return false;
     }
@@ -172,13 +271,28 @@ size_t BuiltinGameRoundCount() { return sizeof(kBuiltin) / sizeof(kBuiltin[0]); 
 
 const GameRound* BuiltinGameRounds() { return kBuiltin; }
 
+const GameRound* BuiltinGameBank(GameKind kind, size_t* count) {
+    const Banks& b = TheBanks();
+    if (kind == GameKind::MatchShape) {
+        if (count) *count = b.shape_count;
+        return b.shape;
+    }
+    if (kind == GameKind::Count) {
+        if (count) *count = b.count_count;
+        return b.count;
+    }
+    if (count) *count = 0;
+    return nullptr;
+}
+
 const GameRound& BuiltinGameRound(size_t index) {
     return kBuiltin[index < BuiltinGameRoundCount() ? index : 0];
 }
 
 size_t GameToneSamples(uint16_t clip) {
     Motif m{};
-    if (!MotifFor(clip, &m)) return 0;
+    Note scratch[2];
+    if (!MotifFor(clip, &m, scratch)) return 0;
     size_t total = 0;
     for (size_t i = 0; i < m.count; ++i) total += NoteSamples(m.notes[i]) + kGapSamples;
     return total;
@@ -186,8 +300,9 @@ size_t GameToneSamples(uint16_t clip) {
 
 size_t RenderGameTone(uint16_t clip, size_t offset, int16_t* out, size_t max) {
     Motif m{};
+    Note scratch[2];
     const size_t total = GameToneSamples(clip);
-    if (!MotifFor(clip, &m) || !out || offset >= total) return 0;
+    if (!MotifFor(clip, &m, scratch) || !out || offset >= total) return 0;
     const size_t n = std::min(max, total - offset);
     for (size_t k = 0; k < n; ++k) {
         size_t pos = offset + k;

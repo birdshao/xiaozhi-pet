@@ -31,6 +31,12 @@ struct TiltConfig {
     // landscape, and its sign. To be calibrated on hardware (V4-07 trial).
     bool use_y = false;
     int8_t sign = 1;
+    // V8 maze: also report TiltUp / TiltDown from the other axis (the larger
+    // of the two tilts wins; Level needs both inside level_mg). `sign_v`
+    // is +1 when a positive reading means "towards the child's bottom edge"
+    // (TiltDown). Calibrate with `sign` on hardware.
+    bool four_way = false;
+    int8_t sign_v = 1;
 };
 
 // TiltRight/TiltLeft for every 500 ms window held past tilt_mg (the ball
