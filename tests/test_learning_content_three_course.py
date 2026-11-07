@@ -98,7 +98,8 @@ class ThreeCourseSelection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp)
             altered = p / "counts.kpg"
-            altered.write_bytes(packages[1].read_bytes()[:-1] + b"\\x00")
+            original = packages[1].read_bytes()
+            altered.write_bytes(original[:-1] + bytes([original[-1] ^ 0xFF]))
             # Preserve the original manifest SHA to detect the binary change.
             altered.with_suffix(".manifest.json").write_bytes(
                 packages[1].with_suffix(".manifest.json").read_bytes())
