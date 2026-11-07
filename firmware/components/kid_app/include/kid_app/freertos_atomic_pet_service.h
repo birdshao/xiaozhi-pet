@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kid_app/nvs_atomic_pet_store.h"
+#include "kid_app/pet_command_apply.h"
 #include "kid_app/pet_ledger_migration.h"
 #include "kid_app/pet_local_event_id.h"
 
@@ -31,6 +32,21 @@ using AtomicPetOutboundCallback = void (*)(
 // the Pet worker, so it must only read an atomic.
 using AtomicPetDayProvider = uint32_t (*)(void* context);
 
+// Outcome of a server command (PostCommand), on the Pet worker after the
+// commit (or the decision not to commit). Copy and return: the network task
+// turns it into a receipt, the board into a waiting parent request.
+using AtomicPetCommandCallback = void (*)(const DeviceCommand& command,
+                                          CommandOutcome outcome, void* context);
+
+// One consistent copy of what the server snapshot hashes per generation
+// (§5.2): taken under one lock, so the generation always matches the rest.
+struct PetSyncView {
+    uint64_t generation = 0;
+    PetSnapshot pet{};
+    MemoryStore memory{};
+    ParentSettings parent{};
+};
+
 // Replacement for legacy FreertosPetService. Exactly one Pet service must
 // own the device. Must outlive its worker task.
 //   ExistingOnly / FreshNoLegacy: never touch old 'kid_pet'/'kid_bridge'.
@@ -57,6 +73,11 @@ public:
         day_provider_ = provider;
         day_context_ = context;
     }
+    // Set before Start; without it command outcomes are only logged.
+    void SetCommandCallback(AtomicPetCommandCallback callback, void* context) {
+        command_cb_ = callback;
+        command_context_ = context;
+    }
 
     bool PostExternal(const PetEvent& event);
     bool PostLocal(PetAction action);
@@ -70,6 +91,14 @@ public:
     // is abandoned (never committed later), so the result always matches
     // what the ledger ends up holding.
     CommitResult SaveParentSettings(const ParentSettings& settings, TickType_t wait);
+    // Server command (V5_V6 §5.3), copied by the network task: the Pet
+    // worker applies it with command.id as the ledger event id (a redelivery
+    // is a replay duplicate) and reports through the command callback.
+    // parent_confirmed: the parent confirmed it on the request page (D5).
+    bool PostCommand(const DeviceCommand& command, bool parent_confirmed);
+    // Highest SET_TEMPERAMENT seq already applied (the network task seeds it
+    // from NVS at boot; the Pet worker raises it after each applied one).
+    void SeedAppliedSeq(CommandKind kind, uint64_t seq);
 
     // Called by networking on its own task after receiving a parsed HTTP ACK.
     // Copies the message_id and queues the receipt; the Pet task itself
@@ -88,16 +117,20 @@ public:
         return static_cast<Temperament>(temperament_.load());
     }
     uint64_t GenerationNow() const;
+    // Generation, pet snapshot, memory and parent settings of ONE commit.
+    bool SyncViewNow(PetSyncView* out) const;
     // Last Start's migration (MigrateLegacyLocal only), also after a failure.
     PetLedgerMigration::Report Migration() const { return migration_; }
 
 private:
-    enum class Kind : uint8_t { External, Local, Ack, Memory, Parent };
+    enum class Kind : uint8_t { External, Local, Ack, Memory, Parent, Command };
     struct Message {
         Kind kind = Kind::External;
         PetEvent event{};
         MemoryEvent memory{};
         ParentSettings parent{};
+        DeviceCommand command{};
+        bool confirmed = false;
         uint32_t ticket = 0;
         uint64_t seq = 0;
         uint64_t version = 0;
@@ -141,10 +174,14 @@ private:
     void* context_ = nullptr;
     AtomicPetDayProvider day_provider_ = nullptr;
     void* day_context_ = nullptr;
+    std::atomic<uint64_t> temperament_seq_{0};
+    AtomicPetCommandCallback command_cb_ = nullptr;
+    void* command_context_ = nullptr;
     std::atomic<uint32_t> in_flight_{0};    // queued or being processed
     // View copies (view_mutex_, except the temperament atomic).
     ParentSettings parent_view_{};
     MemoryStore memory_view_{};
+    PetSnapshot pet_view_{};
     std::atomic<uint8_t> temperament_{static_cast<uint8_t>(Temperament::Gentle)};
     uint64_t generation_view_ = 0;
     PetLedgerMigration::Report migration_{};

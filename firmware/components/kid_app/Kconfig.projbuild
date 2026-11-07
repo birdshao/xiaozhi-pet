@@ -1,0 +1,14 @@
+menu "Kid pet server"
+
+    config KID_PET_SERVER_ORIGIN
+        string "PetLearning server origin"
+        default ""
+        help
+            https://host[:port], no path. The server needs a domain name and a
+            certificate from a public CA (the firmware checks the chain and
+            the host name; plain http is refused). Empty = not configured:
+            the parent entry shows "no server". NVS kid_srv/origin overrides
+            this value. A paired token is bound to the origin it was issued
+            for; changing the origin asks for pairing again.
+
+endmenu

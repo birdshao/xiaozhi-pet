@@ -827,6 +827,15 @@ void StatusLeft(MonoFrame& f, const StatusBar& s) {
             Stroke(f, 172, 8, 208, 34, 4);
         }
     }
+    if (s.parent_request) {  // D5: an envelope, a request waits for the parent
+        RoundRectRing(f, 216, 11, 28, 20, 3, 3);
+        Stroke(f, 218, 13, 230, 23, 3);
+        Stroke(f, 242, 13, 230, 23, 3);
+    } else if (s.link_repair) {  // the home server link needs pairing again
+        Ring(f, 230, 21, 13, 13, 3);
+        Stroke(f, 224, 15, 236, 27, 3);
+        Stroke(f, 236, 15, 224, 27, 3);
+    }
 }
 
 // Right box: temperature in degC, charging bolt, battery with four bars.
@@ -861,7 +870,7 @@ void StatusBand(MonoFrame& f, const StatusBar& status) {
 // The highlighted row has a thick frame; the row being edited turns black
 // with white content and up/down arrows (the dial changes the value).
 
-constexpr int kParentRowTop = 72, kParentRowH = 50, kParentValueX = 150;
+constexpr int kParentRowTop = 72, kParentRowH = 45, kParentValueX = 150;
 
 // HH:MM from minutes after midnight, digits 30 px tall around row centre cy.
 void ClockDigits(MonoFrame& f, int x, int cy, uint16_t minute, bool ink) {
@@ -919,15 +928,76 @@ void Moon(MonoFrame& f, int cx, int cy, int r, bool ink) {
     Disk(f, cx + r / 2, cy - r / 2, r * 6 / 7, !ink);
 }
 
+// Cloud (the home server); scale 1 fits a menu row (about 36 x 26 px).
+void Cloud(MonoFrame& f, int cx, int cy, int scale, bool ink) {
+    Disk(f, cx - 9 * scale, cy + 3 * scale, 8 * scale, ink);
+    Disk(f, cx + scale, cy - 3 * scale, 11 * scale, ink);
+    Disk(f, cx + 11 * scale, cy + 3 * scale, 8 * scale, ink);
+    FillRect(f, cx - 9 * scale, cy + 3 * scale, 20 * scale, 8 * scale + 1, ink);
+}
+
+void CheckMark(MonoFrame& f, int cx, int cy, int size, int w, bool ink) {
+    Stroke(f, cx - size, cy, cx - size / 3, cy + size * 2 / 3, w, ink);
+    Stroke(f, cx - size / 3, cy + size * 2 / 3, cx + size, cy - size * 2 / 3, w, ink);
+}
+
+void Cross(MonoFrame& f, int cx, int cy, int size, int w, bool ink) {
+    Stroke(f, cx - size, cy - size, cx + size, cy + size, w, ink);
+    Stroke(f, cx - size, cy + size, cx + size, cy - size, w, ink);
+}
+
+// Seven-segment digit of any size (the pairing code).
+void SizedDigit(MonoFrame& f, int x, int y, int value, int w, int h, int t, bool ink = true) {
+    const uint8_t s = kDigitSegments[Clamp(value, 0, 9)];
+    const int half = h / 2;
+    if (s & kSegA) FillRect(f, x, y, w, t, ink);
+    if (s & kSegB) FillRect(f, x + w - t, y, t, half + 1, ink);
+    if (s & kSegC) FillRect(f, x + w - t, y + half, t, h - half, ink);
+    if (s & kSegD) FillRect(f, x, y + h - t, w, t, ink);
+    if (s & kSegE) FillRect(f, x, y + half, t, h - half, ink);
+    if (s & kSegF) FillRect(f, x, y, t, half + 1, ink);
+    if (s & kSegG) FillRect(f, x, y + half - t / 2, w, t, ink);
+}
+
+// Six digits (leading zeros) left to right from x; digit w x h, gap apart.
+void CodeDigits(MonoFrame& f, int x, int y, uint32_t code, int w, int h, int t, int gap, bool ink) {
+    uint32_t divisor = 100000;
+    for (int i = 0; i < 6; ++i, divisor /= 10)
+        SizedDigit(f, x + i * (w + gap), y, static_cast<int>(code / divisor % 10), w, h, t, ink);
+}
+
+// Server link state around (cx, cy): check = connected, dots = working,
+// dashes = not connected yet, cross = failed, ringed cross = pair again.
+void LinkGlyph(MonoFrame& f, LinkState state, int cx, int cy, int scale, bool ink) {
+    switch (state) {
+        case LinkState::Paired: CheckMark(f, cx, cy, 16 * scale, 5 * scale, ink); break;
+        case LinkState::Connecting:
+        case LinkState::Saving:
+        case LinkState::ShowCode:
+            for (int i = -1; i <= 1; ++i) Disk(f, cx + i * 24 * scale, cy, 5 * scale, ink);
+            break;
+        case LinkState::Unpaired:
+            for (int i = -1; i <= 1; ++i)
+                FillRect(f, cx + i * 24 * scale - 8 * scale, cy - 2 * scale, 16 * scale, 5 * scale, ink);
+            break;
+        case LinkState::NoServer:
+        case LinkState::Failed: Cross(f, cx, cy, 14 * scale, 5 * scale, ink); break;
+        case LinkState::NeedsRepair:
+            Ring(f, cx, cy, 20 * scale, 20 * scale, 4 * scale, ink);
+            Cross(f, cx, cy, 10 * scale, 4 * scale, ink);
+            break;
+    }
+}
+
 void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
     switch (item) {
         case ParentItem::Wake:  // sun
             Disk(f, cx, cy, 11, ink);
-            for (int a = 0; a < 360; a += 45) Ray(f, cx, cy, a, 15, 21, ink);
+            for (int a = 0; a < 360; a += 45) Ray(f, cx, cy, a, 14, 19, ink);
             break;
         case ParentItem::Evening:  // sun going down behind the horizon
             Disk(f, cx, cy + 8, 13, ink);
-            FillRect(f, cx - 22, cy + 9, 44, 14, !ink);
+            FillRect(f, cx - 22, cy + 9, 44, 12, !ink);
             Stroke(f, cx - 24, cy + 12, cx + 24, cy + 12, 4, ink);
             for (int a : {210, 250, 290, 330}) Ray(f, cx, cy + 8, a, 17, 23, ink);
             break;
@@ -959,6 +1029,9 @@ void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
             Arc(f, cx, cy, 24, 18, 150, 210, 3, ink);
             Arc(f, cx, cy, 24, 18, -30, 30, 3, ink);
             break;
+        case ParentItem::Server:  // the home server
+            Cloud(f, cx, cy, 1, ink);
+            break;
     }
 }
 
@@ -985,6 +1058,13 @@ void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
         case ParentItem::Volume: VolumeBars(f, kParentValueX, cy, s.volume_cap_pct, ink); break;
         case ParentItem::QuietVolume: VolumeBars(f, kParentValueX, cy, s.quiet_volume_pct, ink); break;
         case ParentItem::Motion: Switch(f, kParentValueX, cy, s.motion_enabled, ink); break;
+        case ParentItem::Server:
+            if (view.link.state == LinkState::ShowCode)
+                CodeDigits(f, kParentValueX, cy - kDigitH / 2, view.link.code, kDigitW, kDigitH, kSegT,
+                           5, ink);
+            else
+                LinkGlyph(f, view.link.state, kParentValueX + 40, cy, 1, ink);
+            break;
     }
     if (editing) {  // the dial changes this value
         FillTriangle(f, 740, cy - 4, 760, cy - 4, 750, cy - 18, false);
@@ -992,16 +1072,101 @@ void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
     }
 }
 
-void ParentScene(MonoFrame& f, const ParentView& view) {
-    // Gear: settings.
-    Disk(f, 44, 32, 17);
-    for (int a = 0; a < 360; a += 45) Ray(f, 44, 32, a, 16, 22, true);
-    Disk(f, 44, 32, 7, false);
-    // House: a long dial press goes home.
+// Header right: house = a long dial press leaves (home, or back to the menu).
+void ParentHeader(MonoFrame& f) {
     FillTriangle(f, 726, 32, 752, 8, 778, 32);
     FillRect(f, 734, 32, 36, 24);
     FillRect(f, 747, 40, 10, 16, false);
     FillRect(f, 12, 62, 776, 3);
+}
+
+void Envelope(MonoFrame& f, int cx, int cy, int scale, bool ink = true) {
+    RoundRectRing(f, cx - 14 * scale, cy - 10 * scale, 28 * scale, 20 * scale, 3 * scale, 3 * scale, ink);
+    Stroke(f, cx - 12 * scale, cy - 8 * scale, cx, cy + 2 * scale, 3 * scale, ink);
+    Stroke(f, cx + 12 * scale, cy - 8 * scale, cx, cy + 2 * scale, 3 * scale, ink);
+}
+
+// Temperament the request asks for, as a face: curious = round eyes and a
+// question mark, gentle = smiling closed eyes, lively = big laugh, sparkles.
+void TemperamentFace(MonoFrame& f, int cx, int cy, uint8_t temperament) {
+    Ring(f, cx, cy, 70, 70, 7);
+    switch (temperament) {
+        case 0:  // Curious
+            Disk(f, cx - 26, cy - 14, 11);
+            Disk(f, cx + 26, cy - 14, 11);
+            Ring(f, cx, cy + 30, 10, 10, 4);
+            QuestionMark(f, cx + 110, cy - 10, 20, 7);
+            break;
+        case 1:  // Gentle
+            Arc(f, cx - 26, cy - 6, 13, 10, 200, 340, 5);
+            Arc(f, cx + 26, cy - 6, 13, 10, 200, 340, 5);
+            Arc(f, cx, cy + 14, 24, 16, 20, 160, 5);
+            break;
+        default:  // Lively
+            Disk(f, cx - 26, cy - 16, 9);
+            Disk(f, cx + 26, cy - 16, 9);
+            FillEllipse(f, cx, cy + 22, 28, 20);
+            FillRect(f, cx - 30, cy, 60, 22, false);
+            Sparkle(f, cx - 110, cy - 30, 22);
+            Sparkle(f, cx + 110, cy - 30, 22);
+            break;
+    }
+}
+
+// One answer card: the highlighted one is black with a white glyph.
+void ChoiceCard(MonoFrame& f, int x, bool selected, bool check) {
+    const int y = 330, w = 220, h = 130, cx = x + w / 2, cy = y + h / 2;
+    if (selected) FillRoundRect(f, x, y, w, h, 20);
+    else RoundRectRing(f, x, y, w, h, 20, 6);
+    if (check) CheckMark(f, cx, cy, 40, 14, !selected);
+    else Cross(f, cx, cy, 34, 14, !selected);
+}
+
+// D5 request page: what the parent panel asks (wipe memory: a crossed-out
+// heart; temperament: the new face), then check / cross. Dots: more to come.
+void RequestPage(MonoFrame& f, const RequestView& r) {
+    Envelope(f, 44, 32, 2);
+    ParentHeader(f);
+    for (int i = 0; i < std::min<int>(r.more, 7); ++i) Disk(f, 340 + i * 20, 32, 6);
+    if (r.kind == RequestKind::MemoryClear) {
+        Heart(f, 400, 160, 70);
+        Stroke(f, 300, 90, 500, 290, 26, false);
+        Stroke(f, 300, 90, 500, 290, 12);
+    } else {
+        TemperamentFace(f, 400, 190, r.temperament);
+    }
+    ChoiceCard(f, 150, r.confirm, true);
+    ChoiceCard(f, 430, !r.confirm, false);
+}
+
+// "Connect to the home server" page: a big cloud, then the six-digit code
+// to type into the parent panel, or the link state.
+void LinkPage(MonoFrame& f, const LinkView& link) {
+    Cloud(f, 44, 32, 1, true);
+    ParentHeader(f);
+    Cloud(f, 400, 150, 4, true);
+    if (link.state == LinkState::ShowCode) {
+        constexpr int w = 64, h = 110, t = 14, gap = 22;
+        CodeDigits(f, 400 - (6 * w + 5 * gap) / 2, 250, link.code, w, h, t, gap, true);
+    } else {
+        LinkGlyph(f, link.state, 400, 330, 3, true);
+    }
+}
+
+void ParentScene(MonoFrame& f, const ParentView& view) {
+    if (view.page == ParentPage::Request) {
+        RequestPage(f, view.request);
+        return;
+    }
+    if (view.page == ParentPage::Link) {
+        LinkPage(f, view.link);
+        return;
+    }
+    // Gear: settings.
+    Disk(f, 44, 32, 17);
+    for (int a = 0; a < 360; a += 45) Ray(f, 44, 32, a, 16, 22, true);
+    Disk(f, 44, 32, 7, false);
+    ParentHeader(f);
     for (uint8_t row = 0; row < kParentItemCount; ++row) ParentRow(f, view, row);
 }
 

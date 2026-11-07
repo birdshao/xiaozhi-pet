@@ -369,6 +369,10 @@ CommitResult PetAtomicLedger::RecordMemory(const MemoryEvent& event) {
     return CommitResult::Committed;
 }
 
+bool PetAtomicLedger::Seen(uint64_t id) const {
+    return initialized_ && id && WasSeen(controller_.ExportCheckpoint(),id);
+}
+
 CommitResult PetAtomicLedger::SetParentSettings(uint64_t id,
                                                 const ParentSettings& settings) {
     if (!initialized_) return CommitResult::StorageError;

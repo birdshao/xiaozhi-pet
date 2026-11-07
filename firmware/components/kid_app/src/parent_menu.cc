@@ -45,7 +45,8 @@ bool ParentMenu::Step(int direction) {
             break;
         case ParentItem::QuietVolume: volume = &draft_.quiet_volume_pct; break;
         case ParentItem::Nap:
-        case ParentItem::Motion: return false;  // switches flip on a press
+        case ParentItem::Motion:
+        case ParentItem::Server: return false;  // switches flip on a press; Server opens a page
     }
     if (volume) {
         const int next = *volume + direction * ParentSettings::kVolumeStepPct;
@@ -87,6 +88,7 @@ ParentMenuAction ParentMenu::OnInput(InputKind kind, uint32_t now_ms) {
                 settings_ = draft_;
                 return ParentMenuAction::Saved;
             }
+            if (Selected() == ParentItem::Server) return ParentMenuAction::OpenLink;
             draft_ = settings_;
             if (Selected() == ParentItem::Nap || Selected() == ParentItem::Motion) {
                 if (Selected() == ParentItem::Nap)
@@ -128,6 +130,7 @@ const char* ParentItemName(ParentItem item) {
         case ParentItem::Volume: return "volume";
         case ParentItem::QuietVolume: return "quiet_volume";
         case ParentItem::Motion: return "motion";
+        case ParentItem::Server: return "server";
     }
     return "unknown";
 }

@@ -181,8 +181,15 @@ void TestMenuNavigation() {
         assert(menu.OnInput(InputKind::DialDown, 1100) == Action::Redraw);
         assert(menu.View().cursor == i && !menu.View().editing);
     }
-    assert(menu.Selected() == ParentItem::Motion);
+    assert(menu.Selected() == ParentItem::Server);
     assert(menu.OnInput(InputKind::DialDown, 1200) == Action::None);
+    // The Server row opens the pairing page: no editing, settings unchanged.
+    assert(menu.OnInput(InputKind::DialPress, 1250) == Action::OpenLink);
+    assert(menu.IsOpen() && !menu.Editing() && menu.Settings() == ParentSettings{});
+    assert(menu.View().page == kid_app::ParentPage::Menu);
+    assert(menu.OnInput(InputKind::DialUp, 1260) == Action::Redraw);
+    assert(menu.Selected() == ParentItem::Motion);
+    assert(menu.OnInput(InputKind::DialDown, 1270) == Action::Redraw);
     // Other keys do nothing (but count as input).
     for (InputKind k : {InputKind::Talk, InputKind::BootLong, InputKind::SleepRequest,
                         InputKind::ParentCombo})

@@ -429,7 +429,7 @@ int main() {
     {
         using kid_app::ParentItem;
         using kid_app::ParentView;
-        const int top = 72, row_h = 50;
+        const int top = 72, row_h = 45;
         auto render = [](const ParentView& view, MonoFrame& out) {
             SceneModel model{SceneKind::Parent};
             model.parent = view;
@@ -474,6 +474,7 @@ int main() {
                 case ParentItem::Volume: s.volume_cap_pct = 50; break;
                 case ParentItem::QuietVolume: s.quiet_volume_pct = 0; break;
                 case ParentItem::Motion: s.motion_enabled = false; break;
+                case ParentItem::Server: changed.link.state = kid_app::LinkState::Paired; break;
             }
             render(changed, f);
             assert(only_rows(base, f, top + row * row_h, top + (row + 1) * row_h));
@@ -508,6 +509,76 @@ int main() {
             v.settings.volume_cap_pct = static_cast<uint8_t>(10 + i * 10);
             render(v, bars[i]);
             for (int j = 0; j < i; ++j) assert(bars[i].Data() != bars[j].Data());
+        }
+        // Server row: every link state and every pairing code look different
+        // and stay in the last row.
+        {
+            using kid_app::LinkState;
+            std::vector<MonoFrame> links(8);
+            for (uint8_t i = 0; i < 8; ++i) {
+                ParentView v = view;
+                v.link.state = static_cast<LinkState>(i);
+                v.link.code = v.link.state == LinkState::ShowCode ? 123456 : 0;
+                render(v, links[i]);
+                if (i) assert(only_rows(links[0], links[i], top + 8 * row_h, top + 9 * row_h));
+                for (uint8_t j = 0; j < i; ++j) {
+                    // Connecting and Saving are both "working" dots.
+                    if (!(i == static_cast<uint8_t>(LinkState::Saving) &&
+                          j == static_cast<uint8_t>(LinkState::Connecting)) &&
+                        !(i == static_cast<uint8_t>(LinkState::Failed) &&
+                          j == static_cast<uint8_t>(LinkState::NoServer)))
+                        assert(links[i].Data() != links[j].Data());
+                }
+            }
+            ParentView a = view, b = view;
+            a.link = {LinkState::ShowCode, 12345};
+            b.link = {LinkState::ShowCode, 12346};
+            MonoFrame fa, fb;
+            render(a, fa);
+            render(b, fb);
+            assert(fa.Data() != fb.Data());
+        }
+        // Link page: a big code; the request page: a crossed heart or a face,
+        // and the highlighted answer card is black.
+        {
+            using kid_app::LinkState;
+            using kid_app::ParentPage;
+            using kid_app::RequestKind;
+            ParentView link = view;
+            link.page = ParentPage::Link;
+            link.link = {LinkState::ShowCode, 7};
+            MonoFrame code, paired;
+            render(link, code);
+            assert(code.Data() != base.Data());
+            link.link = {LinkState::Paired, 0};
+            render(link, paired);
+            assert(paired.Data() != code.Data());
+
+            ParentView ask = view;
+            ask.page = ParentPage::Request;
+            MonoFrame wipe, reject, confirm;
+            render(ask, reject);
+            ask.request.confirm = true;
+            render(ask, confirm);
+            assert(reject.Data() != confirm.Data());
+            // Reject highlighted: the right card (cross) is black, the left is not.
+            assert(reject.IsBlack(460, 360) && !reject.IsBlack(180, 360));
+            assert(confirm.IsBlack(180, 360) && !confirm.IsBlack(460, 360));
+            std::vector<MonoFrame> faces(3);
+            for (uint8_t t = 0; t < 3; ++t) {
+                ParentView face = view;
+                face.page = ParentPage::Request;
+                face.request.kind = RequestKind::Temperament;
+                face.request.temperament = t;
+                render(face, faces[t]);
+                assert(faces[t].Data() != reject.Data());
+                for (uint8_t j = 0; j < t; ++j) assert(faces[t].Data() != faces[j].Data());
+            }
+            ParentView more = view;
+            more.page = ParentPage::Request;
+            more.request.more = 2;
+            render(more, wipe);
+            assert(wipe.Data() != reject.Data());
         }
         // The packed scene word never carries the menu (the board keeps it apart).
         SceneModel packed{SceneKind::Parent};

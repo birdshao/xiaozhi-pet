@@ -83,6 +83,10 @@ public:
     // id is Duplicate and never double-counts. Guard rules: MemoryStore::Apply.
     CommitResult RecordMemory(const MemoryEvent& event);
     const MemoryStore& Memory() const { return memory_; }
+    // True when `id` is in the shared replay window (a pet, memory or
+    // parent event already committed with that id). Server commands use it
+    // to answer a redelivered, already applied command without asking again.
+    bool Seen(uint64_t id) const;
     // V3-06 parent menu: replaces the parent settings in one commit. Shares
     // the Pet replay-id window like RecordMemory (a replayed id is
     // Duplicate); invalid settings are Rejected. Never a pet interaction.
