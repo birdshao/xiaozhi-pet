@@ -5,6 +5,7 @@ is the hook S2 uses to push a ``SYNC_CONTENT`` command instead.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -25,7 +26,8 @@ from .routers.parent import check_origin, client_ip
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SPACE_RESERVE_KIB = 1024  # keep 1 MiB free on the card for the device's own files
 CHUNK = 64 * 1024
-LEASE_STALE_SECONDS = 30
+LEASE_STALE_SECONDS = 15  # short: a client that vanishes before streaming frees its slot
+AUDIT_WINDOW_SECONDS = 300
 NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -101,6 +103,7 @@ class Distribution:
         self.clock = clock
         self._leases: dict[str, tuple[object, float]] = {}
         self._lease_lock = threading.Lock()
+        self._audit_seen: dict[tuple, float] = {}
 
     # -- assignment ---------------------------------------------------------
     def assign(self, device_id: str, items: list[tuple[int, str]], *, ip=None) -> None:
@@ -228,7 +231,8 @@ class Distribution:
                     db.execute("DELETE FROM device_content WHERE device_id=? AND package_id!=? AND package_id IN "
                                "(SELECT package_id FROM content_packages WHERE path=?)",
                                (device_id, row["package_id"], row["path"]))
-            audit(db, now, "device", f"content.report.{body.state}", device_id, body.reason or "ok", ip)
+            if body.state != "downloading" or row["state"] != "downloading":
+                audit(db, now, "device", f"content.report.{body.state}", device_id, body.reason or "ok", ip)
 
     def reconcile(self, device_id: str, items: list[dict], sd_free_kib: int | None) -> list[dict]:
         """Compare the card inventory with the catalog and the assignments.
@@ -274,7 +278,21 @@ class Distribution:
                        (device_id, sd_free_kib, json.dumps(checked, sort_keys=True), now))
         return checked
 
+    def audit_once(self, key: tuple) -> bool:
+        """True at most once per window for a key, so retry loops can't flood audit_log."""
+        now = time.monotonic()
+        with self._lease_lock:
+            if len(self._audit_seen) > 1000:
+                self._audit_seen = {k: t for k, t in self._audit_seen.items()
+                                    if now - t < AUDIT_WINDOW_SECONDS}
+            if now - self._audit_seen.get(key, -AUDIT_WINDOW_SECONDS) < AUDIT_WINDOW_SECONDS:
+                return False
+            self._audit_seen[key] = now
+            return True
+
     # -- download lease: one concurrent download per device (plan §9) -------
+    # In-process state: correct for the single uvicorn worker S7 deploys; with several
+    # workers the limit would be per worker.
     def acquire(self, device_id: str) -> object | None:
         with self._lease_lock:
             held = self._leases.get(device_id)
@@ -340,16 +358,22 @@ def create_router(app, database) -> APIRouter:
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "PACK_TOO_LARGE", headers=NO_STORE)
-        blob = bytearray()
-        async for chunk in request.stream():
-            blob += chunk
-            if len(blob) > MAX_UPLOAD_BYTES:
-                raise HTTPException(413, "PACK_TOO_LARGE", headers=NO_STORE)
+        spool, digest, size = catalog.new_spool(), hashlib.sha256(), 0
         try:
+            with open(spool, "wb") as out:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "PACK_TOO_LARGE", headers=NO_STORE)
+                    digest.update(chunk)
+                    await run_in_threadpool(out.write, chunk)
             package, created = await run_in_threadpool(
-                catalog.import_blob, bytes(blob), pack_id=pack_id, ip=client_ip(request))
+                catalog.import_file, spool, digest.hexdigest(), size,
+                pack_id=pack_id, ip=client_ip(request))
         except ContentError as error:
             raise _fail(error) from None
+        finally:
+            spool.unlink(missing_ok=True)  # no-op once import_file moved it into place
         return JSONResponse({"package": package, "created": created},
                             status_code=201 if created else 200, headers=NO_STORE)
 
@@ -435,9 +459,10 @@ def create_router(app, database) -> APIRouter:
         # Unapproved, unassigned (or another device's) and unknown all look the same.
         package = dist.downloadable(x_device_id, sha256) if SHA_RE.fullmatch(sha256) else None
         if package is None:
-            with connect(database) as db:
-                audit(db, int(time.time()), "device", "content.download", x_device_id, "denied",
-                      client_ip(request))
+            if dist.audit_once(("denied", x_device_id, sha256[:16])):
+                with connect(database) as db:
+                    audit(db, int(time.time()), "device", "content.download", x_device_id, "denied",
+                          client_ip(request))
             raise HTTPException(404, "PACKAGE_NOT_FOUND", headers=NO_STORE)
         size = package["bytes"]
         etag = f'"{sha256}"'

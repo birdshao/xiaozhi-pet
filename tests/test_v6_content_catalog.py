@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import struct
 import tempfile
 import unittest
@@ -27,7 +28,14 @@ KPB1 = (ROOT / "tests/fixtures/kpb2/golden_kpb1.kpb").read_bytes()
 GAME = (ROOT / "tests/fixtures/kpg1/golden_game.kpg").read_bytes()
 SOUND = sound_pack.encode({1: b"\x10\x00" * 300, 111: b"\x20\x00" * 900}, revision=3)
 PASSWORD = "correct-test-password-1234"
-CHECKLIST = {"text_reviewed": True, "audio_listened": True}
+KIND_OF = {b"KPB2": "book", b"KPG1": "game", b"KPS1": "soundpack"}
+
+
+def full_checklist(blob: bytes) -> dict:
+    return {key: True for key in content.REQUIRED_CHECKLIST[KIND_OF[blob[:4]]]}
+
+
+CHECKLIST = full_checklist(BOOK)
 TOKEN_A, TOKEN_B = "a" * 40, "b" * 40
 
 
@@ -72,7 +80,7 @@ class Base(unittest.TestCase):
 
     def approve(self, package_id, blob, checklist=None):
         return self.client.post(f"/v1/parent/content/{package_id}/approve", headers={"X-CSRF-Token": self.csrf},
-                                json={"sha256": sha(blob), "checklist": checklist or CHECKLIST})
+                                json={"sha256": sha(blob), "checklist": checklist or full_checklist(blob)})
 
     def publish(self, blob, query=""):
         package_id = self.upload(blob, query).json()["package"]["package_id"]
@@ -163,7 +171,11 @@ class ApprovalTests(Base):
         wrong = self.client.post(f"/v1/parent/content/{package_id}/approve", headers={"X-CSRF-Token": self.csrf},
                                  json={"sha256": "0" * 64, "checklist": CHECKLIST})
         self.assertEqual((wrong.status_code, wrong.json()["detail"]), (409, "SHA256_MISMATCH"))
-        for checklist in ({"a": True, "b": False},):
+        partial = dict(CHECKLIST)
+        partial.pop("questions_checked")
+        unticked = {**CHECKLIST, "pages_text_safe": False}
+        for checklist in (partial, unticked, {**CHECKLIST, "extra_item": True},
+                          {key: True for key in content.REQUIRED_CHECKLIST["game"]}):
             self.assertEqual(self.approve(package_id, BOOK, checklist).json()["detail"], "CHECKLIST_INCOMPLETE")
         self.assertEqual(self.client.post(f"/v1/parent/content/{package_id}/approve",
                                           headers={"X-CSRF-Token": self.csrf},
@@ -196,19 +208,21 @@ class ApprovalTests(Base):
         self.assertEqual(self.assign("pet-a", (package_id, "install")).json()["detail"], "PACKAGE_NOT_APPROVED")
         self.assertEqual(self.manifest().json()["install"], [])
         self.assertEqual(self.fetch(BOOK).status_code, 404)
-        self.assertIsNone(self.catalog.page_text(101, 1, 1))
+        self.assertIsNone(self.catalog.page_text(101, 1, 1, struct.unpack_from("<I", BOOK, 92)[0]))
 
     def test_content_pages_lookup_by_content_id_and_revision(self):
         self.publish(BOOK)
         parsed = kpb2.parse(BOOK)
         crc = self.catalog.list()[0]["header_crc"]
         for page in parsed["pages"]:
-            self.assertEqual(self.catalog.page_text(101, 1, page["number"]), page["text"])
-        self.assertEqual(self.catalog.page_text(101, 1, 1, header_crc=crc), parsed["pages"][0]["text"])
-        self.assertIsNone(self.catalog.page_text(101, 1, 1, header_crc=crc ^ 1), "device copy differs")
-        self.assertIsNone(self.catalog.page_text(101, 2, 1))
-        self.assertIsNone(self.catalog.page_text(102, 1, 1))
-        self.assertIsNone(self.catalog.page_text(101, 1, 99))
+            self.assertEqual(self.catalog.page_text(101, 1, page["number"], crc), page["text"])
+        self.assertEqual(self.catalog.page_text(101, 1, 1, crc), parsed["pages"][0]["text"])
+        self.assertIsNone(self.catalog.page_text(101, 1, 1, crc ^ 1), "device copy differs")
+        self.assertIsNone(self.catalog.page_text(101, 2, 1, crc))
+        self.assertIsNone(self.catalog.page_text(102, 1, 1, crc))
+        self.assertIsNone(self.catalog.page_text(101, 1, 99, crc))
+        with self.assertRaises(TypeError):
+            self.catalog.page_text(101, 1, 1)
         self.assertEqual(self.catalog.approved_by_fingerprint("book", 1, crc, 101)["sha256"], sha(BOOK))
         self.assertIsNone(self.catalog.approved_by_fingerprint("book", 1, crc, 7))
 
@@ -230,8 +244,10 @@ class ApprovalTests(Base):
         self.assertEqual(self.catalog.get(old)["status"], "retired")
         entries = self.manifest().json()["install"]
         self.assertEqual([(e["sha256"], e["revision"]) for e in entries], [(sha(book_revision(2)), 2)])
-        self.assertIsNone(self.catalog.page_text(101, 1, 1), "retired revision gives no text")
-        self.assertEqual(self.catalog.page_text(101, 2, 1), kpb2.parse(BOOK)["pages"][0]["text"])
+        crc1 = struct.unpack_from("<I", BOOK, 92)[0]
+        crc2 = struct.unpack_from("<I", book_revision(2), 92)[0]
+        self.assertIsNone(self.catalog.page_text(101, 1, 1, crc1), "retired revision gives no text")
+        self.assertEqual(self.catalog.page_text(101, 2, 1, crc2), kpb2.parse(BOOK)["pages"][0]["text"])
         self.assertEqual(self.fetch(BOOK).status_code, 404, "old package no longer downloadable")
         # An older revision can't be approved over the newer one.
         older = self.upload(book_revision(1)).json()["package"]["package_id"]
@@ -250,6 +266,65 @@ class ApprovalTests(Base):
         self.assertEqual([e["sha256"] for e in manifest["remove"]], [sha(BOOK)])
         self.assertEqual(self.client.post(f"/v1/parent/content/{book}/retire",
                                           headers={"X-CSRF-Token": self.csrf}).json()["detail"], "ALREADY_RETIRED")
+
+
+class SpoolAndApprovalTests(Base):
+    def test_upload_is_spooled_never_left_behind_and_stale_files_cleaned(self):
+        self.assertEqual(self.upload(BOOK).status_code, 201)
+        self.assertEqual([p.name for p in self.catalog.packages_dir.iterdir()], [sha(BOOK)])
+        self.upload(b"junk" * 100)
+        with patch.object(distribution, "MAX_UPLOAD_BYTES", 1000):
+            self.upload(b"x" * 5000)
+        self.assertEqual([p.name for p in self.catalog.packages_dir.iterdir()], [sha(BOOK)])
+        stale, fresh = self.catalog.packages_dir / ".upload-old", self.catalog.packages_dir / ".upload-new"
+        stale.write_bytes(b"x")
+        fresh.write_bytes(b"x")
+        os.utime(stale, (1, 1))
+        os.utime(fresh)
+        content.ContentCatalog(self.path)
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_upload_hands_a_spooled_file_to_the_importer(self):
+        seen = []
+        real = content.ContentCatalog.import_file
+
+        def spy(catalog, spool, sha_, size, **kw):
+            seen.append((spool.stat().st_size, size, sha_))
+            return real(catalog, spool, sha_, size, **kw)
+        with patch.object(content.ContentCatalog, "import_file", spy):
+            self.assertEqual(self.upload(BOOK).status_code, 201)
+        self.assertEqual(seen, [(len(BOOK), len(BOOK), sha(BOOK))])
+
+    def test_approval_hashes_outside_the_write_lock(self):
+        package_id = self.upload(BOOK).json()["package"]["package_id"]
+        seen = []
+        real = content.ContentCatalog._verify_file
+
+        def spy(catalog, *a):
+            with connect(self.path) as db:  # a writer can get in while we hash
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("INSERT INTO audit_log(at,actor,action,target,result) VALUES(1,'t','probe','-','ok')")
+                seen.append(True)
+            return real(catalog, *a)
+        with patch.object(content.ContentCatalog, "_verify_file", spy):
+            self.assertEqual(self.approve(package_id, BOOK).status_code, 200)
+        self.assertEqual(seen, [True])
+
+    def test_status_is_rechecked_inside_the_transaction(self):
+        package_id = self.upload(GAME).json()["package"]["package_id"]
+        real = content.ContentCatalog._verify_file
+        done = []
+
+        def approve_meanwhile(catalog, *a):
+            result = real(catalog, *a)
+            if not done:
+                done.append(True)
+                catalog.approve(package_id, sha(GAME), full_checklist(GAME), "other")
+            return result
+        with patch.object(content.ContentCatalog, "_verify_file", approve_meanwhile):
+            self.assertEqual(self.approve(package_id, GAME).json()["detail"], "ALREADY_APPROVED")
+        self.assertEqual(self.catalog.get(package_id)["reviewed_by"], "other")
 
 
 class ManifestTests(Base):
@@ -387,6 +462,13 @@ class RangeTests(Base):
         self.assertEqual(self.fetch(BOOK).status_code, 200)
         self.assertEqual(self.fetch(BOOK).status_code, 200, "lease released after streaming")
 
+    def test_lease_expires_when_a_client_vanished_before_streaming(self):
+        self.app.state.content_distribution.acquire("pet-a")
+        self.assertEqual(self.fetch(BOOK).status_code, 429)
+        real = distribution.time.monotonic
+        with patch.object(distribution.time, "monotonic", lambda: real() + distribution.LEASE_STALE_SECONDS + 1):
+            self.assertEqual(self.fetch(BOOK).status_code, 200)
+
     def test_missing_or_resized_file_is_503(self):
         self.catalog.package_path(sha(BOOK)).write_bytes(b"short")
         self.assertEqual(self.fetch(BOOK).status_code, 503)
@@ -506,11 +588,19 @@ class ReportTests(Base):
             self.assertNotIn(secret, text)
         self.assertEqual({r["actor"] for r in rows if r["action"].startswith("content.report")}, {"device"})
 
-    def test_denied_download_is_audited(self):
-        self.fetch(GAME)
+    def test_denied_download_is_audited_once_per_window(self):
+        for _ in range(5):
+            self.fetch(GAME)
         with connect(self.path) as db:
-            result = db.execute("SELECT result FROM audit_log WHERE action='content.download'").fetchone()[0]
-        self.assertEqual(result, "denied")
+            rows = db.execute("SELECT result FROM audit_log WHERE action='content.download'").fetchall()
+        self.assertEqual([r[0] for r in rows], ["denied"])
+
+    def test_repeated_downloading_reports_are_audited_once(self):
+        for attempts in range(4):
+            self.assertEqual(self.report("downloading", attempts=attempts).status_code, 200)
+        with connect(self.path) as db:
+            count = db.execute("SELECT COUNT(*) FROM audit_log WHERE action='content.report.downloading'").fetchone()[0]
+        self.assertEqual(count, 1)
 
 
 class FakeDeviceTests(Base):

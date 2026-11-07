@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
 from pathlib import Path
 import secrets
@@ -27,6 +28,17 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 PACK_ID_RE = sound_pack.PACK_ID_RE
 HEADER_CRC_OFFSET = {"KPB2": 92, "KPG1": 28, "KPS1": 28}
 FINGERPRINT_KINDS = ("book", "soundpack", "game")
+STALE_UPLOAD_SECONDS = 3600
+HASH_CHUNK = 1024 * 1024
+# Items the reviewing adult must tick (docs/V4_CONTENT_REVIEW_CHECKLIST.md): exactly
+# these keys, all true. An unknown or missing key is an incomplete review.
+_COMMON = {"source_licensed", "audio_listened", "no_identity_info", "compiled_validated"}
+REQUIRED_CHECKLIST = {
+    "book": _COMMON | {"pages_text_safe", "pages_audio_matches_text", "previews_checked",
+                       "questions_checked"},
+    "game": _COMMON | {"prompts_text_safe", "answers_correct"},
+    "soundpack": _COMMON | {"phrases_text_safe"},
+}
 
 
 class ContentError(Exception):
@@ -45,6 +57,8 @@ def audit(db, now, actor, action, target, result, ip=None):
 def inspect(blob: bytes, pack_id: str | None = None) -> dict:
     """Validate with the existing tool parsers and return catalog metadata."""
     magic = bytes(blob[:4])
+    if len(blob) == 0:
+        raise ContentError(415, "UNSUPPORTED_PACK_FORMAT")
     try:
         if magic == b"KPB2":
             parsed = kpb2.parse(blob)
@@ -91,6 +105,7 @@ class ContentCatalog:
                                  or Path(str(database)).parent / "packages")
         migrate(database)
         self.packages_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_spool()
         self._sync_hooks: list[Callable[[str], None]] = []
 
     # -- SYNC_CONTENT hook -------------------------------------------------
@@ -114,23 +129,53 @@ class ContentCatalog:
         return self.packages_dir / sha256
 
     # -- import ------------------------------------------------------------
-    def import_blob(self, blob: bytes, *, pack_id: str | None = None,
+    def cleanup_spool(self) -> None:
+        """Drop upload temp files an earlier crash left behind (older than an hour)."""
+        cutoff = self.clock() - STALE_UPLOAD_SECONDS
+        for stale in self.packages_dir.glob(".upload-*"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+            except OSError:
+                pass
+
+    def new_spool(self) -> Path:
+        return self.packages_dir / f".upload-{secrets.token_hex(8)}"
+
+    def import_blob(self, blob: bytes, **kw) -> tuple[dict, bool]:
+        """Convenience for small in-memory packs (CLI, tests)."""
+        spool = self.new_spool()
+        spool.write_bytes(blob)
+        return self.import_file(spool, hashlib.sha256(blob).hexdigest(), len(blob), **kw)
+
+    def import_file(self, spool: Path, sha: str, size: int, *, pack_id: str | None = None,
                     actor: str = "parent", ip: str | None = None) -> tuple[dict, bool]:
-        """Validate, store content-addressed and register as ``draft``."""
-        if len(blob) > MAX_UPLOAD_BYTES:
-            raise ContentError(413, "PACK_TOO_LARGE")
+        """Validate a spooled file, store it content-addressed and register a ``draft``.
+
+        Takes ownership of ``spool`` (moved into place or deleted). ``sha``/``size``
+        were computed while spooling, so nothing is held in memory here.
+        """
         try:
-            meta = inspect(blob, pack_id)
+            if size > MAX_UPLOAD_BYTES:
+                raise ContentError(413, "PACK_TOO_LARGE")
+            with open(spool, "rb") as handle:
+                view = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) if size else b""
+                try:
+                    meta = inspect(view, pack_id)
+                finally:
+                    if size:
+                        view.close()
+            meta.pop("parsed", None)
         except ContentError as error:
+            spool.unlink(missing_ok=True)
             with connect(self.database) as db:
                 audit(db, int(self.clock()), actor, "content.import", "-", error.code, ip)
             raise
-        sha = hashlib.sha256(blob).hexdigest()
         target = self.package_path(sha)
-        if not target.exists():
-            tmp = self.packages_dir / f".upload-{secrets.token_hex(8)}"
-            tmp.write_bytes(blob)
-            os.replace(tmp, target)
+        if target.exists():
+            spool.unlink(missing_ok=True)
+        else:
+            os.replace(spool, target)
         now = int(self.clock())
         with connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -141,7 +186,7 @@ class ContentCatalog:
                     "INSERT INTO content_packages(kind,content_id,revision,sha256,header_crc,bytes,"
                     "path,title,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     (meta["kind"], meta["content_id"], meta["revision"], sha, meta["header_crc"],
-                     len(blob), meta["path"], meta["title"], now))
+                     size, meta["path"], meta["title"], now))
                 row = db.execute("SELECT * FROM content_packages WHERE sha256=?", (sha,)).fetchone()
             audit(db, now, actor, "content.import", sha[:16], "created" if created else "duplicate", ip)
             return package_view(row), created
@@ -157,22 +202,17 @@ class ContentCatalog:
             rows = db.execute("SELECT * FROM content_packages ORDER BY package_id").fetchall()
         return [package_view(r) for r in rows]
 
-    def page_text(self, content_id: int, revision: int, page: int,
-                  header_crc: int | None = None) -> str | None:
+    def page_text(self, content_id: int, revision: int, page: int, header_crc: int) -> str | None:
         """Reviewed page text for page Q&A (plan §6.3); ``None`` if not approved.
 
-        ``header_crc`` is the fingerprint the device reported; a mismatch means
-        its copy is not the reviewed file, so no text is returned.
+        ``header_crc`` is the fingerprint the device reported (required); a mismatch
+        means its copy is not the reviewed file, so no text is returned.
         """
-        sql = ("SELECT p.text FROM content_pages p JOIN content_packages k USING(package_id) "
-               "WHERE k.kind='book' AND k.status='approved' AND k.content_id=? AND k.revision=? "
-               "AND p.page=?")
-        args: list = [content_id, revision, page]
-        if header_crc is not None:
-            sql += " AND k.header_crc=?"
-            args.append(header_crc)
         with connect(self.database) as db:
-            row = db.execute(sql, args).fetchone()
+            row = db.execute(
+                "SELECT p.text FROM content_pages p JOIN content_packages k USING(package_id) "
+                "WHERE k.kind='book' AND k.status='approved' AND k.content_id=? AND k.revision=? "
+                "AND k.header_crc=? AND p.page=?", (content_id, revision, header_crc, page)).fetchone()
         return row["text"] if row else None
 
     def approved_by_fingerprint(self, kind: str, revision: int, header_crc: int,
@@ -205,29 +245,28 @@ class ContentCatalog:
     def approve(self, package_id: int, sha256: str, checklist: dict[str, bool],
                 reviewer: str, *, ip: str | None = None) -> dict:
         """Approve exactly ``sha256``; supersede older approved packs at the same path."""
-        if not checklist or not all(v is True for v in checklist.values()):
-            raise ContentError(400, "CHECKLIST_INCOMPLETE")
         now = int(self.clock())
         notify: list[str] = []
         with connect(self.database) as db:
-            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM content_packages WHERE package_id=?", (package_id,)).fetchone()
-            if row is None:
-                raise ContentError(404, "PACKAGE_NOT_FOUND")
-            if row["sha256"] != sha256:
+        if row is None:
+            raise ContentError(404, "PACKAGE_NOT_FOUND")
+        if row["sha256"] != sha256:
+            with connect(self.database) as db:
                 audit(db, now, "parent", "content.approve", row["sha256"][:16], "sha_mismatch", ip)
-                db.commit()
-                raise ContentError(409, "SHA256_MISMATCH")
-            if row["status"] == "approved":
-                raise ContentError(409, "ALREADY_APPROVED")
-            # Re-read and re-hash the stored bytes: approval covers the file, not a label.
-            try:
-                blob = self.package_path(sha256).read_bytes()
-            except OSError:
-                raise ContentError(500, "PACKAGE_FILE_MISSING") from None
-            if hashlib.sha256(blob).hexdigest() != sha256:
-                raise ContentError(500, "PACKAGE_FILE_CORRUPT")
-            meta = inspect(blob, Path(row["path"]).stem if row["kind"] != "book" else None)
+            raise ContentError(409, "SHA256_MISMATCH")
+        if row["status"] == "approved":
+            raise ContentError(409, "ALREADY_APPROVED")
+        if set(checklist) != REQUIRED_CHECKLIST[row["kind"]] or not all(v is True for v in checklist.values()):
+            raise ContentError(400, "CHECKLIST_INCOMPLETE")
+        # Re-hash and re-parse the stored bytes (up to 64 MiB) before taking the write
+        # lock: approval covers the file, not a label.
+        parsed = self._verify_file(sha256, row)
+        with connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM content_packages WHERE package_id=?", (package_id,)).fetchone()
+            if current["sha256"] != sha256 or current["status"] == "approved":
+                raise ContentError(409, "ALREADY_APPROVED" if current["status"] == "approved" else "SHA256_MISMATCH")
             older = db.execute(
                 "SELECT * FROM content_packages WHERE kind=? AND path=? AND status='approved' "
                 "AND package_id!=?", (row["kind"], row["path"], package_id)).fetchall()
@@ -249,12 +288,28 @@ class ContentCatalog:
                                "updated_at) VALUES(?,?,'install','pending',?)",
                                (dev["device_id"], package_id, now))
                     notify.append(dev["device_id"])
-            self._derive(db, package_id, row["kind"], meta["parsed"])
+            self._derive(db, package_id, row["kind"], parsed)
             audit(db, now, "parent", "content.approve", sha256[:16], "success", ip)
             result = package_view(db.execute("SELECT * FROM content_packages WHERE package_id=?",
                                              (package_id,)).fetchone())
         self.notify(notify)
         return result
+
+    def _verify_file(self, sha256: str, row) -> dict:
+        digest = hashlib.sha256()
+        try:
+            with open(self.package_path(sha256), "rb") as handle:
+                while block := handle.read(HASH_CHUNK):
+                    digest.update(block)
+                if digest.hexdigest() != sha256:
+                    raise ContentError(500, "PACKAGE_FILE_CORRUPT")
+                view = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        except OSError:
+            raise ContentError(500, "PACKAGE_FILE_MISSING") from None
+        try:
+            return inspect(view, Path(row["path"]).stem if row["kind"] != "book" else None)["parsed"]
+        finally:
+            view.close()
 
     @staticmethod
     def _derive(db, package_id: int, kind: str, parsed: dict) -> None:
