@@ -22,6 +22,8 @@ on:
       - 'tests/test_sound_pack.py'
       - 'tools/sound_pack.py'
       - 'tools/selftest_report.py'
+      - 'tools/decode_panic.py'
+      - 'tests/test_decode_panic.py'
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
       - 'tests/test_p4_story_audio_contract.py'
@@ -59,6 +61,9 @@ jobs:
       - name: Check host self-test scenario tooling (no hardware)
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_selftest_report.py' -v
+      - name: Check the panic log decoder (no hardware)
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_decode_panic.py' -v
       - name: Check embedded option prompt clips (format, rail order)
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_prompt_audio.py' -v
@@ -133,4 +138,15 @@ jobs:
             release/xiaozhi-pet-esp32s3-app.bin
             release/manifest.json
           if-no-files-found: error
+          retention-days: 14
+      # Debug-only: decode a board panic with tools/decode_panic.py. Never
+      # flashed (the board only ever gets the app-only image above).
+      - name: Upload debug ELF and map (decode panics; not a flashing artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-ota1-elf-debug
+          path: |
+            .upstream/xiaozhi-esp32/build/xiaozhi.elf
+            .upstream/xiaozhi-esp32/build/xiaozhi.map
+          if-no-files-found: warn
           retention-days: 14

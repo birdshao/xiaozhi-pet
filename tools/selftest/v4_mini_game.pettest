@@ -28,6 +28,10 @@ PETSELFTEST1
 # expect max_partial_ms 2500
 # expect timescale 50
 # Quiet prompts while testing (RAM only, this boot).
+# The Game / Feed rail items refuse in the quiet hours (PET_GAME_REFUSED
+# reason=quiet; Feed then falls back to the V7 plain feed), so pin the day phase:
+# the 2026-11-07 22:22 board run showed 3 plain feeds (241,242,242) here.
+phase day
 volume 15
 # TEST ONLY: the "nobody plays" timers (question again 12 s, home 60 s) at
 # 50 %; the answers below come well inside 6 s. "twait" scales with it;

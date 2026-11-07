@@ -14,6 +14,10 @@ PETSELFTEST1
 # expect max_full_ms 5000
 # expect timescale 25
 # Quiet prompts while testing (RAM only, this boot).
+# The Game / Feed rail items refuse in the quiet hours (PET_GAME_REFUSED
+# reason=quiet; Feed then falls back to the V7 plain feed), so pin the day phase:
+# the 2026-11-07 22:22 board run showed 3 plain feeds (241,242,242) here.
+phase day
 volume 15
 # TEST ONLY: cleanup (20 s) and blink (45..90 s) timers at 25 %. "twait"
 # scales with it; refreshes and animation frames stay real ("wait").
@@ -31,10 +35,11 @@ mark begin
 # Chat (0): the pet says hi and waves.
 tap up 2500
 tap press 6000
-# Feed (3): V8 care menu, press the fish; back home: happy face, then hearts.
+# Feed (3): V8 care menu, food picker, press the fish; back home: happy face, then hearts.
 tap down 2500
 tap down 2500
 tap down 2500
+tap press 6000
 tap press 6000
 tap press 11000
 # 40 highlight moves Feed <-> Sleep pass the rail's soft budget without
@@ -88,6 +93,6 @@ wait 3000
 tap down 2500
 tap press 8000
 tap up 6000
-pet
-wait 5000
+# (No closing "pet" toggle: the script is at the 64-step limit; the board is
+# reset for the next scenario anyway.)
 end
