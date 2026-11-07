@@ -4402,7 +4402,8 @@ BOARD_WORKER = r'''
                 failed = offset < total;
                 break;
             }
-            kid_app::ScalePcm(chunk, n, PromptVolumePct());
+            const uint8_t volume = PromptVolumePct();
+            kid_app::ScalePcm(chunk, n, volume);
             int stalls = 0;
             while (!audio.TryQueueLocalStoryPcm(session, chunk, n)) {
                 if (parrot_play_gen_.load() != gen || !PromptAllowed(false) || ++stalls > 50) {
