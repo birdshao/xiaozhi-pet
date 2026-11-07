@@ -28,7 +28,7 @@ CONFIRM_TTL = 7 * DAY_SECONDS
 DEFAULT_TTL = DAY_SECONDS
 COMPLETED_RETENTION = 30 * DAY_SECONDS
 ID_BITS = 53
-MAX_DELIVER = 8  # device reply buffer: 8 commands, 384 JSON nodes, 6 KB
+MAX_DELIVER = 8  # deliberately below the device reply buffer (16 commands, 768 JSON nodes, 12 KB)
 RESULTS = frozenset({"applied", "rejected", "expired"})
 
 
@@ -146,7 +146,7 @@ def deliverable(db: sqlite3.Connection, device_id: str, now: int, *,
 
     Commands the device reports in awaiting_confirm (waiting for the parent on the
     device) are not sent again, so they cannot fill the window and starve later
-    commands. The cap keeps the reply inside the device's buffer (8 commands).
+    commands. The cap keeps the reply well inside the device's buffer (16 commands).
 
     requires_confirm is derived from the kind and is informational: the
     device decides by kind itself (MEMORY_CLEAR and SET_TEMPERAMENT always
