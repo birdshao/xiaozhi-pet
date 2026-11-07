@@ -1,6 +1,6 @@
 # 服务端 S7：应用部署与运维
 
-对应 `V5_V6_SERVER_PLAN.md` §3.1–3.3、§8、§11.1 S7。本文是运维手册和验收清单；这台 PVE 机器上的实际部署记录见 [DEPLOY_PET_SERVER.md](DEPLOY_PET_SERVER.md)。**DNS、证书、端口转发、公网反向代理由用户实施**，这里只给需求与自查命令。
+对应 `V5_V6_SERVER_PLAN.md` §3.1–3.3、§8、§11.1 S7。本文是运维手册和验收清单；这台 PVE 机器上的实际部署记录见 [DEPLOY_PET_SERVER.md](DEPLOY_PET_SERVER.md)。公网入口（TLS 反向代理、acme.sh 证书、DDNS、防火墙）已在 `deploy/ingress/` 实现并部署到 CT 108，见 [../deploy/ingress/README.md](../deploy/ingress/README.md)；**只有光猫端口转发、DNSPod 令牌和外网连通验证需要用户操作**。
 
 ## 1. 组成
 
@@ -14,7 +14,7 @@
 
 路由：`/v1/devices/ /v1/pairing/ /parent/ /v1/parent/ /v1/content/packages/` → PetLearning；`/xiaozhi/v1/`（WSS）和 `/xiaozhi/ota/` → 小智；其余 404（含 `/v1/voice/`、`/play`、`/docs`、`/openapi.json`、小智视觉/管理接口）。
 
-转发头：`.env` 的 `KID_PET_TRUSTED_PROXY` 是**你的入口**的 IP（单个 IP，不能是回环或网段；入口跑在本机时填 `172.28.0.1`，因为回环发布的端口是从 Docker 网桥网关到达 nginx 的），只有来自它的 `X-Forwarded-For` 会被 gateway 采信，并改写成单个客户端地址交给应用；应用侧的受信代理固定为 gateway（172.28.0.2）。
+转发头：`.env` 的 `KID_PET_TRUSTED_PROXY` 是**你的入口**的 IP（单个 IP，不能是回环或网段；入口是 compose 自带的 `ingress` 服务时填它的固定地址 `172.28.0.3`；入口在宿主机上、经回环发布的端口访问 gateway 时才填 `172.28.0.1`，因为那种情况下是从 Docker 网桥网关到达 nginx 的），只有来自它的 `X-Forwarded-For` 会被 gateway 采信，并改写成单个客户端地址交给应用；应用侧的受信代理固定为 gateway（172.28.0.2）。
 
 ## 2. 首次部署
 
@@ -97,9 +97,28 @@ systemctl start pet-maintenance.service && journalctl -u pet-maintenance -n 20  
 
 **pin**：S5（#91）已把 `scripts/p3_server_overlay.py` 的 `PINNED_SERVER_COMMIT` 改为 v0.9.8 的 `8f2dda09…`，与 `version-lock.json` 一致；`deploy/apply_overlay.py` 复用其 `overlay()`，Dockerfile 再校验 commit。
 
-## 5. §3.3 公网入口验收清单（N1–N12，用户实施后逐条勾选）
+## 5. §3.3 公网入口验收清单（N1–N12）
 
-把 `H` 换成你的主机名（含端口，如 `pet.example.com:8443`），`VM` 换成 VM 的内网地址（如 `192.168.1.110:8780`）。外网一遍、局域网一遍。
+入口实现在 `deploy/ingress/`（nginx 容器 `ingress`，监听 8443；acme.sh + DNSPod DNS-01；DDNS timer）。`deploy/ingress/verify.sh [IP] [-k]` 一次跑完 N2/N5–N9 的大部分检查。
+
+**实测状态**（2026-11-07，CT 108；局域网 `curl --resolve` 到 192.168.1.110:8443，证书仍是占位自签）：
+
+| # | 状态 | 说明 |
+|---|---|---|
+| N1 | 待办 | 需要用户在局域网 DNS 把 `pet.birdshao.cn` 指到 192.168.1.110；两处指纹一致要等正式证书 |
+| N2 | 部分 | TLS 1.1 被拒、仅 TLS1.2/1.3 已验证；公信 CA、剩余有效期要等令牌签发正式证书 |
+| N3 | 部分 | 8780/8000/8003/8765 不对公网：只发布 8443，`DOCKER-USER` 仅对 8443 开例外；外网 nmap 要等光猫转发后由用户验证 |
+| N4 | 已验证（配置） | 入口、gateway 两层都把 `X-Forwarded-For` 改写成单个 `$remote_addr`；`KID_PET_TRUSTED_PROXY=172.28.0.3`；入口日志里的客户端地址是真实来源地址。登录审计里的 IP 因没有家长账号未实测 |
+| N5 | 已验证 | WSS 升级得 101；空闲 ≥120 s 只配了 `proxy_read_timeout 300s`，未用设备长连实测 |
+| N6 | 已验证 | `/v1/voice/*`、`/play`、`/docs`、`/openapi.json`、`/redoc`、`/mcp/…`、`/admin`、`..%2f` 与 `//` 变体全部 404 |
+| N7 | 部分 | 70 KB POST → 413 已验证；64 MiB 上传与 `Range` 206 未测（需要内容包） |
+| N8 | 已验证 | 对 `/v1/pairing/` 连发 60 次出现 429；入口和 gateway 两层都限流 |
+| N9 | 已验证 | `Strict-Transport-Security: max-age=31536000` |
+| N10 | 已验证 | ufw 只有 LAN 的 22、8780 和任意来源的 8443；`DOCKER-USER` 规则同步 |
+| N11 | 已验证（配置） | `log_format` 只有地址、时间、方法、路径（无查询串）、状态、字节；logrotate 14 天 |
+| N12 | 待办 | 要等外网连通确认后改 `KID_PET_PUBLIC_ORIGIN` 并 `check-config` |
+
+把 `H` 换成你的主机名（含端口，如 `pet.birdshao.cn:8443`），`VM` 换成 VM 的内网地址（如 `192.168.1.110:8780`）。外网一遍、局域网一遍。
 
 | # | 验收 | 自查命令 |
 |---|---|---|

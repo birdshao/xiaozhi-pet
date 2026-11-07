@@ -1,0 +1,15 @@
+# N11: ingress logs keep at most 14 days.
+/var/log/pet-ingress/*.log {
+    daily
+    rotate 14
+    maxage 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 640 root root
+    sharedscripts
+    postrotate
+        docker kill -s USR1 pet-ingress >/dev/null 2>&1 || true
+    endscript
+}

@@ -23,11 +23,11 @@ class DeployFilesTests(unittest.TestCase):
 
     def test_single_published_port_and_hardening(self):
         compose = text("compose.yaml")
-        self.assertEqual(len(re.findall(r"^\s+ports:", compose, re.M)), 1)
+        self.assertEqual(len(re.findall(r"^\s+ports:", compose, re.M)), 2)  # gateway (LAN) + ingress (8443)
         self.assertIn("read_only: true", compose)
         self.assertIn("cap_drop: [ALL]", compose)
         self.assertIn("KID_PET_ENV: production", compose)
-        self.assertNotIn("0.0.0.0:", compose)
+        self.assertEqual(re.findall(r"0\.0\.0\.0:", compose), ["0.0.0.0:"])  # only the ingress, IPv4 only
 
     def test_env_example_has_every_required_variable_and_no_secrets(self):
         example = text(".env.example")
@@ -69,8 +69,10 @@ class DeployFilesTests(unittest.TestCase):
             self.assertIn(ipaddress.ip_address(ip), subnet)
         self.assertEqual(services["xiaozhi-server"]["environment"]["KID_PET_API_URL"], f"http://{pet_ip}:8765")
         published = [(name, p) for name, svc in services.items() for p in svc.get("ports", [])]
-        self.assertEqual(len(published), 1)
-        self.assertEqual(published[0][0], "gateway")
+        self.assertEqual([name for name, _ in published], ["gateway", "ingress"])
+        self.assertEqual(services["ingress"]["profiles"], ["ingress"])
+        self.assertEqual(services["ingress"]["networks"]["pet"]["ipv4_address"], "172.28.0.3")
+        self.assertIn(ipaddress.ip_address("172.28.0.3"), subnet)
         # the backup key is only given to the one-off backup job
         self.assertNotIn("KID_PET_BACKUP_KEY", services["pet-learning"]["environment"])
         self.assertIn("KID_PET_BACKUP_KEY", services["backup"]["environment"])
@@ -99,6 +101,32 @@ class DeployFilesTests(unittest.TestCase):
         self.assertIn("limit_req_zone $binary_remote_addr zone=xz_ota", conf)
         self.assertIn("limit_req_zone $binary_remote_addr zone=xz_ws", conf)
 
+    def test_ingress_allow_list_and_hardening(self):
+        conf = text("nginx", "ingress.conf.template")
+        locations = re.findall(r"location (?:\^~ |= )?(/\S*)", conf)
+        self.assertEqual(locations[-1], "/")
+        self.assertIn("return 404", conf.split("location / ")[-1])
+        self.assertEqual(set(locations) - {"/"}, {
+            "/healthz", "/v1/devices/", "/v1/pairing/", "/parent/", "/v1/parent/", "/v1/parent/content",
+            "/v1/content/packages/", "/xiaozhi/v1/", "/xiaozhi/ota/"})
+        self.assertIn("ssl_protocols TLSv1.2 TLSv1.3;", conf)
+        self.assertIn("ssl_reject_handshake on", conf)
+        self.assertGreaterEqual(int(re.search(r'Strict-Transport-Security "max-age=(\d+)', conf).group(1)), 180 * 86400)
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", conf)
+        self.assertIn("proxy_set_header X-Forwarded-Proto https;", conf)
+        log_format = re.search(r"log_format pet_ingress '([^']*)'", conf).group(1) + " "
+        for leaked in ("$request ", "$http_", "$args", "$query_string", "$cookie", "$request_body"):
+            self.assertNotIn(leaked, log_format)
+        self.assertGreaterEqual(len(re.findall(r"limit_req zone=", conf)), 7)
+
+    def test_ingress_files_carry_no_secrets(self):
+        example = text("ingress", "dnspod.env.example")
+        self.assertRegex(example, r"(?m)^DP_Id=$")
+        self.assertRegex(example, r"(?m)^DP_Key=$")
+        for path in (DEPLOY / "ingress").iterdir():
+            self.assertNotRegex(path.read_text(encoding="utf-8"), r"DP_Key=[0-9a-f]{8,}", path.name)
+        self.assertIn("rotate 14", text("ingress", "pet-ingress.logrotate"))
+
     def test_dockerignore_and_maintenance_units(self):
         ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         for entry in ("**/.env", "deploy/models", ".git", "*.sqlite3", "research_content"):
@@ -121,7 +149,7 @@ class DeployFilesTests(unittest.TestCase):
             env.write_text("\n".join([
                 "KID_PET_PUBLIC_ORIGIN=https://pet.example.com", "KID_PET_TRUSTED_PROXY=192.168.1.1",
                 "KID_PET_TOTP_KEY=x", "KID_PET_BACKUP_KEY=x", "KID_PET_NOTES_KEY=x", "XZ_AUTH_KEY=x", "KID_PET_UPSTREAM_DEVICE_ID=a",
-                "KID_PET_BUSINESS_DEVICE_ID=b", "KID_PET_VOICE_TOKEN=x"]), encoding="utf-8")
+                "KID_PET_BUSINESS_DEVICE_ID=b", "KID_PET_VOICE_TOKEN=x", "PET_INGRESS_HOST=pet.example.com"]), encoding="utf-8")
             run = subprocess.run(["docker", "compose", "--env-file", str(env), "-f", str(DEPLOY / "compose.yaml"),
                                   "config", "-q"], capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
