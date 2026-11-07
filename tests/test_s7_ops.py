@@ -39,6 +39,7 @@ def good_env():
         "KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.example:8443",
         "KID_PET_TRUSTED_PROXY": "192.168.1.1", "KID_PET_TOTP_KEY": Fernet.generate_key().decode(),
         "KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "XZ_AUTH_KEY": "a" * 40,
+        "KID_PET_NOTES_KEY": Fernet.generate_key().decode(),
         "KID_PET_VOICE_TOKEN": "t" * 40, "KID_PET_CHILD_MODE": "1",
         "KID_PET_UPSTREAM_DEVICE_ID": "aa:bb", "KID_PET_BUSINESS_DEVICE_ID": "pet-1",
     }
@@ -165,7 +166,8 @@ class ConfigCheckTests(unittest.TestCase):
         self.assertEqual(ops.check_deployment(good_env()), [])
         for key, value in (("KID_PET_ENV", "development"), ("KID_PET_PUBLIC_ORIGIN", "http://pet.example"),
                            ("KID_PET_PUBLIC_ORIGIN", "https://localhost"), ("KID_PET_TRUSTED_PROXY", ""),
-                           ("KID_PET_BACKUP_KEY", "weak"), ("XZ_AUTH_KEY", "short"),
+                           ("KID_PET_BACKUP_KEY", "weak"), ("KID_PET_NOTES_KEY", ""),
+                           ("KID_PET_NOTES_KEY", "weak"), ("XZ_AUTH_KEY", "short"),
                            ("XZ_AUTH_KEY", "change-me" * 6), ("KID_PET_CHILD_MODE", "0"),
                            ("KID_PET_ENABLE_PLAYGROUND", "1"), ("PET_GATEWAY_BIND", "0.0.0.0"),
                            ("KID_PET_TRUSTED_PROXY", "127.0.0.1"), ("KID_PET_TRUSTED_PROXY", "192.168.1.0/24"),
@@ -175,6 +177,10 @@ class ConfigCheckTests(unittest.TestCase):
         env = good_env()
         env["KID_PET_BACKUP_KEY"] = env["KID_PET_TOTP_KEY"]
         self.assertTrue(ops.check_deployment(env))
+        for other in ("KID_PET_TOTP_KEY", "KID_PET_BACKUP_KEY"):
+            env = good_env()
+            env["KID_PET_NOTES_KEY"] = env[other]
+            self.assertTrue(any("NOTES_KEY" in p for p in ops.check_deployment(env)), other)
 
     def test_env_without_kid_pet_env_is_checked_as_production(self):
         env = good_env()

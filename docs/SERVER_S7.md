@@ -41,7 +41,7 @@ docker compose exec -it pet-learning python -m tools.pet_learning_admin --db /da
 
 ## 3. 备份、恢复、清理
 
-`KID_PET_BACKUP_KEY`（Fernet 密钥，须与 `KID_PET_TOTP_KEY` 不同，单独离线保管；丢了就无法恢复备份）。
+`KID_PET_BACKUP_KEY`（Fernet 密钥，须与 `KID_PET_TOTP_KEY` 不同，单独离线保管；丢了就无法恢复备份）。另有 `KID_PET_NOTES_KEY`（S3，家长备注加密密钥，须与前两个都不同，生产缺失拒绝启动，见 [SERVER_S3](SERVER_S3.md)）。
 
 ```sh
 # 备份（一次性容器，只有它拿到 KID_PET_BACKUP_KEY）：SQLite 在线备份 + packages → 分块加密归档 pet-<时间>.enc，保留最新 14 份

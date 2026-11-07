@@ -28,14 +28,24 @@ class ConfigTests(unittest.TestCase):
                     {"KID_PET_TRUSTED_PROXY": "*"}, {"KID_PET_ENV": "production"}):
             with patch.dict("os.environ", env, clear=True), self.assertRaises(ValueError):
                 Settings.load("nonexistent.env")
+        key = Fernet.generate_key().decode()
+        with self.assertRaises(ValueError):  # production without the notes key
+            Settings(production=True, public_origin="https://pet.example", trusted_proxy="127.0.0.1",
+                     totp_key=key).validate()
+        with self.assertRaises(ValueError):  # notes key must not be the TOTP key
+            Settings(notes_key=key, totp_key=key).validate()
+        with self.assertRaises(ValueError):
+            Settings(notes_key="weak").validate()
         for origin in ("http://pet.example", "https://pet.example/path", "https://user@pet.example"):
             with self.assertRaises(ValueError):
                 Settings(production=True, public_origin=origin, trusted_proxy="127.0.0.1",
-                         totp_key=Fernet.generate_key().decode()).validate()
+                         totp_key=Fernet.generate_key().decode(),
+                         notes_key=Fernet.generate_key().decode()).validate()
 
     def test_production_disables_debug_routes_even_with_playground_env(self):
         settings = Settings(production=True, public_origin="https://pet.example", trusted_proxy="127.0.0.1",
-                            totp_key=Fernet.generate_key().decode(), playground=True)
+                            totp_key=Fernet.generate_key().decode(), playground=True,
+                            notes_key=Fernet.generate_key().decode())
         with tempfile.TemporaryDirectory() as tmp:
             with TestClient(create_app(Path(tmp) / "db", settings=settings)) as client:
                 with patch.dict("os.environ", {"KID_PET_ENABLE_PLAYGROUND": "1"}):

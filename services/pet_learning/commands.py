@@ -78,6 +78,17 @@ def enqueue(db: sqlite3.Connection, device_id: str, kind: str, payload: dict[str
     return get(db, command_id)
 
 
+def supersede(db: sqlite3.Connection, device_id: str, kind: str, now: int) -> int:
+    """A newer command of the same kind replaces a still-pending one (S3 profile
+    and settings edits). The old one ends as expired/SUPERSEDED; a late device
+    receipt for it changes nothing (only TIMEOUT expiries can be revived)."""
+    rows = db.execute("SELECT * FROM commands WHERE device_id=? AND kind=? AND state='pending'",
+                      (device_id, kind)).fetchall()
+    for row in rows:
+        _finish(db, row, "expired", "SUPERSEDED", now, "server")
+    return len(rows)
+
+
 def get(db: sqlite3.Connection, command_id: int) -> dict[str, Any] | None:
     row = db.execute("SELECT * FROM commands WHERE command_id=?", (command_id,)).fetchone()
     return dict(row) if row else None

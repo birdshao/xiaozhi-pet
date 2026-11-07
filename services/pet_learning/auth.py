@@ -146,6 +146,42 @@ class ParentAuth:
             raise error
         return session, csrf
 
+    def reauth(self, account_id, password, otp, ip):
+        """Step-up for sensitive actions (§9): password + a fresh TOTP code, no recovery codes.
+
+        Failures count toward the same account lockout as login; a code already
+        used (by login or an earlier step-up) is a replay and is refused.
+        """
+        now = int(self.clock())
+        error = None
+        with connect(self.filename) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM parent_accounts WHERE id=?", (account_id,)).fetchone()
+            if not row:
+                error = AuthError(401, "PARENT_AUTH_REQUIRED")
+            elif row["locked_until"] > now:
+                audit(db, now, "parent.reauth", "locked", account_id=account_id, ip=ip)
+                error = AuthError(429, "PARENT_LOGIN_THROTTLED")
+            else:
+                step = None
+                if password_matches(password, row["password_hash"]):
+                    secret = self.settings.cipher().decrypt(row["totp_secret_enc"].encode("ascii")).decode("ascii")
+                    step = match_step(secret, otp, now, last_step=row["last_totp_step"])
+                if step is None:
+                    failures = (0 if row["locked_until"] else row["failed_attempts"]) + 1
+                    locked_until = now + LOGIN_WINDOW if failures >= LOGIN_LIMIT else 0
+                    db.execute("UPDATE parent_accounts SET failed_attempts=?,locked_until=? WHERE id=?",
+                               (failures, locked_until, account_id))
+                    audit(db, now, "parent.reauth", "failure", account_id=account_id, ip=ip)
+                    error = AuthError(401, "PARENT_REAUTH_FAILED")
+                else:
+                    db.execute("UPDATE parent_accounts SET last_totp_step=?,failed_attempts=0,locked_until=0 "
+                               "WHERE id=?", (step, account_id))
+                    audit(db, now, "parent.reauth", "success", account_id=account_id, ip=ip)
+            db.commit()
+        if error:
+            raise error
+
     def session(self, token, *, csrf=None, csrf_cookie=None, logout=False, ip=None):
         now = int(self.clock())
         if not token or len(token) > 256:

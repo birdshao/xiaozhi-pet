@@ -30,6 +30,7 @@ services:
       # turn trusts X-Forwarded-For only from the operator's ingress, KID_PET_TRUSTED_PROXY.
       KID_PET_TRUSTED_PROXY: 172.28.0.2
       KID_PET_TOTP_KEY: ${KID_PET_TOTP_KEY:?set KID_PET_TOTP_KEY}
+      KID_PET_NOTES_KEY: ${KID_PET_NOTES_KEY:?set KID_PET_NOTES_KEY}
       # S5 voice route: only the XiaoZhi container's fixed address may call it, signed with this token.
       KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
