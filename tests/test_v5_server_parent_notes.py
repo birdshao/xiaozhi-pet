@@ -161,6 +161,19 @@ class HardeningTests(NotesBase):
         for change in ({"note": "x" * 100000}, {"nickname": "n" * 100}, {"birthday": "05-17-2020"}):
             self.assertEqual(self.write(**change).status_code, 422)
 
+    def test_missing_or_revoked_device_does_not_spend_the_totp_step(self):
+        proof = self.proof()
+        gone = self.client.put("/v1/parent/devices/pet-nope/notes", headers={"X-CSRF-Token": self.csrf},
+                               json={"note": NOTE, "reauth": proof})
+        self.assertEqual(gone.status_code, 404)
+        with connect(self.path) as db:
+            db.execute("UPDATE devices SET status='revoked' WHERE device_id='pet-002'")
+        revoked = self.client.put("/v1/parent/devices/pet-002/notes", headers={"X-CSRF-Token": self.csrf},
+                                  json={"note": NOTE, "reauth": proof})
+        self.assertEqual((revoked.status_code, revoked.json()["detail"]), (409, "DEVICE_NOT_ACTIVE"))
+        # the same proof still works for a valid request
+        self.assertEqual(self.parent("PUT", URL, json={"note": NOTE, "reauth": proof}).status_code, 200)
+
     def test_revoked_devices_notes_can_still_be_deleted(self):
         self.write()
         with connect(self.path) as db:
@@ -194,6 +207,24 @@ class KeyRotationTests(NotesBase):
         self.assertEqual(self.client.get(URL).json()["note"], NOTE)
         self.assertEqual(self.write(note="after").status_code, 200)
         Fernet(new.encode()).decrypt(self.token().encode())
+
+    def test_rotation_never_overwrites_a_concurrent_write(self):
+        old, new = self.keys()
+        self.use_keys(old)
+        self.write()
+        stale = self.token()  # a reader (GET or rotate-notes-key) holds the old ciphertext ...
+        self.use_keys(f"{new},{old}")
+        self.assertEqual(self.write(note="newer").status_code, 200)  # ... while a PUT lands
+        cipher = self.settings.notes_cipher()
+        with connect(self.path) as db:
+            self.assertFalse(self.app.state.profile_service.notes._rotate_row(db, cipher, DEVICE, stale))
+        self.assertEqual(self.client.get(URL).json()["note"], "newer")
+        self.assertEqual(self.table("SELECT payload_enc FROM parent_notes")[0][0] != stale, True)
+
+    def test_empty_key_list_is_rejected(self):
+        for bad in (",", " , ", ",,"):
+            with self.assertRaises(ValueError):
+                Settings(notes_key=bad).validate()
 
     def test_rotate_all_moves_unread_rows(self):
         old, new = self.keys()

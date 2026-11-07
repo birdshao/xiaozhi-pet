@@ -298,6 +298,8 @@ class ProfileService:
                 db.commit()
                 reauth()
                 db.execute("BEGIN IMMEDIATE")
+                now = int(self.clock())  # the proof may have taken a while; the device may have changed
+                self._device(db, device_id, write=True)
                 if not policy.OPEN_CHAT_SELECTABLE:
                     commands.audit(db, now, actor, "policy.update", device_id, "open_chat_unavailable", ip)
                     db.commit()
@@ -316,6 +318,11 @@ class ProfileService:
         policy.on_snapshot(db, device_id, settings, device_rev, now)
 
     # -- notes ----------------------------------------------------------
+
+    def require_device(self, device_id: str, *, write: bool = True) -> None:
+        """Cheap pre-check so a request for a missing or revoked device never spends a TOTP step."""
+        with connect(self.filename) as db:
+            self._device(db, device_id, write=write)
 
     def get_notes(self, device_id: str) -> dict[str, Any]:
         with connect(self.filename) as db:
@@ -414,12 +421,20 @@ def create_router(app, database) -> APIRouter:
             validate_notes(body.nickname, body.birthday, body.note)
         except NotesError as error:
             raise HTTPException(error.status, error.code, headers=NO_STORE) from None
+        try:
+            service.require_device(device_id)
+        except ProfileError as error:
+            raise HTTPException(error.status, error.code, headers=NO_STORE) from None
         step_up(request, account, body.reauth)
         return call(service.put_notes, device_id, body, client_ip(request), f"parent:{account}")
 
     @router.delete("/notes")
     def delete_notes(device_id: str, body: NotesDeleteBody, request: Request,
                      account: int = Depends(parent_write)):
+        try:
+            service.require_device(device_id, write=False)
+        except ProfileError as error:
+            raise HTTPException(error.status, error.code, headers=NO_STORE) from None
         step_up(request, account, body.reauth)
         return call(service.delete_notes, device_id, client_ip(request), f"parent:{account}")
 

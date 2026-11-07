@@ -459,6 +459,19 @@ class OpenChatTests(ProfileBase):
             self.assertEqual((off.status_code, off.json()["open_chat"], off.json()["open_chat_disabled_reason"]),
                              (200, False, "parent"))
 
+    def test_device_revoked_while_the_proof_was_checked_is_rechecked(self):
+        auth = self.app.state.parent_auth
+        real = auth.reauth
+
+        def reauth_then_revoke(*args, **kwargs):
+            real(*args, **kwargs)
+            with connect(self.path) as db:
+                db.execute("UPDATE devices SET status='revoked'")
+        with patch.object(policy, "OPEN_CHAT_SELECTABLE", True), patch.object(auth, "reauth", reauth_then_revoke):
+            result = self.put(open_chat=True, reauth=self.proof())
+        self.assertEqual((result.status_code, result.json()["detail"]), (409, "DEVICE_NOT_ACTIVE"))
+        self.assertEqual(self.table("SELECT COUNT(*) FROM policies"), [(0,)])
+
     def test_five_bad_proofs_lock_the_account(self):
         for _ in range(5):
             self.put(open_chat=True, reauth=self.proof(password="wrong-password"))

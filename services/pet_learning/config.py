@@ -73,6 +73,8 @@ class Settings:
                 raise ValueError("KID_PET_TOTP_KEY must be a Fernet key") from None
         if self.notes_key:
             keys = self.notes_keys()
+            if not keys:
+                raise ValueError("KID_PET_NOTES_KEY must contain at least one Fernet key")
             try:
                 for key in keys:
                     Fernet(key.encode("ascii"))

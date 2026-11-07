@@ -84,9 +84,11 @@ class ParentNotes:
             primary.decrypt(token.encode("ascii"))
             return False
         except InvalidToken:
-            db.execute("UPDATE parent_notes SET payload_enc=? WHERE device_id=?",
-                       (cipher.rotate(token.encode("ascii")).decode("ascii"), device_id))
-            return True
+            # Conditional on the ciphertext we read: a concurrent PUT (or a second rotation)
+            # that changed the row wins, and its newer content is never overwritten.
+            return db.execute("UPDATE parent_notes SET payload_enc=? WHERE device_id=? AND payload_enc=?",
+                              (cipher.rotate(token.encode("ascii")).decode("ascii"), device_id, token)
+                              ).rowcount == 1
 
     def rotate_all(self, db: sqlite3.Connection) -> int:
         """Admin CLI: move every row to the primary key so an old key can be dropped."""
