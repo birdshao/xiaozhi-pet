@@ -31,11 +31,12 @@ mark begin
 # Chat (0): the pet says hi and waves.
 tap up 2500
 tap press 6000
-# Feed (3): happy face, then hearts.
+# Feed (3): V8 care menu, press the fish; back home: happy face, then hearts.
 tap down 2500
 tap down 2500
 tap down 2500
-tap press 7000
+tap press 6000
+tap press 11000
 # 40 highlight moves Feed <-> Sleep pass the rail's soft budget without
 # a full refresh; 20 s of quiet (scaled) then run one cleanup full refresh.
 tap down 1500

@@ -1,5 +1,6 @@
 #include "kid_app/sound_bank.h"
 
+#include "kid_app/care_phrases.h"
 #include "kid_app/home_menu.h"
 
 #include <algorithm>
@@ -151,6 +152,46 @@ bool SoundBank::LoadPhrase(uint16_t phrase_id, SoundClip* out) const {
     out->source = SoundClip::Source::Chime;
     out->chime_ = phrase->context;
     out->samples = ChimeSamples(phrase->context);
+    return true;
+}
+
+bool SoundBank::LoadCareLine(uint16_t care_id, SoundClip* out) const {
+    if (!out) return false;
+    const CarePhrase* line = FindCarePhrase(care_id);
+    if (!line) return false;
+    if (FromPack(care_id, out)) return true;
+    // No recording yet (TODO in the V8 asset list): a short chime of the
+    // pet context closest to the line, so nothing waits on recordings.
+    PhraseContext context = PhraseContext::Greeting;
+    switch (line->line) {
+        case CareLine::DiaryOpen: case CareLine::DiaryFood: case CareLine::DiaryBook:
+        case CareLine::DiaryGame: case CareLine::DiaryCare: case CareLine::DiaryHabit:
+        case CareLine::DiaryQuiet: case CareLine::DiaryClose: case CareLine::LullStart:
+        case CareLine::LullDone: case CareLine::TidyStart: case CareLine::TidyDone:
+            context = PhraseContext::Bedtime;
+            break;
+        case CareLine::FoodReact: case CareLine::FeedPrompt:
+            context = PhraseContext::Feed;
+            break;
+        case CareLine::TickleStart: case CareLine::TickleDone: case CareLine::BathStart:
+        case CareLine::BathRinse: case CareLine::BathDone:
+            context = PhraseContext::Giggle;
+            break;
+        case CareLine::MorningFeel:
+            context = line->arg == static_cast<uint8_t>(Feel::Hot)    ? PhraseContext::HotTip
+                      : line->arg == static_cast<uint8_t>(Feel::Cold) ? PhraseContext::ColdTip
+                                                                       : PhraseContext::MorningRecap;
+            break;
+        case CareLine::MorningHello: case CareLine::FestivalHello: case CareLine::HabitRemind:
+            context = PhraseContext::MorningRecap;
+            break;
+        default:
+            break;
+    }
+    *out = SoundClip{};
+    out->source = SoundClip::Source::Chime;
+    out->chime_ = context;
+    out->samples = ChimeSamples(context);
     return true;
 }
 

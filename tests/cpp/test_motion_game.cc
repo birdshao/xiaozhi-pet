@@ -273,7 +273,8 @@ void TestMenu() {
     out = m.Input(GameInput::Down, 1200);
     assert(out.redraw && out.clip == GameArtTone(static_cast<uint16_t>(GameArt::BallBig)) &&
            m.View().highlight == 1);
-    // Five games, three cards at a time: the window slides with the highlight.
+    // Six cards (five games and the V8 sticker album), three at a time: the
+    // window slides with the highlight.
     const uint16_t kStar = static_cast<uint16_t>(GameArt::Star),
                    kBall = static_cast<uint16_t>(GameArt::BallBig),
                    kCat = static_cast<uint16_t>(GameArt::Cat),
@@ -351,6 +352,27 @@ void TestActivityList() {
         assert(m.Input(GameInput::Press, 1).chosen == ActivityAt(ActivityGroup::Play, i)->id);
     }
     assert(m.Group() == ActivityGroup::Play);
+    // The V8 care menu is the same menu on the Care group.
+    assert(ActivityCount(ActivityGroup::Care) == 6);
+    const GameChoice care[] = {GameChoice::Feed, GameChoice::Bath, GameChoice::Brush,
+                               GameChoice::Tickle, GameChoice::Dress, GameChoice::Habit};
+    for (uint8_t i = 0; i < 6; ++i) {
+        m.Start(0, i, ActivityGroup::Care);
+        assert(m.Group() == ActivityGroup::Care && ActivityIndexOf(care[i]) == i);
+        assert(m.Input(GameInput::Press, 1).chosen == care[i]);
+    }
+    assert(FindActivity(GameChoice::Bath)->needs == ActivityNeeds::Motion);
+    assert(FindActivity(GameChoice::Feed)->group == ActivityGroup::Care);
+}
+
+// A group with no rows never opens: the board sees `finished` and leaves
+// the game frame instead of sticking in a menu that takes no input.
+void TestEmptyGroup() {
+    GameMenu m;
+    const auto out = m.Start(0, 0, static_cast<ActivityGroup>(7));
+    assert(out.finished && !out.redraw && !m.Active() && m.End() == GameEnd::Home);
+    assert(m.View() == GameView{});
+    assert(!m.Input(GameInput::Press, 1).redraw && !m.Tick(999999).finished);
 }
 
 SceneModel GameScene(const GameView& view) {
@@ -456,6 +478,7 @@ int main() {
     TestGrowthOnlyForFinishedWins();
     TestMenu();
     TestActivityList();
+    TestEmptyGroup();
     TestScenes();
     // The holes for the hardware script (tools/selftest/v4_motion_games.pettest).
     MotionGameSession s = Started(MotionKind::Ball, 4242);

@@ -40,16 +40,28 @@ enum class GameChoice : uint8_t {
 enum class ActivityGroup : uint8_t { Play, Care };
 enum class ActivityNeeds : uint8_t { None, Motion, Mic };
 
+// Picture id ranges (one per session, docs/V8_CARE_AND_GROWTH.md §5):
+//   1..99 GameArt (KPG1 catalogue)   101..199 MicArt (V4-08)
+//   401..513 (block 400..599) and 0x2000..0x3FFF PlayArt (session 2, game_view.h)
+//   601..660 (block 600..699) CareArt (session 1, below)
+//   701.. (block 700..799) session 3 (sound)   801.. (block 800..899) session 4
+//   200..399 free; 0x4000.. never: tone clip ids (GameArtTone)
 // V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
 enum class CareArt : uint16_t {
-    Bubbles = 201, Comb = 202, Feather = 203, Hanger = 204, Check = 205, Sticker = 206,
-    // Foods (FoodId 1..6 -> 211..216).
-    Fish = 211, Milk = 212, Apple = 213, Carrot = 214, Cookie = 215, RiceBall = 216,
+    Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,
+    // Foods (FoodId 1..6 -> 611..616).
+    Fish = 611, Milk = 612, Apple = 613, Carrot = 614, Cookie = 615, RiceBall = 616,
     // Toys for the bedtime tidy-up.
-    ToyBlock = 221, ToyBall = 222, ToyBear = 223,
+    ToyBlock = 621, ToyBall = 622, ToyBear = 623,
+    // Wardrobe cards: 631 + index in the wardrobe table (care_store.cc).
+    WearFirst = 631, WearLast = 642,
+    // Good-habit cards: 650 + Habit (1..8).
+    HabitFirst = 651, HabitLast = 658,
+    Lock = 660,  // nothing unlocked yet
 };
 constexpr bool CareArtValid(uint16_t id) {
-    return (id >= 201 && id <= 206) || (id >= 211 && id <= 216) || (id >= 221 && id <= 223);
+    return (id >= 601 && id <= 606) || (id >= 611 && id <= 616) || (id >= 621 && id <= 623) ||
+           (id >= 631 && id <= 642) || (id >= 651 && id <= 658) || id == 660;
 }
 
 struct Activity {
@@ -105,7 +117,22 @@ constexpr Activity kActivities[] = {
     {GameChoice::Maze, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Carrot),
      ActivityNeeds::Motion, "maze"},
     {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None, "clock"},
+    {GameChoice::Stickers, ActivityGroup::Play, static_cast<uint16_t>(CareArt::Sticker),
+     ActivityNeeds::None, "stickers"},
     // ---- other sessions: append Play rows above this line ----
+    {GameChoice::Feed, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Fish),
+     ActivityNeeds::None, "feed"},
+    {GameChoice::Bath, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Bubbles),
+     ActivityNeeds::Motion, "bath"},
+    {GameChoice::Brush, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Comb),
+     ActivityNeeds::None, "brush"},
+    {GameChoice::Tickle, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Feather),
+     ActivityNeeds::Motion, "tickle"},
+    {GameChoice::Dress, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Hanger),
+     ActivityNeeds::None, "dress"},
+    {GameChoice::Habit, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Check),
+     ActivityNeeds::None, "habit"},
+    // ---- care rows (session 1) end here ----
 };
 constexpr size_t kActivityRows = sizeof(kActivities) / sizeof(kActivities[0]);
 
@@ -153,8 +180,8 @@ constexpr bool ActivityTableValid() {
         for (size_t j = 0; j < i; ++j)
             if (kActivities[j].id == a.id) return false;
     }
-    return ActivityCount(ActivityGroup::Play) >= 3;
+    return ActivityCount(ActivityGroup::Play) >= 3 && ActivityCount(ActivityGroup::Care) >= 3;
 }
-static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 play cards");
+static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 cards a menu");
 
 }  // namespace kid_app

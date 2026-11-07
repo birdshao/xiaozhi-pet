@@ -23,7 +23,7 @@ struct SoundClipInfo {
 class SoundPackReader {
 public:
     static constexpr uint32_t kSampleRate = 24000;
-    static constexpr size_t kMaxClips = 96;
+    static constexpr size_t kMaxClips = 192;  // V8 care lines (was 96)
     static constexpr uint32_t kMaxClipBytes = 6u * kSampleRate * 2u;  // 6 s
     static constexpr uint32_t kMaxBytes = 8u * 1024u * 1024u;
     static constexpr uint32_t kHeaderBytes = 32;
@@ -51,6 +51,10 @@ private:
     uint16_t count_ = 0;
     uint32_t revision_ = 0;
     std::array<SoundClipInfo, kMaxClips> clips_{};
+    // Open() builds the table here before it replaces clips_ (a failed open
+    // changes nothing). A member, not a local: 192 x 16 B = 3 KiB would sit
+    // on the 6 KiB pet_prompt stack next to the PCM chunk and CRC buffers.
+    std::array<SoundClipInfo, kMaxClips> candidate_{};
 };
 
 // Read-only adapter for <mounted dir>/<pack_id>.kps on an already mounted

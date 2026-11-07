@@ -170,6 +170,74 @@ void TestCodec() {
     assert(!ParentSettingsCodec::Decode(nullptr, sizeof(b), &out));
 }
 
+// V8 page 2: the good habit preset and the birthday (month, day). They are
+// care settings: saving answers SavedCare and never touches ParentSettings.
+void TestCareRows() {
+    using kid_app::ParentCare;
+    ParentMenu menu;
+    menu.Open(ParentSettings{}, 0);
+    for (uint8_t i = 0; i < static_cast<uint8_t>(ParentItem::Habit); ++i)
+        menu.OnInput(InputKind::DialDown, 0);
+    assert(menu.Selected() == ParentItem::Habit && menu.Care() == ParentCare{});
+    // Habit: none -> presets 1..8, clamped; press saves.
+    assert(menu.OnInput(InputKind::DialPress, 0) == Action::Redraw && menu.Editing());
+    // While editing, dial up raises the value (like every other row).
+    assert(menu.OnInput(InputKind::DialDown, 0) == Action::None);  // already "none"
+    for (int i = 0; i < 3; ++i) assert(menu.OnInput(InputKind::DialUp, 0) == Action::Redraw);
+    assert(menu.View().care.habit == 3 && menu.Care().habit == 0);  // draft only
+    assert(menu.OnInput(InputKind::DialPress, 0) == Action::SavedCare);
+    assert(menu.Care().habit == 3 && menu.Settings() == ParentSettings{});
+    // Unchanged value: a press just leaves editing.
+    menu.OnInput(InputKind::DialPress, 0);
+    assert(menu.OnInput(InputKind::DialPress, 0) == Action::Redraw);
+    menu.OnInput(InputKind::DialPress, 0);
+    for (int i = 0; i < 10; ++i) menu.OnInput(InputKind::DialUp, 0);
+    assert(menu.View().care.habit == 8);
+    menu.OnInput(InputKind::DialPress, 0);
+    // Birthday: the day needs a month; the month keeps the day valid.
+    menu.OnInput(InputKind::DialDown, 0);
+    menu.OnInput(InputKind::DialDown, 0);
+    assert(menu.Selected() == ParentItem::BirthDay);
+    menu.OnInput(InputKind::DialPress, 0);
+    assert(menu.OnInput(InputKind::DialUp, 0) == Action::None);  // no month yet
+    menu.OnInput(InputKind::DialPress, 0);
+    menu.OnInput(InputKind::DialUp, 0);
+    assert(menu.Selected() == ParentItem::BirthMonth);
+    menu.OnInput(InputKind::DialPress, 0);
+    menu.OnInput(InputKind::DialUp, 0);  // January, day 1
+    assert(menu.View().care.birth_month == 1 && menu.View().care.birth_day == 1);
+    assert(menu.OnInput(InputKind::DialPress, 0) == Action::SavedCare);
+    menu.OnInput(InputKind::DialDown, 0);
+    menu.OnInput(InputKind::DialPress, 0);
+    for (int i = 0; i < 40; ++i) menu.OnInput(InputKind::DialUp, 0);
+    assert(menu.View().care.birth_day == 31);  // clamped at the month's end
+    assert(menu.OnInput(InputKind::DialPress, 0) == Action::SavedCare);
+    menu.OnInput(InputKind::DialUp, 0);
+    menu.OnInput(InputKind::DialPress, 0);
+    menu.OnInput(InputKind::DialUp, 0);  // February: 31 -> 29
+    assert(menu.View().care.birth_month == 2 && menu.View().care.birth_day == 29);
+    menu.OnInput(InputKind::DialDown, 0);
+    menu.OnInput(InputKind::DialDown, 0);  // not set: the day goes too
+    assert(menu.View().care.birth_month == 0 && menu.View().care.birth_day == 0);
+    // Long press drops the draft; the saved birthday stays.
+    assert(menu.OnInput(InputKind::DialLong, 0) == Action::Exit);
+    assert(menu.Care().birth_month == 1 && menu.Care().birth_day == 31);
+    // Invalid care values from storage open as "not set".
+    ParentCare bad{};
+    bad.habit = 9;
+    bad.birth_month = 2;
+    bad.birth_day = 30;
+    menu.Open(ParentSettings{}, 0, bad);
+    assert(menu.Care() == ParentCare{});
+    // Recording failed: the previous values come back.
+    ParentCare good{};
+    good.habit = 2;
+    menu.Open(ParentSettings{}, 0, good);
+    menu.RevertCare(ParentCare{});
+    assert(menu.Care() == ParentCare{} && !menu.Editing());
+    assert(std::strcmp(ParentItemName(ParentItem::BirthMonth), "birth_month") == 0);
+}
+
 void TestMenuNavigation() {
     ParentMenu menu;
     assert(!menu.IsOpen() && menu.OnInput(InputKind::DialDown, 0) == Action::None);
@@ -181,8 +249,10 @@ void TestMenuNavigation() {
         assert(menu.OnInput(InputKind::DialDown, 1100) == Action::Redraw);
         assert(menu.View().cursor == i && !menu.View().editing);
     }
-    assert(menu.Selected() == ParentItem::Server);
+    assert(menu.Selected() == ParentItem::BirthDay);  // V8 page 2 is the end
     assert(menu.OnInput(InputKind::DialDown, 1200) == Action::None);
+    for (int i = 0; i < 3; ++i) assert(menu.OnInput(InputKind::DialUp, 1210) == Action::Redraw);
+    assert(menu.Selected() == ParentItem::Server);
     // The Server row opens the pairing page: no editing, settings unchanged.
     assert(menu.OnInput(InputKind::DialPress, 1250) == Action::OpenLink);
     assert(menu.IsOpen() && !menu.Editing() && menu.Settings() == ParentSettings{});
@@ -476,6 +546,7 @@ int main() {
     TestVolumeLimit();
     TestCodec();
     TestMenuNavigation();
+    TestCareRows();
     TestMenuIdleExit();
     TestMenuEditsTimes();
     TestMenuStopsAtInvalidTimes();

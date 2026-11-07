@@ -820,10 +820,12 @@ void TestMenu() {
         const GameView v = menu.View();
         assert(v.highlight < 3);
         for (uint16_t art : v.options)
-            assert(GameArtIsQuestion(art) || PlayArtValid(art) || MicArtValid(art));
+            assert(GameArtIsQuestion(art) || PlayArtValid(art) || MicArtValid(art) ||
+                   CareArtValid(art));  // V8 session 1: the sticker album card
     }
     out = menu.Input(GameInput::Press, now += 100);
-    assert(out.chosen == GameChoice::Clock);
+    // The last card: rows other sessions append (V8 sticker album) follow the games.
+    assert(out.chosen == ActivityAt(ActivityGroup::Play, cards - 1)->id);
     // A game picked from the list can be reopened on its own card.
     menu.Start(1000, ActivityIndexOf(GameChoice::Maze));
     assert(menu.Input(GameInput::Press, 1100).chosen == GameChoice::Maze);

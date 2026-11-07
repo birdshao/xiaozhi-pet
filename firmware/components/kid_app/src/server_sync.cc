@@ -288,7 +288,7 @@ size_t EncodeStateSnapshot(const StateSnapshotInput& in, char* out, size_t capac
     const char* mood = MoodName(in.pet.mood);
     if (!in.generation || in.generation > static_cast<uint64_t>(INT64_MAX) || !mode || !mood ||
         !in.pet.active_page || in.battery_pct > 100 || in.awaiting_count > kMaxAwaitingConfirm ||
-        in.receipt_count > kMaxReceipts || !in.fw_version)
+        in.receipt_count > kMaxReceipts || !in.fw_version || (in.stickers & ~kAllStickers))
         return 0;
     const size_t fw_len = std::strlen(in.fw_version);
     if (!fw_len || fw_len > 40) return 0;
@@ -308,7 +308,7 @@ size_t EncodeStateSnapshot(const StateSnapshotInput& in, char* out, size_t capac
 
     Writer w{out, capacity};
     w.Format("{\"schema_version\":\"2.0\",\"generation\":%" PRIu64
-             ",\"ledger_schema\":3,\"fw_version\":\"%s\",\"rtc_day\":%" PRIu32,
+             ",\"ledger_schema\":4,\"fw_version\":\"%s\",\"rtc_day\":%" PRIu32,
              in.generation, in.fw_version, in.rtc_day);
     w.Format(",\"pet\":{\"mode\":\"%s\",\"mood\":\"%s\",\"interaction_count\":%" PRIu32
              ",\"active_page\":%u,\"quiet\":%s}",
@@ -329,6 +329,13 @@ size_t EncodeStateSnapshot(const StateSnapshotInput& in, char* out, size_t capac
         if (!ValidCommandId(r.command_id)) return 0;
         w.Format("%s{\"command_id\":%" PRIu64 ",\"result\":\"%s\"}", i ? "," : "", r.command_id,
                  ReceiptName(r.result));
+    }
+    w.Put("],\"stickers\":[");
+    bool first = true;
+    for (uint8_t bit = 0; bit < kStickerCount; ++bit) {
+        if (!(in.stickers & (1u << bit))) continue;
+        w.Format("%s%u", first ? "" : ",", static_cast<unsigned>(bit));
+        first = false;
     }
     w.Put("]}");
     if (!w.ok || w.used > kSnapshotMaxBytes) {

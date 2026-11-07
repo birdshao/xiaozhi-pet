@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/care_store.h"
 #include "kid_app/memory_store.h"
 #include "kid_app/parent_settings.h"
 #include "kid_app/pet_controller.h"
@@ -23,20 +24,24 @@ namespace kid_app {
 // empty memory; the next commit writes v2 to the other slot and leaves the v1
 // slot intact. Schema v3 appends the V3-06 parent settings (day plan,
 // volume cap, motion switch) the same way: v1/v2 blobs load with the default
-// settings and the next commit writes v3. Not the legacy kid_pet or
-// kid_bridge NVS format.
+// settings and the next commit writes v3. Schema v4 (V8) appends the
+// CareStore (needs, taste, stickers, wardrobe, habit, birthday) the same
+// way: v1..v3 blobs load with an empty care store and the next commit
+// writes v4 to the other slot. Not the legacy kid_pet or kid_bridge NVS
+// format.
 // One task must own this object (do not call from HTTP/ISR callbacks).
 class PetAtomicLedger {
 public:
     static constexpr size_t kV1Bytes = 28 + PetCheckpointCodec::kBytes +
                                        PetDeviceBridge::kCapacity * 24 + 4;
     static constexpr size_t kV2Bytes = kV1Bytes + MemoryStore::kBytes;
-    static constexpr size_t kBytes = kV2Bytes + ParentSettingsCodec::kBytes;
+    static constexpr size_t kV3Bytes = kV2Bytes + ParentSettingsCodec::kBytes;
+    static constexpr size_t kBytes = kV3Bytes + CareStore::kBytes;
     class Store {
     public:
         using Blob = std::array<uint8_t, kBytes>;
         virtual ~Store() = default;
-        // On Ok, *length is the stored size: kBytes (v3), kV2Bytes or kV1Bytes
+        // On Ok, *length is the stored size: kBytes (v4), kV3Bytes, kV2Bytes or kV1Bytes
         // (older, in the prefix of *out). Any other size fails decode as corrupt.
         virtual BlobReadStatus Read(unsigned slot, Blob* out, size_t* length) = 0;
         virtual bool Write(unsigned slot, const Blob& value) = 0;
@@ -81,8 +86,19 @@ public:
     // V5 structured memory event (choice answer, finished book/game, parent
     // wipe or temperament). Shares the Pet replay-id window, so a replayed
     // id is Duplicate and never double-counts. Guard rules: MemoryStore::Apply.
-    CommitResult RecordMemory(const MemoryEvent& event);
+    // care_minute (CareMinute, 0 = unknown) lets a finished book or game
+    // count as play for the V8 needs in the same commit. A parent wipe also
+    // forgets the care data (CareStore::WipeChildData); stickers earned by
+    // new milestones are added in the same commit.
+    CommitResult RecordMemory(const MemoryEvent& event, uint32_t care_minute = 0);
     const MemoryStore& Memory() const { return memory_; }
+    // V8 care event (feeding choice, bath, brush, tickle, lullaby, habit
+    // tick, clothes, parent habit / birthday, festival seen). Shares the
+    // Pet replay-id window; guard rules: CareStore::Apply. Stickers are
+    // re-evaluated against the memory growth in the same commit;
+    // *new_stickers (optional) gets the bits earned by this commit.
+    CommitResult RecordCare(const CareEvent& event, uint32_t* new_stickers = nullptr);
+    const CareStore& Care() const { return care_; }
     // True when `id` is in the shared replay window (a pet, memory or
     // parent event already committed with that id). Server commands use it
     // to answer a redelivered, already applied command without asking again.
@@ -101,20 +117,22 @@ public:
     size_t PendingCount() const { return queue_.count; }
 
 private:
-    // next_parent null keeps the current parent settings.
+    // next_parent / next_care null keep the current ones.
     bool Commit(const PetCheckpoint& next_pet,
                 const PetDeviceBridge::State& next_queue,
                 const MemoryStore& next_memory,
-                const ParentSettings* next_parent = nullptr);
-    // version 3 is written; versions 1 and 2 are only produced for the
+                const ParentSettings* next_parent = nullptr,
+                const CareStore* next_care = nullptr);
+    // version 4 is written; versions 1..3 are only produced for the
     // canonical check of an older blob being migrated.
     static bool Encode(const PetCheckpoint& pet,
                        const PetDeviceBridge::State& queue,
                        const MemoryStore& memory, const ParentSettings& parent,
-                       uint16_t version, uint64_t generation, Store::Blob* blob);
+                       const CareStore& care, uint16_t version, uint64_t generation,
+                       Store::Blob* blob);
     static bool Decode(const Store::Blob& blob, size_t length, PetCheckpoint* pet,
                        PetDeviceBridge::State* queue, MemoryStore* memory,
-                       ParentSettings* parent, uint64_t* generation);
+                       ParentSettings* parent, CareStore* care, uint64_t* generation);
     static bool IsProjectable(PetAction action);
     static bool ValidId(const char* device_id);
 
@@ -123,6 +141,7 @@ private:
     PetDeviceBridge::State queue_{};
     MemoryStore memory_{};
     ParentSettings parent_{};
+    CareStore care_{};
     uint64_t generation_ = 0;
     int active_slot_ = -1;
     bool initialized_ = false;
