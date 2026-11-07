@@ -13,12 +13,13 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import Settings, read_env
 from .db import MIGRATIONS, connect
-from .xz_checklist import _weak, check_xiaozhi_config  # noqa: F401  (re-exported)
+from .xz_checklist import _weak, check_xiaozhi_config, is_placeholder_host, websocket_problems  # noqa: F401
 
 MAGIC = b"PETBK1\n"
 CHUNK = 1 << 20
@@ -258,6 +259,13 @@ def check_deployment(env: dict) -> list[str]:
                             "(172.28.0.1 for a proxy on the VM itself), not loopback")
     except ValueError:
         problems.append("KID_PET_TRUSTED_PROXY must be a single IP address (no CIDR or list)")
+    ws = env.get("XZ_WEBSOCKET_URL", "")
+    origin = env.get("KID_PET_PUBLIC_ORIGIN", "")
+    if ws:
+        problems += websocket_problems(ws)
+    elif is_placeholder_host(urlsplit(origin).hostname or ""):
+        problems.append("devices would be told a placeholder websocket host: set XZ_WEBSOCKET_URL "
+                        "(LAN) or a real KID_PET_PUBLIC_ORIGIN")
     if env.get("KID_PET_CHILD_MODE") != "1":
         problems.append("KID_PET_CHILD_MODE must be 1")
     for name in ("KID_PET_UPSTREAM_DEVICE_ID", "KID_PET_BUSINESS_DEVICE_ID"):
@@ -282,6 +290,15 @@ def check_deployment(env: dict) -> list[str]:
 
 def check_env_file(path) -> list[str]:
     return check_deployment({**read_env(path), **os.environ})
+
+
+def deployment_warnings(env: dict) -> list[str]:
+    """Non-fatal findings: usable for a LAN bring-up, but not final."""
+    warnings = []
+    if is_placeholder_host(urlsplit(env.get("KID_PET_PUBLIC_ORIGIN", "")).hostname or ""):
+        warnings.append("KID_PET_PUBLIC_ORIGIN is still a placeholder domain; parent pages and the final "
+                        "wss:// address need the real one (D14)")
+    return warnings
 
 
 def permission_warnings(*paths) -> list[str]:

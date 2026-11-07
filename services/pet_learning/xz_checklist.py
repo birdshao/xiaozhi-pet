@@ -5,6 +5,7 @@ this single file and refuses to start when the rendered config fails it.
 """
 from __future__ import annotations
 
+import ipaddress
 from urllib.parse import urlsplit
 
 PLACEHOLDER_MARKERS = ("change-me", "changeme", "change_me", "你的", "example-secret")
@@ -13,6 +14,44 @@ PLACEHOLDER_MARKERS = ("change-me", "changeme", "change_me", "你的", "example-
 def _weak(value: str) -> bool:
     lowered = value.lower()
     return not value or any(marker in lowered for marker in PLACEHOLDER_MARKERS)
+
+
+PLACEHOLDER_SUFFIXES = (".example", ".invalid", ".test", ".localhost",
+                        "example.com", "example.org", "example.net")
+
+
+def is_placeholder_host(host: str) -> bool:
+    """RFC 2606 reserved names and localhost: never a real address a device can reach."""
+    host = (host or "").lower().rstrip(".")
+    return host == "localhost" or any(host == s.lstrip(".") or host.endswith(s) for s in PLACEHOLDER_SUFFIXES)
+
+
+def websocket_problems(url: str, public_origin: str = "") -> list[str]:
+    """Rules for the address OTA hands to devices.
+
+    With a public origin: wss:// on the same host:port. Without one (LAN bring-up via
+    XZ_WEBSOCKET_URL): wss://, or plain ws:// only to a literal private IP.
+    """
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return ["server.websocket is not a valid URL"]
+    if is_placeholder_host(host):
+        return [f"server.websocket points at a placeholder host ({host or 'empty'}); set the real address"]
+    if parts.scheme == "wss":
+        if public_origin and parts.netloc != urlsplit(public_origin).netloc:
+            return ["server.websocket host:port must match KID_PET_PUBLIC_ORIGIN"]
+        return []
+    if parts.scheme == "ws" and not public_origin:
+        try:
+            if ipaddress.ip_address(host).is_private:
+                return []
+        except ValueError:
+            pass
+        return ["server.websocket may use ws:// only with a literal private (LAN) IP"]
+    return ["server.websocket must be a wss:// address"]
 
 
 def check_xiaozhi_config(cfg: dict, public_origin: str = "") -> list[str]:
@@ -29,12 +68,7 @@ def check_xiaozhi_config(cfg: dict, public_origin: str = "") -> list[str]:
         problems.append("server.auth_key must be a private random value of at least 32 characters")
     if server.get("mqtt_gateway") or server.get("udp_gateway"):
         problems.append("server.mqtt_gateway / udp_gateway must be unset")
-    websocket = str(server.get("websocket") or "")
-    if not websocket.startswith("wss://"):
-        problems.append("server.websocket must be a wss:// address")
-    elif public_origin:
-        if urlsplit(websocket).netloc != urlsplit(public_origin).netloc:
-            problems.append("server.websocket host:port must match KID_PET_PUBLIC_ORIGIN")
+    problems += websocket_problems(str(server.get("websocket") or ""), public_origin)
     if cfg.get("read_config_from_api"):
         problems.append("read_config_from_api must be false (no manager-api, so no chat history/audio reports)")
     if (cfg.get("manager-api") or {}).get("url"):
