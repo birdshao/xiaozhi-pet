@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .config import Settings
 from .auth import ParentAuth
+from . import pairing
 from .routers import device, voice, parent
 from .quiz import QuizEngine
 from .story_reader import StoryReader
@@ -86,6 +87,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(device.create_router(store, quiz, reader))
     app.include_router(voice.create_router(store, quiz, reader))
     app.include_router(parent.router)
+    pairing.mount(app, database)
 
     return app
 
