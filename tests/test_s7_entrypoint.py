@@ -13,7 +13,7 @@ except ImportError:  # neither ruamel.yaml nor PyYAML
     entrypoint = None
 
 BASE = (ROOT / "deploy" / "xiaozhi" / "child.config.yaml").read_text(encoding="utf-8")
-ENV = {"KID_PET_PUBLIC_ORIGIN": "https://pet.example.com:8443", "XZ_AUTH_KEY": "k" * 40}
+ENV = {"KID_PET_PUBLIC_ORIGIN": "https://pet.family-home.net:8443", "XZ_AUTH_KEY": "k" * 40}
 
 
 @unittest.skipIf(entrypoint is None, "no YAML library")
@@ -21,7 +21,7 @@ class EntrypointTests(unittest.TestCase):
     def test_base_config_with_env_passes_checklist(self):
         config, problems = entrypoint.build_config(BASE, ENV)
         self.assertEqual(problems, [])
-        self.assertEqual(config["server"]["websocket"], "wss://pet.example.com:8443/xiaozhi/v1/")
+        self.assertEqual(config["server"]["websocket"], "wss://pet.family-home.net:8443/xiaozhi/v1/")
         self.assertEqual(config["server"]["auth_key"], "k" * 40)
 
     def test_module_selection_and_secret_values_stay_strings(self):
@@ -34,6 +34,19 @@ class EntrypointTests(unittest.TestCase):
         llm, tts = config["LLM"]["ChatGLMLLM"], config["TTS"]["EdgeTTS"]
         self.assertEqual((llm["api_key"], llm["other"], llm["nothing"]), ("1e5", "0123", "null"))
         self.assertEqual((tts["flag"], tts["empty"]), ("yes", ""))
+
+    def test_lan_websocket_override(self):
+        placeholder = {"KID_PET_PUBLIC_ORIGIN": "https://pet.example.com:8443", "XZ_AUTH_KEY": "k" * 40}
+        _, problems = entrypoint.build_config(BASE, placeholder)
+        self.assertTrue(any("placeholder" in p for p in problems), problems)
+        lan = {**placeholder, "XZ_WEBSOCKET_URL": "ws://192.168.1.110:8780/xiaozhi/v1/"}
+        config, problems = entrypoint.build_config(BASE, lan)
+        self.assertEqual(problems, [])
+        self.assertEqual(config["server"]["websocket"], "ws://192.168.1.110:8780/xiaozhi/v1/")
+        for bad in ("ws://pet.family-home.net/xiaozhi/v1/", "ws://8.8.8.8:8780/xiaozhi/v1/",
+                    "ws://pet.example.com/xiaozhi/v1/", "http://192.168.1.110:8780/"):
+            _, problems = entrypoint.build_config(BASE, {**lan, "XZ_WEBSOCKET_URL": bad})
+            self.assertTrue(problems, bad)
 
     def test_typed_values_are_opt_in(self):
         env = {**ENV, "XZ__TTS__EdgeTTS__speed": "yaml:1.2", "XZ__TTS__EdgeTTS__on": "yaml:true"}

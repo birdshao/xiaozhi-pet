@@ -38,7 +38,10 @@ def build_config(base_text, environ):
     config = load(base_text)
     origin = environ.get("KID_PET_PUBLIC_ORIGIN", "")
     config["server"]["auth_key"] = environ.get("XZ_AUTH_KEY", "")
-    if origin:
+    override = environ.get("XZ_WEBSOCKET_URL", "")
+    if override:  # explicit address wins (LAN bring-up: ws://<VM IP>:8780/xiaozhi/v1/)
+        config["server"]["websocket"] = override
+    elif origin:
         config["server"]["websocket"] = "wss://" + urlsplit(origin).netloc + "/xiaozhi/v1/"
     for env_name, module in (("XZ_ASR_MODULE", "ASR"), ("XZ_LLM_MODULE", "LLM"), ("XZ_TTS_MODULE", "TTS")):
         if environ.get(env_name):
@@ -46,7 +49,7 @@ def build_config(base_text, environ):
     for name, value in environ.items():  # XZ__LLM__<module>__api_key=...
         if name.startswith("XZ__"):
             set_path(config, name[4:].split("__"), override_value(value))
-    problems = check_xiaozhi_config(config, origin if origin.startswith("https://") else "")
+    problems = check_xiaozhi_config(config, origin if origin.startswith("https://") and not override else "")
     return config, problems
 
 

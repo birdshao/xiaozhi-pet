@@ -29,6 +29,12 @@ docker compose --env-file .env up -d --build
 docker compose ps                              # 三个服务都应为 healthy
 ```
 
+**设备在局域网、公网入口还没做时**：在 `.env` 里设 `XZ_WEBSOCKET_URL=ws://<VM 内网 IP>:8780/xiaozhi/v1/`，重建小智容器（`docker compose --env-file .env up -d --build xiaozhi-server`）。公网入口就绪后把它清空，并把 `KID_PET_PUBLIC_ORIGIN` 改成真实 https 域名。`check-config` 在 origin 还是占位域名时打印 WARN；若设备将被告知的 websocket 地址仍是占位域名（既没设覆盖，origin 又是占位），直接 FAIL。验证：
+
+```sh
+curl -s -X POST http://<VM 内网 IP>:8780/xiaozhi/ota/ -H 'Device-Id: aa:bb:cc:dd:ee:ff' -H 'Client-Id: test' -H 'Content-Type: application/json' -d '{}'   # websocket.url 应为上面的地址
+```
+
 构建只依赖 GitHub、阿里云 PyPI 镜像和 Docker 镜像加速器（国内网络访问不了 Docker Hub 时在 `/etc/docker/daemon.json` 配 `registry-mirrors`）。
 
 创建家长账号和绑定设备（在 pet-learning 容器内、本地终端执行，密码/令牌不进命令行参数）：
@@ -77,7 +83,7 @@ systemctl start pet-maintenance.service && journalctl -u pet-maintenance -n 20  
 | X2 | `server.auth.allowed_devices` | 空 | 白名单设备**跳过** token 校验，默认示例 `11:22:33:44:55:66` 必须清掉。真正的“只处理自己的板子”靠守卫：`conn.device_id` 必须等于 `KID_PET_UPSTREAM_DEVICE_ID`，其余连接只得到固定提示句 |
 | X3 | `server.auth_key` | ≥32 位私密随机值 | token 的 HMAC 密钥；留空时上游会自动生成，不可复现，所以显式配置（`XZ_AUTH_KEY`） |
 | X4 | `server.mqtt_gateway` / `udp_gateway` | 未设置 | 不走 MQTT/UDP 网关，只有 WSS |
-| X5 | `server.websocket` | `wss://` 且与 `KID_PET_PUBLIC_ORIGIN` 同主机端口 | OTA 向设备下发的语音地址 |
+| X5 | `server.websocket` | 默认 `wss://` 且与 `KID_PET_PUBLIC_ORIGIN` 同主机端口；局域网调试可用 `.env` 的 `XZ_WEBSOCKET_URL` 覆盖为 `ws://<VM 内网 IP>:8780/xiaozhi/v1/`（`ws://` 只接受字面私有 IP）。占位域名（example.com/.test/localhost 等）一律拒绝 | OTA 向设备下发的语音地址，设备在局域网时不能是占位域名 |
 | X6 | `read_config_from_api`、`manager-api.url` | `false` / 未设置 | 聊天记录、音频只通过 manager-api 上报（`reportHandle.py`），不接管理端就没有这条路 |
 | X7 | `delete_audio` | `true` | 不保留音频文件 |
 | X8 | `selected_module.Memory` | `nomem` | 关闭小智记忆 |
