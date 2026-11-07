@@ -157,8 +157,8 @@ v4 = v3 + 96 字节 `CareStore`，追加在 CRC 之前：v1 1480 B、v2 1768 B�
 
 ### 追加一个活动（3 步）
 
-1. **追加 id**：在 `enum class GameChoice` 末尾追加一个值（从 13 起，已占用 1–12）。
-   只追加，不改号、不复用。建议分段：会话② 13–19、会话③ 20–26、会话④ 27–33。
+1. **追加 id**：在 `enum class GameChoice` 末尾追加一个值（已占用 1–30）。
+   只追加，不改号、不复用。分段见下面的“编号分段约定”（会话② 已用 13–30，会话③ 31–40，会话④ 41–50）。
 2. **追加一行**：在 `kActivities[]` 里对应分组的“append ... rows above this line”注释
    上方加一行 `{GameChoice::Xxx, ActivityGroup::Play, 图片id, ActivityNeeds::..., "xxx"}`。
    - 图片必须是 `SceneComposer` 已经会画的 id（`GameArt` / `MicArt` / `CareArt`）；
@@ -173,7 +173,6 @@ v4 = v3 + 96 字节 `CareStore`，追加在 CRC 之前：v1 1480 B、v2 1768 B�
 
 表是头文件内 `constexpr`，追加行**不需要**改任何编译脚本。卡片顺序就是表的顺序；
 `ActivityIndexOf(id)` 给出某个 id 在本组里的卡片下标（用于被拒绝后重新打开菜单停在原卡片）。
-注意 V8 在 Play 组末尾加了“贴纸本”，所以 Play 组现在有 6 张卡；其他会话的新行加在“贴纸本”之后。
 
 主机测试：`tests/cpp/test_motion_game.cc` 的 `TestActivityList()` 会遍历 Play 和 Care 组的每一行，
 确认菜单能选到、按下返回的 id 正确。追加行后这个测试自动覆盖新行。
@@ -184,12 +183,13 @@ v4 = v3 + 96 字节 `CareStore`，追加在 CRC 之前：v1 1480 B、v2 1768 B�
 
 | 编号 | 会话① 养成 | 会话② 小游戏 | 会话③ 声音/作息 | 会话④ 绘本 | 备注 |
 |---|---|---|---|---|---|
-| `GameChoice`（活动 id） | 6–12（已用） | 13–19 | 20–26 | 27–33 | 1–5 是 V4 游戏；34 以后先在共享笔记里登记再用 |
-| 卡片图片 id（`GameArt` 命名空间） | 600–699（`CareArt`） | 200–399 和 0x2000–0x3FFF（`PlayArt`，#107 现状） | 400–499 | 500–599 | 1–99 `GameArt`（KPG1 目录）、101–199 `MicArt`；**0x4000 以上不能用**（那是 `GameArtTone` 的提示音 clip id） |
+| `GameChoice`（活动 id） | 6–12（已用） | 13–30（已用，#107） | 31–40 | 41–50 | 1–5 是 V4 游戏；51 以后先在共享笔记里登记再用 |
+| 卡片图片 id（`GameArt` 命名空间） | 600–699（`CareArt`，已用 601–660） | 400–599 和 0x2000–0x3FFF（`PlayArt`，#107 已用 401–513） | 700–799 | 800–899 | 1–99 `GameArt`（KPG1 目录）、101–199 `MicArt`；200–399 暂空；**0x4000 以上不能用**（那是 `GameArtTone` 的提示音 clip id） |
 | 声音包片段 id（KPS1） | 1000–1999（护理话术） | — | 需要时用 2000 以上（须再放宽 `sound_pack_reader` 与 `tools/sound_pack.py` 的上限）或 600–999 中未用的段 | 同左 | 1–5 选项名、100–999 V5 宠物话术 |
 
-本 PR 原先把 `CareArt` 放在 201–260，与 #107 的 `PlayArt` 重叠；已整体挪到 601–660，#107 不用改。
-新的图片 id 段要能让 `GameArtIcon()` 分派到各自的绘制函数（`CareArtValid` / `PlayArt*Valid` 等判断不能互相覆盖）；`ActivityTableValid()` 只认识 `GameArt`、`MicArt`、`CareArt`，其他会话追加活动行时请把自己的 `*ArtValid` 加进这个判断。
+`CareArt` 原先在 201–260，#107 合并时已把 `PlayArt` 挪到 401 以上，本 PR 又把 `CareArt` 挪到 601–660，两边现在互不重叠。
+新的图片 id 段要能让 `GameArtIcon()` 分派到各自的绘制函数（`CareArtValid` / `PlayArtValid` 等判断不能互相覆盖）；`ActivityTableValid()` 现在认识 `GameArt`、`MicArt`、`CareArt`、`PlayArt`，其他会话追加活动行时请把自己的 `*ArtValid` 加进这个判断。
+Play 组现在的卡片顺序：V4 的 5 个游戏 → #107 的 18 个小游戏 → 贴纸本（会话①）；其他会话的新行加在贴纸本之后。
 
 ## 6. 代码地图
 
