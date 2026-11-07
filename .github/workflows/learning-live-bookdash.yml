@@ -1,16 +1,14 @@
 name: Learning live Book Dash research smoke
 
+# Live network / external TTS only: never a pull-request gate (offline
+# fixtures in learning-content-pipeline.yml cover the code on every PR).
 on:
-  pull_request:
-    paths:
-      - 'content_pipeline/**'
-      - 'curriculum/pilots/**'
-      - 'tools/learning_live_bookdash_pilot.py'
-      - '.github/workflows/learning-live-bookdash.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
 
 concurrency:
-  group: learning-bookdash-${{ github.event.pull_request.number || github.ref }}
+  group: learning-bookdash-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -34,7 +32,7 @@ jobs:
             --output-dir research_content/live_bookdash
       - name: State research-only limits
         run: |
-          echo "Images downloaded from a pinned upstream Git SHA and tested in 24 electronic-paper previews." >> "$GITHUB_STEP_SUMMARY"
+          echo "Images downloaded from a pinned upstream Git SHA and tested in 26 electronic-paper previews (12 pages + generated credits page)." >> "$GITHUB_STEP_SUMMARY"
           echo "Chinese text is an unreviewed AI-assisted adaptation. Audio is synthetic sine tones (test_only)." >> "$GITHUB_STEP_SUMMARY"
           echo "This is not approved content, nor a real ESP32/ePaper display validation." >> "$GITHUB_STEP_SUMMARY"
       - name: Provide preview PNGs with Book Dash credits (research only)
@@ -62,7 +60,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install real TTS and portable ffmpeg wheel
-        run: python -m pip install 'edge-tts>=7.3.0,<8.0' 'imageio-ffmpeg>=0.6.0,<1.0'
+        run: python -m pip install 'edge-tts==7.3.1' 'imageio-ffmpeg==0.6.0'
       - name: Probe a single real Chinese phrase (not uploaded)
         id: tts
         run: |
@@ -98,7 +96,7 @@ jobs:
       - name: Install Pillow, real TTS and portable ffmpeg wheel
         run: |
           python -m pip install -r tools/story_pack_requirements.txt
-          python -m pip install 'edge-tts>=7.3.0,<8.0' 'imageio-ffmpeg>=0.6.0,<1.0'
+          python -m pip install 'edge-tts==7.3.1' 'imageio-ffmpeg==0.6.0'
       - name: Download full source and synthesize 12 Chinese pages, no approval
         id: fulltts
         run: |
