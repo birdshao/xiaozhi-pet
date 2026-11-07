@@ -87,7 +87,7 @@ jobs:
       - name: Install preview, Edge TTS and portable FFmpeg dependencies
         run: |
           python -m pip install -r tools/story_pack_requirements.txt
-          python -m pip install 'edge-tts>=7.3.0,<8.0' 'imageio-ffmpeg>=0.6.0,<1.0'
+          python -m pip install 'edge-tts==7.3.1' 'imageio-ffmpeg==0.6.0'
       - name: Build real Mandarin placeholder KPG1 and run native C++ flow
         id: voice
         continue-on-error: true

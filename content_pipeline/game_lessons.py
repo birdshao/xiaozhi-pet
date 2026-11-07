@@ -30,7 +30,7 @@ UNIT_COURSES = {
 SHAPES = ("circle", "square", "triangle", "star", "heart")
 SHAPE_NAMES = {
     "circle": "圆形", "square": "正方形", "triangle": "三角形",
-    "star": "星形", "heart": "爱心形"
+    "star": "星星", "heart": "爱心"
 }
 NUMBERS = {1: "一个", 2: "两个", 3: "三个", 4: "四个", 5: "五个"}
 BALL_NAMES = {"ball_big": "大球", "ball_small": "小球"}
@@ -87,9 +87,9 @@ def original_math_lesson() -> dict[str, Any]:
         ("big", "听一听，哪一个是大球？"),
     ]
     for i, (target, prompt) in enumerate(comparisons):
-        arts = ["ball_big", "ball_small"]
-        if i % 2:
-            arts.reverse()
+        # Answer is first for rounds 1 and 4 only, so position is not a cue.
+        other = "ball_small" if target == "big" else "ball_big"
+        arts = [f"ball_{target}", other] if i in (0, 3) else [other, f"ball_{target}"]
         rounds.append({
             "kind": "big_small", "skill": "math.size_compare",
             "target": target, "question_art": "listen",

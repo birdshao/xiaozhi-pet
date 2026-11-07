@@ -119,7 +119,9 @@ def _verified_package(path: Path, *, allow_test_artifacts: bool) -> dict:
         sd_path = f"/books/{path.name}"
         if meta.get("package_bytes") != len(data):
             raise ContentError("package: book length mismatch")
-        placeholder = False  # book sidecars lack this flag; still only local index
+        placeholder = meta.get("placeholder") is True
+        if placeholder and not allow_test_artifacts:
+            raise ContentError("package: test placeholders are not child content")
     else:
         parsed = game_pack.parse(data)
         if meta.get("format") != "KPG1" or meta.get("reviewed") is not True:
@@ -134,6 +136,12 @@ def _verified_package(path: Path, *, allow_test_artifacts: bool) -> dict:
         placeholder = meta.get("placeholder") is True
         if placeholder and not allow_test_artifacts:
             raise ContentError("package: test tone placeholders are not child content")
+    # Only the review gate records the hash a human attested; a bare
+    # make_pack(..., reviewed=True) sidecar flag is not evidence of review.
+    checked = meta.get("checked_hash")
+    if not (isinstance(checked, str) and re.fullmatch(r"[0-9a-f]{64}", checked)) \
+            and not allow_test_artifacts:
+        raise ContentError("package: no review-gate checked_hash (use --test-only for fixtures)")
     if meta.get("content_id") != parsed["content_id"] or \
             meta.get("revision") != parsed["revision"] or \
             meta.get("package_type") != kind:

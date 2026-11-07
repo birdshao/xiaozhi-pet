@@ -106,6 +106,8 @@ python -m tools.learning_course_sd \
   --output-dir research_content/tf_math_courses
 ```
 
+> 注意：`tools.learning_course_sd` 只在 `--output-dir` 指定的**本机新目录**里整理出 `/games/` 目录树（staging-only），不会写入 TF 卡；请人工检查后自行复制到卡上。每个包的旁路元数据必须带审核闸门写入的 `checked_hash`（仅 `--test-only` 例外），直接调用 `make_pack(..., reviewed=True)` 得到的包会被拒绝。
+
 脚本会解析全部 KPG1 二进制、核对原始 `sha256`、审核旁路元数据与内容 ID，并生成含三单元的 `COURSEINDEX1`。所有检查先在临时目录进行，再原子移至目标文件夹；目标目录已存在则拒绝覆盖。
 
 输出 `games/*.kpg`、`games/active.txt`、`course-index.json`、`card-report.json` 以及说明文件。**它不会直接格式化或写入已挂载 TF 卡，也不负责刷固件。** 家长自行核对后复制 `games/` 到 TF 根目录。

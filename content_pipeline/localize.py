@@ -38,6 +38,7 @@ def localize_bookdash(source_file: Path, translations_file: Path, output: Path,
         raise ContentError("translation: distinct content_id is required from English book")
     if output.resolve() in (source_file.resolve(), translations_file.resolve()):
         raise ContentError("translation: refusing to overwrite input")
+    wordless = ", ".join(str(p["number"]) for p in origin["pages"] if p["text"] == "")
     result = copy.deepcopy(origin)
     slug = origin["source"]["source_item_id"].split("/")[0]
     result["item_uid"] = f"bookdash:{slug}:zh-hans:translation"
@@ -49,8 +50,10 @@ def localize_bookdash(source_file: Path, translations_file: Path, output: Path,
     result["transformations"] = [{
         "kind": "translation", "source_locale": "en",
         "target_locale": "zh-Hans", "source_digest": content_digest(origin),
-        "method": "manual_draft",
-        "notes": "Page-aligned Chinese draft, not yet approved by an adult.",
+        "method": "ai_assisted_draft",
+        "notes": ("AI-assisted page-aligned Chinese draft, not yet approved by an adult."
+                  + (f" Added text on wordless original pages {wordless}."
+                     if wordless else "")),
     }]
     for page, text in zip(result["pages"], texts):
         page["text"] = text.strip()

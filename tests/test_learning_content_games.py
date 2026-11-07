@@ -187,7 +187,10 @@ class GameStage(unittest.TestCase):
         mapping = audio_map(self.draft)
         key = next(iter(mapping["clips"]))
         link = self.audio / "outside.wav"
-        link.symlink_to(external)
+        try:
+            link.symlink_to(external)
+        except OSError as exc:
+            self.skipTest(f"cannot create symlinks on this OS: {exc}")
         mapping["clips"][key] = "outside.wav"
         write_json(self.audio_map_path, mapping)
         with self.assertRaisesRegex(ContentError, "escapes"):

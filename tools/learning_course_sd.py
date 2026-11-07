@@ -1,6 +1,8 @@
 """Create a TF-card /games/ tree from real SHA-verified KPG1 course packages.
 
-This is a LOCAL file-staging helper, not a server approval service. Without
+This is a STAGING-ONLY helper: it writes a /games/ tree into a new local
+directory and never writes to a TF card itself; copy that tree to the card
+yourself after review. It is not a server approval service. Without
 --test-only, it rejects placeholders. A trusted adult must separately review
 and approve each source package. The device's KPG1 CRC is NOT a signature.
 """
