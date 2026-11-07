@@ -7,11 +7,18 @@ PETSELFTEST1
 # expect selftest_done 1
 # expect max_partial_ms 2500
 # expect max_full_ms 5000
-# V8: Feed opens the care menu (full), the fish card opens the food
-# picker's reaction (full + 1 partial for the hearts), then home (full).
-# Recounted from the V7 numbers (18 / 3); to be confirmed on the board.
-# expect partial_refreshes 19
-# expect full_refreshes 6
+# V8 Feed = three presses: the rail opens the care menu (full), the food
+# card opens the food picker (full), the fish option feeds (reaction
+# 2.5 s: one partial for the hearts), then home (full) with the feed
+# animation (3 partials). Story then adds 2 fulls (book-missing page, back
+# home). Partials: 12 rail moves (0,1,2,3,4,3,2,1,0,1,2,3) + 1 hearts + 3
+# feed animation frames + 2 rail moves after it = 18. Fulls: care menu,
+# food picker, home, story page, home = 5. The hearts partial needs the
+# PetRefreshGate fix (care scenes were never compared, so the 2026-11-07
+# board logs show no refresh between picker and home); the other numbers
+# are counted from those logs.
+# expect partial_refreshes 18
+# expect full_refreshes 5
 # Quiet prompts while testing (RAM only, this boot).
 volume 15
 # Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a
@@ -36,14 +43,18 @@ tap up 2500
 tap up 2500
 tap up 6000
 tap up 6000
-# Feed (index 3), V8: the care menu opens on the food card; a press feeds
-# the fish (reaction 2.5 s), then home: durable Feed, happy face + hearts.
+# Feed (index 3), V8: press = care menu (food card), press = food picker
+# (fish first), press = feed the fish (reaction 2.5 s), then home: durable
+# Feed, happy face + hearts. The wait outlasts the home full refresh
+# (~4.4 s) and the 3-frame feed animation, so the next dial moves are
+# plain rail moves and not folded into the animation.
 tap down 2500
 tap down 2500
 tap down 2500
 tap press 6000
 tap press 6000
-wait 4000
+tap press 3000
+wait 9000
 # Story (index 1): reader page 1, next page (V4-05: UI-only, no commit),
 # then back home.
 tap up 2500

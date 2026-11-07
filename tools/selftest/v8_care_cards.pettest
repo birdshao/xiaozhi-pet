@@ -1,0 +1,88 @@
+PETSELFTEST1
+# V8 care menu without a person: Feed (rail item 3) opens the care menu,
+# card 0 is the food picker (press = menu, press = picker, dial down =
+# milk, press = feed it), then bath (3 gentle shakes + face down), brush
+# (6 strokes = 6 changes of dial direction) and the good-habit card.
+# Counted from "mark begin" (see tools/selftest_report.py).
+# Needs: motion on in the parent menu (default), outside the quiet hours
+# (the "phase day" step pins the day phase), battery above the low level.
+# Menus: feed, bath, brush, habit.
+# expect min:PET_CARE_MENU 4
+# START and END both print the kind.
+# expect min:kind=feed 2
+# expect min:kind=bath 2
+# expect min:kind=brush 2
+# expect min:kind=habit 2
+# Food 2 (milk) was the dial's choice.
+# expect min:option=2 1
+# 3 gentle shakes + face down = 4 care gestures routed to the session.
+# expect min:care=1 4
+# Fed, Bathed and Brushed go to the ledger (a habit tick may add one).
+# expect min:PET_CARE_RECORD 3
+# expect min:result=committed 3
+# The meal is also the durable Feed once home: the yummy line.
+# expect min:PET_PHRASE_PLAY 1
+# expect none:PET_CARE_START_FAILED 0
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Feed(3).
+tap down 2500
+tap down 2500
+# Menu (full), food picker (full), milk, feed it: 2.5 s reaction, then
+# home (full) with the feed animation; the wait outlasts all of it.
+tap press 6000
+tap press 6000
+tap down 2500
+tap press 3000
+wait 11000
+# Bath: menu, second card, start; bubbles, then flip to rinse.
+tap press 6000
+tap down 2500
+tap press 6000
+gesture gentle
+wait 1500
+gesture gentle
+wait 1500
+gesture gentle
+wait 2500
+gesture facedown
+wait 12000
+# Brush: third card; 6 strokes, each a change of direction.
+tap press 6000
+tap down 2500
+tap down 2500
+tap press 6000
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 1500
+tap down 1500
+tap up 3000
+wait 10000
+# Habit: sixth card; without a habit set the card goes straight home, with
+# one the tick is asked of the ledger (either way the session ends).
+tap press 6000
+tap down 1200
+tap down 1200
+tap down 1200
+tap down 1200
+tap down 1200
+tap press 6000
+tap press 3000
+wait 10000
+pet
+wait 5000
+end

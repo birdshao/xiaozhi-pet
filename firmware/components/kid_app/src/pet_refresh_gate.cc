@@ -6,7 +6,7 @@ bool PetRefreshGate::Equal(const SceneModel& a, const SceneModel& b) {
     return a.kind == b.kind && a.emotion == b.emotion &&
            a.book_page == b.book_page && a.home_selection == b.home_selection &&
            a.pose == b.pose && a.status == b.status && a.parent == b.parent &&
-           a.game == b.game;
+           a.game == b.game && a.care == b.care;  // V8 care cards, hearts, progress
 }
 
 bool PetRefreshGate::Request(const SceneModel& scene) {

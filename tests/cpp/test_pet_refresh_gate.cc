@@ -52,6 +52,37 @@ int main() {
     assert(output.emotion == Emotion::Sleepy);
     assert(gate.Complete(true, 23000));
 
+    // V8 care scenes: a moved card highlight, a reaction (hearts) or a
+    // progress step is a different picture although kind / pose / page stay
+    // the same. The 2026-11-07 board logs showed none of them being drawn
+    // (no PET_DIAG_EPD between care start and care end).
+    {
+        PetRefreshGate care_gate(0);
+        SceneModel care_scene{};
+        care_scene.kind = SceneKind::Care;
+        care_scene.care.kind = CareKind::Feed;
+        care_scene.care.option_count = 3;
+        assert(care_gate.Request(care_scene));
+        assert(care_gate.Acquire(0, &output));
+        assert(care_gate.Complete(true, 10));
+        assert(!care_gate.Request(care_scene));
+        SceneModel moved = care_scene;
+        moved.care.highlight = 1;
+        assert(care_gate.Request(moved));
+        assert(care_gate.Acquire(20, &output));
+        assert(output.care.highlight == 1);
+        assert(care_gate.Complete(true, 30));
+        SceneModel react = moved;
+        react.care.phase = 1;
+        react.care.hearts = 3;
+        assert(care_gate.Request(react));
+        assert(care_gate.Acquire(40, &output));
+        assert(care_gate.Complete(true, 50));
+        SceneModel step = react;
+        step.care.progress = 2;
+        assert(care_gate.Request(step));
+    }
+
     // Re-entering pet mode after LVGL has redrawn requires a full paint
     // even if the desired pet scene did not change since prior session.
     gate.Reset();

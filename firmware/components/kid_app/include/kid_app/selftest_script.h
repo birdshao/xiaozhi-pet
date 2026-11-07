@@ -75,13 +75,20 @@ namespace kid_app {
 //                           real tap stays off): blow, clap, speech or noise.
 //                           Loudness numbers only, never audio. A clap is one
 //                           clap at the start of the step, then quiet
+//   phase <day|evening|night|off>
+//                           the day phase and quiet hours are that, whatever
+//                           the RTC says, for the rest of this boot (RAM
+//                           only): evening turns the reader into the bedtime
+//                           story (auto-turn, no questions), night is also
+//                           quiet hours; off hands back the RTC. Scenarios
+//                           that depend on the time of day say it first.
 //   end                     required: a truncated script is rejected
 //
 // keys: up, down, press, boot, pwr. Durations are limited to 10 minutes.
 enum class SelfTestOp : uint8_t {
     Wait, TogglePet, Hold, Mark, Alarm, Volume, Gesture, Morning, Voice, Battery,
     Combo, Book, Game, TimeScale, WaitIdle, TimerWait, Envelope, MicGame, Temp,
-    VoiceCmd
+    VoiceCmd, Phase
 };
 
 struct SelfTestStep {
@@ -94,7 +101,8 @@ struct SelfTestStep {
                           // kid_app::VoiceFace value for Voice (None = off);
                           // Battery: percent | kBatteryCharging, or kBatteryOff;
                           // Game: the seed; Envelope: duration ms;
-                          // Temp: whole degrees or kTempOff
+                          // Temp: whole degrees or kTempOff;
+                          // Phase: DayPhase value or kPhaseOff
     uint32_t gap_ms = 0;  // pause after releasing the key
     char name[16] = {};   // Mark; Book: book id; VoiceCmd: wire name; Envelope / MicGame: kind name
 };
@@ -108,6 +116,8 @@ public:
     static constexpr uint32_t kBatteryCharging = 0x100;
     static constexpr uint32_t kBatteryOff = 0x200;
     static constexpr uint32_t kTempOff = 0x100;
+    // Phase: ms = the kid_app::DayPhase value, or kPhaseOff for the RTC.
+    static constexpr uint32_t kPhaseOff = 0x100;
     static constexpr uint32_t kMaxTempC = 60;
     static constexpr uint32_t kMinTimeScalePct = 10;  // SelfTestClock::kMinPct
     static constexpr uint32_t kIdleSettleMs = 1000;   // WaitIdle: idle this long
