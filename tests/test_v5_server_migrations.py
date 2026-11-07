@@ -23,7 +23,7 @@ class MigrationTests(unittest.TestCase):
         for constructor in (PetStore, QuizEngine, StoryReader):
             constructor(self.path)
         with connect(self.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], len(list(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))))
             self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
 
