@@ -60,7 +60,7 @@ def prepare_cat_pilot(source_doc: Path, translations: Path, credits: Path,
         "Book Dash CC BY 4.0; Sam Scarborough is credited as designer")
     curated["source"]["creators"] = {
         "text": [meta["writer"]], "illustration": [meta["illustrator"]],
-        "translation": [],
+        "design": [meta["designer"]], "translation": [],
     }
     validate_document(curated)
 

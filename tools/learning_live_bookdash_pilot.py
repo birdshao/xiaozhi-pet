@@ -70,10 +70,11 @@ def build_research_preview(workdir: Path, *, narration: str = "synthetic") -> di
             raise ContentError("live source: real TTS must remain unreviewed draft")
         combine_book_assets(lcir, assets_dir)
     candidate = stage_book(lcir, assets_dir / "assets.json", staged_dir)
-    if len(candidate["preview_files"]) != 24 or len(candidate["stage_files"]) != 24:
-        raise ContentError("live source: expected 12 images, 12 tones and 24 previews")
+    # 12 story pages plus the generated credits page, each with image/audio/2 previews.
+    if len(candidate["preview_files"]) != 26 or len(candidate["stage_files"]) != 26:
+        raise ContentError("live source: expected 13 images, 13 audio files and 26 previews")
     review_packet = make_review_packet(staged_dir)
-    if review_packet["pages"] != 12:
+    if review_packet["pages"] != 13:  # 12 story pages + credits
         raise ContentError("live source: reviewer page count mismatch")
     if list(workdir.rglob("*.kpb")):
         raise ContentError("live source: unexpected child-facing package")

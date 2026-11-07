@@ -176,14 +176,21 @@ class GameStage(unittest.TestCase):
     def test_stage_symlink_and_output_name_protection(self):
         candidate = stage_game(self.lesson_path, self.audio_map_path, self.stage)
         review = self.review(candidate["checked_hash"])
-        with self.assertRaisesRegex(ContentError, "default.kpg"):
-            build_reviewed_game(self.stage, review, self.root / "another.kpg")
+        with self.assertRaisesRegex(ContentError, "unsafe"):
+            build_reviewed_game(self.stage, review, self.root / "Another.kpg")
+        named = build_reviewed_game(
+            self.stage, review, self.root / "another.kpg", smoke_only=True)
+        self.assertEqual(named["sd_path"], "/games/another.kpg")
+        self.assertEqual(len(gp.parse((self.root / "another.kpg").read_bytes())["rounds"]), 15)
         external = self.root / "outsider.wav"
         gp.write_wav(external, gp.tone([500]))
         mapping = audio_map(self.draft)
         key = next(iter(mapping["clips"]))
         link = self.audio / "outside.wav"
-        link.symlink_to(external)
+        try:
+            link.symlink_to(external)
+        except OSError as exc:
+            self.skipTest(f"cannot create symlinks on this OS: {exc}")
         mapping["clips"][key] = "outside.wav"
         write_json(self.audio_map_path, mapping)
         with self.assertRaisesRegex(ContentError, "escapes"):

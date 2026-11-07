@@ -1,6 +1,7 @@
 """Conservative, offline technical quality checks for 24kHz mono PCM16 speech.
 
-Only unusable all-silent clips are hard errors. Warnings for low level,
+Unusable clips (all-silent, near-silent below about -60 dBFS RMS, or mostly
+silence) are hard errors. Warnings for low level,
 clipping, DC and long trim regions require an adult's listening decision;
 this is not pronunciation, pedagogy, language or child-safety approval.
 """
@@ -13,6 +14,9 @@ import sys
 import wave
 
 from content_pipeline.schema import ContentError
+
+
+NEAR_SILENT_RMS_DBFS = -60.0
 
 
 def analyze_wav(path: Path, *, max_seconds: int = 60) -> dict:
@@ -80,6 +84,10 @@ def analyze_wav(path: Path, *, max_seconds: int = 60) -> dict:
         warnings.append("long_trailing_silence")
     if quiet_fraction > 0.85:
         warnings.append("mostly_silence")
+    if rms_dbfs < NEAR_SILENT_RMS_DBFS or "mostly_silence" in warnings:
+        raise ContentError(
+            f"audio QC: near-silent clip (rms {rms_dbfs} dBFS, "
+            f"{quiet_fraction:.0%} below -40 dBFS)")
     return {
         "sample_rate_hz": 24000,
         "channels": 1,

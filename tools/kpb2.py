@@ -354,7 +354,7 @@ def load_source(source: Path) -> dict:
     doc = json.loads(source.read_text(encoding="utf-8"))
     doc = _exact_keys(doc, {"schema_version", "package_type", "book_id", "content_id",
                             "revision", "title", "reviewer", "approved", "pages"},
-                      set(), "Book manifest")
+                      {"credits", "checked_hash"}, "Book manifest")
     if doc["schema_version"] != 2 or doc["approved"] is not True:
         raise ValueError("Book manifest must be approved schema v2")
     if doc["package_type"] != "book":
@@ -393,7 +393,16 @@ def load_source(source: Path) -> dict:
         })
     if total_questions > MAX_QUESTIONS:
         raise ValueError("Too many questions in one package")
+    credits = doc.get("credits")
+    if credits is not None and (not isinstance(credits, dict) or
+                                len(json.dumps(credits, ensure_ascii=False)) > 4096):
+        raise ValueError("credits must be a small JSON object")
+    checked = doc.get("checked_hash")
+    if checked is not None and (not isinstance(checked, str) or
+                                not re.fullmatch(r"[0-9a-f]{64}", checked)):
+        raise ValueError("checked_hash must be a SHA-256 hex digest")
     return {
+        "credits": credits, "checked_hash": checked,
         "book_id": book_id,
         "content_id": _int(doc["content_id"], 1, 0xFFFF, "content_id"),
         "revision": _int(doc["revision"], 1, 0xFFFF, "revision"),
@@ -492,14 +501,20 @@ def sidecar(book: dict, blob: bytes, parsed: dict) -> dict:
                             for o in q["options"]],
             } for q in page["questions"]],
         })
-    return {"schema_version": 2, "format": "KPB2", "package_type": "book",
-            "book_id": book["book_id"], "content_id": book["content_id"],
-            "revision": book["revision"], "title": book["title"],
-            "reviewer": book["reviewer"], "approved": True,
-            "width": WIDTH, "height": HEIGHT, "pages": pages,
-            "question_count": parsed["question_count"],
-            "package_bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest(),
-            "integrity": "CRC32 per table and payload; no cryptographic authentication"}
+    result = {"schema_version": 2, "format": "KPB2", "package_type": "book",
+              "book_id": book["book_id"], "content_id": book["content_id"],
+              "revision": book["revision"], "title": book["title"],
+              "reviewer": book["reviewer"], "approved": True,
+              "width": WIDTH, "height": HEIGHT, "pages": pages,
+              "question_count": parsed["question_count"],
+              "package_bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest(),
+              "integrity": "CRC32 per table and payload; no cryptographic authentication"}
+    if book.get("credits") is not None:
+        result["credits"] = book["credits"]
+    if book.get("checked_hash") is not None:
+        # Hash of the staged content a human attested; catalog refuses without it.
+        result["checked_hash"] = book["checked_hash"]
+    return result
 
 
 def compile_book(source: Path) -> tuple[bytes, dict, list[Path]]:
