@@ -1,17 +1,24 @@
 #!/bin/sh
 # Pull the TLS certificate that Lucky (ACME, wildcard *.birdshao.cn) exports and install it for the
-# ingress. Lucky renews it; this runs daily from pet-cert-pull.timer and reloads nginx only on change.
+# ingress. Lucky renews it; this runs daily from pet-cert-pull.timer and reloads nginx only when needed.
 # Config (not secret) in /etc/pet-ingress/lucky.env:
 #   LUCKY_SSH=user@192.168.1.224      LUCKY_SSH_PORT=22
 # The Lucky side runs only lucky-export.sh (forced command): it prints the crt for the request "crt" and the
 # key for "key", nothing else.
 # Auth: the dedicated key /etc/pet-ingress/lucky_pull_ed25519 (no other use). Run by hand to test.
+#
+# A reload counts as done only when it succeeded: the fingerprint of the files nginx was last reloaded
+# with is kept in certs/.loaded, so a failed reload is retried on the next run instead of being
+# mistaken for "unchanged". A non-zero exit shows up in `systemctl --failed`.
 set -eu
 . /etc/pet-ingress/lucky.env
 HOST="${PET_INGRESS_HOST:-pet.birdshao.cn}"
 CERTS=/etc/pet-ingress/certs
+MARK="$CERTS/.loaded"
 SSH="ssh -i /etc/pet-ingress/lucky_pull_ed25519 -p ${LUCKY_SSH_PORT:-22} -o BatchMode=yes -o ConnectTimeout=10 \
  -o UserKnownHostsFile=/etc/pet-ingress/lucky_known_hosts -o StrictHostKeyChecking=yes $LUCKY_SSH"
+
+fingerprint() { cat "$1" "$2" | sha256sum | cut -d' ' -f1; }
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 umask 077
@@ -29,11 +36,15 @@ a="$(openssl x509 -in "$tmp/fullchain.pem" -noout -pubkey | openssl sha256)"
 b="$(openssl pkey -in "$tmp/privkey.pem" -pubout | openssl sha256)"
 [ "$a" = "$b" ] || { echo "private key does not match the certificate" >&2; exit 1; }
 
-if cmp -s "$tmp/fullchain.pem" "$CERTS/fullchain.pem" && cmp -s "$tmp/privkey.pem" "$CERTS/privkey.pem"; then
-    echo "certificate unchanged"
+new="$(fingerprint "$tmp/fullchain.pem" "$tmp/privkey.pem")"
+if [ -f "$CERTS/fullchain.pem" ] && [ -f "$CERTS/privkey.pem" ] \
+    && [ "$(fingerprint "$CERTS/fullchain.pem" "$CERTS/privkey.pem")" = "$new" ] \
+    && [ "$(cat "$MARK" 2>/dev/null || true)" = "$new" ]; then
+    echo "certificate unchanged and loaded"
     exit 0
 fi
 install -m 600 "$tmp/privkey.pem" "$CERTS/privkey.pem"
 install -m 644 "$tmp/fullchain.pem" "$CERTS/fullchain.pem"
 /opt/pet-ingress/reload-ingress.sh
-echo "certificate updated: $(openssl x509 -in "$CERTS/fullchain.pem" -noout -enddate)"
+echo "$new" > "$MARK"
+echo "certificate loaded: $(openssl x509 -in "$CERTS/fullchain.pem" -noout -enddate)"

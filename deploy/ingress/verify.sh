@@ -40,6 +40,9 @@ if openssl s_client -tls1_1 -connect "$IP:$PORT" -servername "$HOST" </dev/null 
     echo "FAIL TLS 1.1 accepted"; fail=1; else echo "ok   TLS 1.1 refused"; fi
 if curl -s -m 5 --noproxy '*' -k -o /dev/null "https://$IP:$PORT/healthz"; then
     echo "FAIL certificate served for a bare-IP request"; fail=1; else echo "ok   bare-IP handshake rejected"; fi
+echo "== N2 certificate in service (a failed pull/reload shows up here)"
+if echo | openssl s_client -connect "$IP:$PORT" -servername "$HOST" 2>/dev/null | openssl x509 -noout -checkend 1209600 >/dev/null; then
+    echo "ok   served certificate valid for at least 14 more days"; else echo "FAIL served certificate expires within 14 days"; fail=1; fi
 echo "== N8 rate limit (last: it trips the limiter for this client for a minute)"
 seen=""
 for i in $(seq 60); do seen="$seen $(code $U/v1/pairing/x)"; done

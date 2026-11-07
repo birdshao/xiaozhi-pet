@@ -11,6 +11,7 @@ limit_req_zone $binary_remote_addr zone=ing_gen:2m rate=10r/s;      # N8: everyt
 limit_req_zone $binary_remote_addr zone=ing_ota:1m rate=20r/m;      # XiaoZhi OTA hands out tokens
 limit_req_zone $binary_remote_addr zone=ing_ws:1m rate=30r/m;       # WSS sessions cost ASR/TTS time
 limit_req_status 429;
+limit_req_log_level warn;   # (the error log below is crit-only: those lines carry the request line)
 
 map $http_upgrade $connection_upgrade {
     default upgrade;
@@ -40,7 +41,9 @@ server {
     add_header X-Content-Type-Options nosniff always;
 
     access_log /var/log/nginx/ingress-access.log pet_ingress;
-    error_log  /var/log/nginx/ingress-error.log warn;
+    # N11: nginx error-log lines quote the full request line including the query string (a token may
+    # ride in it), so only crit and worse are written; rate-limit and upstream errors are not.
+    error_log  /var/log/nginx/ingress-error.log crit;
 
     client_max_body_size 64k;                     # N7 default
     limit_req zone=ing_gen burst=20 nodelay;

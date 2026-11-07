@@ -129,6 +129,25 @@ class DeployFilesTests(unittest.TestCase):
             self.assertIn(guard, pull)
         self.assertIn("rotate 14", text("ingress", "pet-ingress.logrotate"))
 
+    def test_ingress_review_fixes(self):
+        for name in ("ingress.conf.template", "gateway.conf.template"):
+            conf = text("nginx", name)
+            self.assertIn("limit_req_log_level warn;", conf, name)
+        # error logs quote the request line (query string): only crit is written
+        self.assertRegex(text("nginx", "ingress.conf.template"), r"error_log\s+\S+\s+crit;")
+        self.assertIn("error_log /dev/stderr crit;", text("nginx", "gateway.conf.template"))
+        # the ingress host has a default, so an older .env without it still brings the stack up
+        self.assertNotIn("PET_INGRESS_HOST:?", text("compose.yaml"))
+        self.assertIn("${PET_INGRESS_HOST:-", text("compose.yaml"))
+        # the export script has no certificate name baked in
+        self.assertRegex(text("ingress", "lucky-export.sh"), r"(?m)^CERT=$")
+        # a failed reload must be retried, not mistaken for 'unchanged'
+        pull = text("ingress", "pull-cert.sh")
+        self.assertLess(pull.index("reload-ingress.sh"), pull.index('echo "$new" > "$MARK"'))
+        self.assertIn('"$(cat "$MARK"', pull)
+        fw = text("ingress", "firewall.sh")
+        self.assertIn("FAIL: DOCKER-USER has no RETURN", fw)
+
     def test_dockerignore_and_maintenance_units(self):
         ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         for entry in ("**/.env", "deploy/models", ".git", "*.sqlite3", "research_content"):

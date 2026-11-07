@@ -154,7 +154,7 @@ services:
     ports:
       - "0.0.0.0:${PET_INGRESS_PORT:-8443}:8443"
     environment:
-      PET_INGRESS_HOST: ${PET_INGRESS_HOST:?set PET_INGRESS_HOST}
+      PET_INGRESS_HOST: ${PET_INGRESS_HOST:-pet.birdshao.cn}
     volumes:
       - ./nginx/ingress.conf.template:/etc/nginx/templates/default.conf.template:ro
       - /etc/pet-ingress/certs:/etc/nginx/certs:ro
