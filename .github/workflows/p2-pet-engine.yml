@@ -12,6 +12,8 @@ on:
       - 'tests/cpp/test_mic_games.cc'
       - 'tests/cpp/test_game_pack_reader.cc'
       - 'tests/fixtures/kpg1/**'
+      - 'tests/cpp/test_memory_golden.cc'
+      - 'tests/fixtures/memory/**'
       - 'scripts/p2_test.sh'
       - '.github/workflows/p2-pet-engine.yml'
   workflow_dispatch:

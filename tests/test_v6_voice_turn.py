@@ -99,6 +99,10 @@ class VoiceBase(unittest.TestCase):
         return self.client.put(f"/v1/devices/{DEVICE}/context", headers=DEVICE_AUTH, json=body)
 
     def add_battery(self, pct, received_at):
+        # Replace S2's typed table with an untyped stand-in so invalid values reach the reader
+        # (INTEGER affinity would turn "64" into 64); the real S2 row is covered in the S2 tests.
+        if self.sql("SELECT 1 FROM pragma_table_info('device_state') WHERE name='generation'"):
+            self.sql("DROP TABLE device_state")
         self.sql("CREATE TABLE IF NOT EXISTS device_state(device_id TEXT PRIMARY KEY,"
                  "battery_pct, received_at)")
         self.sql("INSERT OR REPLACE INTO device_state VALUES(?,?,?)", (DEVICE, pct, received_at))
