@@ -150,7 +150,7 @@ python -m tools.sound_pack demo --output build/sound-smoke
 
 小端，固定布局，Python `tools/sound_pack.py`（`encode`/`decode`）与 C++ `sound_pack_reader.h` 按同一规则检查，`scripts/p2_test.sh` 用 Python 生成的包跑 C++ 读取器。
 
-- 包头 32 B（`<4sHHIIIIII`）：`KPS1`、版本 1、片段数 1–96、采样率 24000、revision、数据起始（= 32 + 16 × 片段数）、总字节数（= 文件大小）、目录 CRC32、包头前 28 字节的 CRC32。
+- 包头 32 B（`<4sHHIIIIII`）：`KPS1`、版本 1、片段数 1–192（V8 起；原为 1–96，旧包仍可读）、采样率 24000、revision、数据起始（= 32 + 16 × 片段数）、总字节数（= 文件大小）、目录 CRC32、包头前 28 字节的 CRC32。
 - 目录每段 16 B（`<HHIII`）：片段 id（严格递增，1–999）、保留 0、偏移、字节数（偶数，≤ 6 秒）、CRC32。
 - 数据：去掉 RIFF 头的 24 kHz 单声道 little-endian PCM16，每段从 4 字节对齐处开始，中间只有补零，最后一段结束即文件结束。整包 ≤ 8 MiB。
 - 片段 id：`1 + 首页项序号`（1 聊天 … 5 睡觉）是选项名；`100–999` 是 `personality.cc` 话术 id；6–99 留给以后的音效。
@@ -164,3 +164,7 @@ python -m tools.sound_pack demo --output build/sound-smoke
 - V5-04 后半：记忆驱动的 `{book}`/`{like}` 槽位句（需要书名/选项名音频拼接、板上启用原子账本）。
 - 拨动音效/按键音没有做（id 6–99 预留）。
 - 包没有签名；只读、只认审核过的工具打出来的格式，但卡上的文件可以被人替换。
+
+## V8 追加：护理话术
+
+V8 的护理话术（`firmware/components/kid_app/src/care_phrases.cc`，片段 id 1000–1999）也放进同一个包：读取器接受的片段 id 上限由 999 放宽到 1999、片段数上限由 96 放宽到 192，格式版本不变。审核清单和 TTS 草稿见 `python -m tools.care_phrases`，说明见 `docs/V8_CARE_AND_GROWTH.md` 第 7 节。
