@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 
@@ -175,8 +176,12 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
                         *, smoke_only: bool = False) -> dict:
     """Use the existing KPG1 encoder only after review bound to staged bytes."""
     stage_dir, review_file, output = map(Path, (stage_dir, review_file, output))
-    if output.name != "default.kpg":
-        raise ContentError("current firmware only loads /games/default.kpg")
+    # LCP-10: the boot selector accepts short pack basenames from active.txt.
+    # Keep precisely the same ASCII limit here so an approved pack can
+    # always be found by the real firmware (and cannot escape /games).
+    if output.suffix != ".kpg" or not re.fullmatch(
+            r"[a-z0-9][a-z0-9_-]{2,14}", output.stem):
+        raise ContentError("game: unsafe /games KPG1 basename (3..15 ASCII characters)")
     candidate = json.loads((stage_dir / "candidate.json").read_text(encoding="utf-8"))
     current = _manifest(stage_dir)
     current["checked_hash"] = _hash(canonical_json(current))
