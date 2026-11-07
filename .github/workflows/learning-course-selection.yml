@@ -55,7 +55,7 @@ jobs:
           assert len(index["packages"])==3 and index["status"]=="test_only"
           assert {p["content_id"] for p in index["packages"]}=={20011,20012,20013}
           assert all(p["test_placeholder"] for p in index["packages"])
-          assert (root/"sdcard/games/active.txt").read_bytes() == b"counts\n" or True
+          assert (root/"sdcard/games/active.txt").read_bytes() == b"counts\n"
           print("PASS: three game unit files / course index / active ID; test-only")
           PY
       - name: Only upload QA report, NEVER placeholder KPG1 or synthetic WAV
