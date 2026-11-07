@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${1:-"$ROOT/build/lcp09"}"
 mkdir -p "$BUILD"
+BUILD="$(cd "$BUILD" && pwd)"
+cd "$ROOT"
 INC="$ROOT/firmware/components/kid_app/include"
 SRC="$ROOT/firmware/components/kid_app/src"
 CXX="${CXX:-g++}"

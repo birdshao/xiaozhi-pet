@@ -127,6 +127,12 @@ class PinnedBookDashPilot(unittest.TestCase):
         self.assertEqual(source["source"]["creators"]["text"], ["Nicola Rijsdijk"])
         self.assertEqual(source["source"]["creators"]["illustration"], ["Karen Lilje"])
         self.assertEqual(zh["source"]["license_id"], "CC-BY-4.0")
+        self.assertEqual(zh["source"]["creators"]["design"], ["Sam Scarborough"])
+        self.assertEqual(zh["pages"][7]["text"], "小猫，快回来！那不是你的朋友！")
+        self.assertEqual(zh["pages"][9]["text"], "待在小篮子里，该睡午觉啦")
+        change = zh["transformations"][0]
+        self.assertEqual(change["method"], "ai_assisted_draft")
+        self.assertIn("wordless original pages 5, 12", change["notes"])
         self.assertEqual(zh["review"]["status"], "draft")
         self.assertEqual(zh["transformations"][0]["source_digest"],
                          content_digest(source))
@@ -176,7 +182,7 @@ class PinnedBookDashPilot(unittest.TestCase):
         self.assertEqual(len(mapped["pages"]), 12)
         stage = self.root / "staged"
         candidate = stage_book(translated, asset_root / "assets.json", stage)
-        self.assertEqual(len(candidate["preview_files"]), 24)
+        self.assertEqual(len(candidate["preview_files"]), 26)  # 12 pages + credits
         with Image.open(stage / "preview/page_12_mono.png") as preview:
             self.assertEqual(preview.size, (800, 480))
         review = self.root / "review.json"
@@ -209,7 +215,7 @@ class PinnedBookDashPilot(unittest.TestCase):
         self.assertEqual(result["source_images"], 12)
         self.assertEqual(result["audio_clips"], 12)
         self.assertEqual(result["audio_provider"], "offline_synthetic_fixture")
-        self.assertEqual(result["epaper_previews"], 24)
+        self.assertEqual(result["epaper_previews"], 26)  # 12 pages + credits
         self.assertEqual(result["review_contact_sheets"], 2)
         self.assertTrue((self.root / "orchestrated/staged/review/index.html").exists())
         msg = (self.root / "orchestrated/README-RESEARCH-ONLY.txt").read_text(

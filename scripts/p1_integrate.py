@@ -2717,34 +2717,38 @@ BOARD_WORKER = r'''
     uint8_t game_round_logged_ = 0;            // pet_input
     std::atomic<uint32_t> game_seed_{0};       // self-test "game" step, 0 = random
     std::atomic<uint32_t> game_tokens_{0};
-    kid_app::SoundPackFilePort game_file_;     // pet_prompt only
-    // Written by pet_prompt before game_pack_state_ says ready; read-only after.
-    kid_app::GamePackReader game_pack_;
+    // Owns the one boot-selected KPG1 file/reader throughout this boot;
+    // never swaps it while the game/audio workers share the same pointer.
+    kid_app::GameCourseLoader game_courses_;
     static constexpr uint8_t kGamePackPending = 0, kGamePackNone = 1, kGamePackReady = 2;
     std::atomic<uint8_t> game_pack_state_{kGamePackPending};
 
     bool GameActive() const { return game_active_.load(); }
     kid_app::GamePackReader* GamePackNow() {
-        return game_pack_state_.load() == kGamePackReady ? &game_pack_ : nullptr;
+        return game_pack_state_.load() == kGamePackReady ? game_courses_.Pack() : nullptr;
     }
 
-    // pet_prompt, once, after the sound pack. Missing or invalid: built-in set.
+    // pet_prompt, once at boot after the sound pack. Parent-owned TF file
+    // /games/active.txt selects which preinstalled KPG1 to open; malformed,
+    // missing or invalid content falls back to default.kpg, then builtin.
+    // No runtime hot switch: GameClip and GameSession share this reader.
     void LoadGamePack() {
         const uint32_t started_ms = NowMs();
         const char* state = "no_sd";
         if (sound_sd_.load() == kSoundSdMounted) {
-            state = "absent";
-            if (game_file_.Open("/sdcard/games", "default", "kpg")) {
-                state = game_pack_.Open(game_file_) ? "ready" : "invalid";
-                if (!game_pack_.Ready()) game_file_.Close();
-            }
+            const bool ok = game_courses_.LoadAtBoot("/sdcard/games");
+            state = ok ? "ready" : "builtin";
         }
-        game_pack_state_.store(game_pack_.Ready() ? kGamePackReady : kGamePackNone);
-        ESP_LOGI(TAG, "PET_GAME_PACK state=%s rounds=%u clips=%u id=%u rev=%u ms=%u", state,
-                 static_cast<unsigned>(game_pack_.RoundCount()),
-                 static_cast<unsigned>(game_pack_.ClipCount()),
-                 static_cast<unsigned>(game_pack_.ContentId()),
-                 static_cast<unsigned>(game_pack_.Revision()),
+        game_pack_state_.store(game_courses_.Ready() ? kGamePackReady : kGamePackNone);
+        ESP_LOGI(TAG, "PET_GAME_PACK state=%s active=%s selected=%s choice=%s rounds=%u clips=%u id=%u rev=%u ms=%u",
+                 state,
+                 game_courses_.LoadedName(),
+                 kid_app::GameCourseResultName(game_courses_.State()),
+                 kid_app::GameCourseChoiceName(game_courses_.Selection()),
+                 static_cast<unsigned>(game_courses_.Rounds()),
+                 static_cast<unsigned>(game_courses_.Clips()),
+                 static_cast<unsigned>(game_courses_.ContentId()),
+                 static_cast<unsigned>(game_courses_.Pack() ? game_courses_.Pack()->Revision() : 0),
                  static_cast<unsigned>(NowMs() - started_ms));
     }
 
@@ -3637,6 +3641,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/mic_game.h"\n'
         '#include "kid_app/mic_envelope.h"\n'
         '#include "kid_app/game_pack_reader.h"\n'
+        '#include "kid_app/game_course_loader.h"\n'
         '#include "kid_app/motion_game.h"\n'
         '#include "kid_app/memory_store.h"\n'
         '#include "esp_random.h"\n'

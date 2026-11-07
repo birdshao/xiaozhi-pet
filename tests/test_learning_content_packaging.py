@@ -5,6 +5,8 @@ All example images/audio here are synthetic local test fixtures, NOT child conte
 from __future__ import annotations
 
 import json
+import math
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,6 +37,15 @@ A square has four sides.
 """
 
 
+def write_tone(path, frames=12000, amplitude=8000):
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(24000)
+        f.writeframes(b"".join(
+            struct.pack("<h", int(amplitude * math.sin(i / 8))) for i in range(frames)))
+
+
 class Packaging(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -44,11 +55,7 @@ class Packaging(unittest.TestCase):
         for i in (1, 2):
             im = Image.new("RGB", (400 + i * 50, 320), ("white" if i == 1 else "lightgray"))
             im.save(self.assets / f"image_{i}.png")
-            with wave.open(str(self.assets / f"audio_{i}.wav"), "wb") as f:
-                f.setnchannels(1)
-                f.setsampwidth(2)
-                f.setframerate(24000)
-                f.writeframes(b"\x00\x00" * 12000)
+            write_tone(self.assets / f"audio_{i}.wav")
         self.map_file = self.assets / "assets.json"
         write_json(self.map_file, {
             "schema_version": 1,
@@ -87,6 +94,7 @@ class Packaging(unittest.TestCase):
             "attestations": {
                 "source_license": True, "illustrations": True,
                 "text": True, "audio": True, "age_safety": True,
+                "voice_terms_cleared": True,  # fixture has no audio.manifest.json
             }
         })
         return file
@@ -110,7 +118,7 @@ class Packaging(unittest.TestCase):
         self.assertTrue((self.root / "book.manifest.json").exists())
         parsed = kpb2.parse((self.root / "book.kpb").read_bytes())
         self.assertEqual(parsed["format"], "KPB2")
-        self.assertEqual(len(parsed["pages"]), 2)
+        self.assertEqual(len(parsed["pages"]), 3)  # 2 + credits page
         self.assertFalse((self.stage / "__reviewed_kpb2_temp.json").exists())
         self.assertFalse(staged_book["approved"])
 
@@ -118,7 +126,7 @@ class Packaging(unittest.TestCase):
         candidate = stage_book(self.lcir, self.map_file, self.stage)
         review = make_review_packet(self.stage)
         self.assertEqual(review["status"], "unreviewed")
-        self.assertEqual(review["pages"], 2)
+        self.assertEqual(review["pages"], 3)  # 2 + credits page
         self.assertEqual(review["checked_hash"], candidate["checked_hash"])
         page = (self.stage / "review/index.html").read_text(encoding="utf-8")
         self.assertIn("NOT APPROVED", page)
@@ -188,13 +196,16 @@ class Packaging(unittest.TestCase):
         doc = json.loads(self.lcir.read_text(encoding="utf-8"))
         doc["pages"][0]["text"] = "很" * 321
         write_json(self.lcir, doc)
-        with self.assertRaisesRegex(ContentError, "320"):
+        with self.assertRaisesRegex(ContentError, "too long"):
             stage_book(self.lcir, self.map_file, self.stage)
 
     def test_symlink_outside_asset_root_rejected(self):
         outside = self.root / "outside.png"
         Image.new("RGB", (200, 200), "white").save(outside)
-        (self.assets / "escaped.png").symlink_to(outside)
+        try:
+            (self.assets / "escaped.png").symlink_to(outside)
+        except OSError as exc:
+            self.skipTest(f"cannot create symlinks on this OS: {exc}")
         mapping = json.loads(self.map_file.read_text(encoding="utf-8"))
         mapping["pages"]["1"]["image"] = "escaped.png"
         write_json(self.map_file, mapping)
