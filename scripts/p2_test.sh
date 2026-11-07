@@ -408,6 +408,7 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
 # scene regions of the ball track and the peekaboo card.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/motion_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
   "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
   "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
@@ -418,6 +419,25 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   "$ROOT/tests/cpp/test_motion_game.cc" \
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
+
+# V8 mini games: 20+ round banks per game, live clock / weather rounds,
+# memory flip, tilt maze (always solvable), shake dice / tree, wooden man,
+# day and night, four-way tilt, resting board stays quiet, the game list and
+# the scene regions. Rewards only from the dial or the asked-for motion.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/play_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/motion_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/gesture_detector.cc" \
+  "$ROOT/firmware/components/kid_app/src/motion_stats.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_play_games.cc" \
+  -o "$BUILD/test_play_games"
+"$BUILD/test_play_games"
 
 # V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

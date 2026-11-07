@@ -1393,6 +1393,37 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('# expect commits 0', scenario)
         self.assertIn('# expect min:end=completed 1', scenario)
 
+    def test_v8_mini_games_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/play_game.h"', patched)
+        choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')
+        self.assertIn('GameChoiceIsPlay(out.chosen)', choice)
+        self.assertIn('StartPlayGame(game)', choice)
+        # Motion games honour the parents' motion switch; the menu re-opens on the same card.
+        self.assertIn('ActivityNeeds::Motion && !motion_enabled_.load()', choice)
+        self.assertIn('ActivityIndexOf(out.chosen)', choice)
+        start = self._body(patched, 'void StartPlayGame(kid_app::PlayGame game)')
+        self.assertIn('game_seed_.exchange(0)', start)  # the self-test "game" step
+        self.assertIn('BuildClockPool(', start)  # RTC; fixed round when the clock is not set
+        self.assertIn('BuildWeatherPool(live_temp_ok_.load()', start)  # SHTC3 or a fixed round
+        self.assertNotIn('pet_service_', start)  # games are UI only
+        self.assertNotIn('nvs_', start)
+        # Card games reuse the quiz session (same reward and growth rule).
+        self.assertIn('game_mode_ = GameMode::Quiz;', start)
+        play = self._body(patched, 'void ApplyPlayOutput(const kid_app::GameOutput& out)')
+        self.assertIn('EndGame(kid_app::GameEndName(play_.Result().end))', play)
+        # Every way out clears the V8 feeds.
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
+        for flag in ('play_tilt_', 'play_shake_', 'play_window_'):
+            self.assertIn(flag + '.store(false)', end)
+        self.assertIn('case GameMode::Play:', end)
+        # Shakes only reach a running dice / tree game, after the motion-game filter.
+        gesture = self._body(patched, 'void HandleGesture(kid_app::Gesture gesture, const char* source)')
+        self.assertLess(gesture.index('face_down_.store'), gesture.index('play_shake_.load()'))
+        # The wooden man reads IMU window means only while it runs.
+        self.assertIn('if (play_window_.load() && motion_enabled_.load()) PushPlayWindow(s);', patched)
+        self.assertIn('maze_tracker_.OnWindow(s)', patched)
+
     def test_v4_motion_games_wiring(self):
         patched = self._board()
         self.assertIn('#include "kid_app/motion_game.h"', patched)

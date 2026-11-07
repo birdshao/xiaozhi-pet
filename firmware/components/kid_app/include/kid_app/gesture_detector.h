@@ -8,10 +8,11 @@ namespace kid_app {
 
 // Discrete motion events for the pet (PRD v0.2 §3, ADR-011). Hard shakes
 // are reported so the pet can react gently; they must never be rewarded.
-// TiltLeft/TiltRight/Level only come from TiltTracker (motion_game.h)
+// TiltLeft/TiltRight/TiltUp/TiltDown/Level only come from TiltTracker (motion_game.h)
 // while the V4-07 ball game runs; GestureDetector never reports them.
 enum class Gesture : uint8_t {
-    None, Pickup, GentleShake, HardShake, FaceDown, FaceUp, TiltLeft, TiltRight, Level
+    None, Pickup, GentleShake, HardShake, FaceDown, FaceUp, TiltLeft, TiltRight, Level,
+    TiltUp, TiltDown  // V8 maze: only from a four-way TiltTracker
 };
 
 // Thresholds from the V1 round 3 accelerometer measurements (500 ms

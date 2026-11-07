@@ -30,7 +30,11 @@ enum class GameChoice : uint8_t {
     Feed = 6, Bath = 7, Brush = 8, Tickle = 9, Dress = 10, Habit = 11,
     // V8 play menu additions (session ①).
     Stickers = 12,
-    // Other sessions: append here (13, 14, ...).
+    // V8 mini games (session ②, play_content.h): 12 + PlayGame, 13..30.
+    Memory4 = 13, Memory6 = 14, Maze = 15, Dice = 16, Tree = 17, Statue = 18, DayNight = 19,
+    Shapes = 20, Counting = 21, SpotDiff = 22, MamaBaby = 23, SizeOrder = 24, Pattern = 25,
+    Classify = 26, Shadow = 27, LeftRight = 28, Clock = 29, Weather = 30,
+    // Other sessions: append here (31, 32, ...).
 };
 
 enum class ActivityGroup : uint8_t { Play, Care };
@@ -67,6 +71,40 @@ constexpr Activity kActivities[] = {
      ActivityNeeds::Mic, "candle"},
     {GameChoice::Clap, ActivityGroup::Play, static_cast<uint16_t>(MicArt::Hand),
      ActivityNeeds::Mic, "clap"},
+    // V8 mini games (session ②), in menu order: age, then level (play_content.cc).
+    {GameChoice::Shapes, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Triangle),
+     ActivityNeeds::None, "shapes"},
+    {GameChoice::Counting, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Dots3),
+     ActivityNeeds::None, "counting"},
+    {GameChoice::DayNight, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Moon),
+     ActivityNeeds::Motion, "day_night"},
+    {GameChoice::Memory4, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Blocks4),
+     ActivityNeeds::None, "memory4"},
+    {GameChoice::MamaBaby, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::BabyCat),
+     ActivityNeeds::None, "mama_baby"},
+    {GameChoice::Classify, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Apple),
+     ActivityNeeds::None, "classify"},
+    {GameChoice::Tree, ActivityGroup::Play, PlayTreeArt(3), ActivityNeeds::Motion, "shake_tree"},
+    {GameChoice::Shadow, ActivityGroup::Play, PlayShadowArt(static_cast<uint16_t>(GameArt::Star)),
+     ActivityNeeds::None, "shadow"},
+    {GameChoice::Statue, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Statue),
+     ActivityNeeds::Motion, "statue"},
+    {GameChoice::Weather, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Sun),
+     ActivityNeeds::None, "weather"},
+    {GameChoice::LeftRight, ActivityGroup::Play, PlayArrowArt(0, 3), ActivityNeeds::None,
+     "left_right"},
+    {GameChoice::SpotDiff, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Pos2),
+     ActivityNeeds::None, "spot_diff"},
+    {GameChoice::Dice, ActivityGroup::Play, PlayDiceArt(5), ActivityNeeds::Motion, "shake_dice"},
+    {GameChoice::Memory6, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Dots6),
+     ActivityNeeds::None, "memory6"},
+    {GameChoice::SizeOrder, ActivityGroup::Play, PlaySizedArt(0, 2), ActivityNeeds::None,
+     "size_order"},
+    {GameChoice::Pattern, ActivityGroup::Play, PlayPatternArt(0, 0, 1, 0), ActivityNeeds::None,
+     "pattern"},
+    {GameChoice::Maze, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Carrot),
+     ActivityNeeds::Motion, "maze"},
+    {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None, "clock"},
     // ---- other sessions: append Play rows above this line ----
 };
 constexpr size_t kActivityRows = sizeof(kActivities) / sizeof(kActivities[0]);
@@ -109,7 +147,9 @@ constexpr bool ActivityTableValid() {
     for (size_t i = 0; i < kActivityRows; ++i) {
         const Activity& a = kActivities[i];
         if (a.id == GameChoice::None || !a.name || !a.art) return false;
-        if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art)) return false;
+        if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art) &&
+            !PlayArtValid(a.art))
+            return false;
         for (size_t j = 0; j < i; ++j)
             if (kActivities[j].id == a.id) return false;
     }

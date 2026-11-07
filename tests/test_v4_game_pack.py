@@ -228,16 +228,23 @@ class SharedTables(unittest.TestCase):
         enum = text[text.index("enum class GameArt"):text.index("};", text.index("enum class GameArt"))]
         found = {name: int(v) for name, v in re.findall(r"(\w+) = (\d+)", enum)}
         found.pop("None")
+        plain = {k: v for k, v in {**gp.ART, **gp.QUESTION_ONLY_ART}.items()
+                 if k not in gp.SIZED_ART}
         camel = {"".join(p.capitalize() for p in re.split(r"_|(?<=[a-z])(?=\d)", k)): v
-                 for k, v in {**gp.ART, **gp.QUESTION_ONLY_ART}.items()}
+                 for k, v in plain.items()}
         self.assertEqual(found, camel)
         listed = [int(v) for v in re.search(r"kGameArtIds = \{([^}]*)\}", text)
                   .group(1).replace("\n", " ").split(",")]
-        self.assertEqual(sorted(listed), sorted(gp.ART.values()))
+        self.assertEqual(sorted(listed), sorted(v for k, v in gp.ART.items()
+                                                if k not in gp.SIZED_ART))
+        # Sized shapes (big_small rounds): 0x3000 | shape << 2 | size, as PlaySizedArt() says.
+        self.assertIn("0x3000 | (shape << 2) | size", text)
+        self.assertEqual(len(gp.SIZED_ART), 15)
 
     def test_kinds_and_clip_ids_match_mini_game_h(self) -> None:
         text = MINI_GAME_H.read_text(encoding="utf-8")
-        kinds = dict(re.findall(r"(\w+) = (\d),\s+//", text))
+        # Only the KPG1 kinds 1..5; the V8 built-in kinds (6..14) never go in a pack.
+        kinds = {k: v for k, v in re.findall(r"(\w+) = (\d+),\s+//", text) if int(v) <= 5}
         self.assertEqual({k: int(v) for k, v in kinds.items()},
                          {"".join(p.capitalize() for p in k.split("_")): v
                           for k, v in gp.KINDS.items()})

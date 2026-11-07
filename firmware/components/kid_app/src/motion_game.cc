@@ -40,6 +40,21 @@ Gesture TiltTracker::OnWindow(const MotionStats::Summary& w) {
         level_ = true;  // lying the other way up or shaking: nothing to report
         return Gesture::None;
     }
+    if (config_.four_way) {
+        const int h = (config_.use_y ? w.mean_y_mg : w.mean_x_mg) * config_.sign;
+        const int v = (config_.use_y ? w.mean_x_mg : w.mean_y_mg) * config_.sign_v;
+        const int ah = h < 0 ? -h : h, av = v < 0 ? -v : v;
+        if (std::max(ah, av) > config_.tilt_mg) {
+            level_ = false;
+            if (ah >= av) return h > 0 ? Gesture::TiltRight : Gesture::TiltLeft;
+            return v > 0 ? Gesture::TiltDown : Gesture::TiltUp;
+        }
+        if (ah <= config_.level_mg && av <= config_.level_mg && !level_) {
+            level_ = true;
+            return Gesture::Level;
+        }
+        return Gesture::None;
+    }
     const int axis = (config_.use_y ? w.mean_y_mg : w.mean_x_mg) * config_.sign;
     if (axis > config_.tilt_mg) {
         level_ = false;
