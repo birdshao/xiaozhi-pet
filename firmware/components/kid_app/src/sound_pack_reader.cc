@@ -93,7 +93,7 @@ bool SoundPackReader::Open(StoryPackFile& file) {
         c.crc = U32(r.data() + 12);
         // Ids ascend (unique, binary-searchable); clips follow each other
         // 4-byte aligned with nothing hidden in between or after.
-        if (c.id == 0 || c.id > 999 || (i > 0 && c.id <= candidate[i - 1].id) ||
+        if (c.id == 0 || c.id > 1999 ||  // V8: care lines 1000..1999 (i > 0 && c.id <= candidate[i - 1].id) ||
             U16(r.data() + 2) != 0 || c.bytes < 2 || c.bytes > kMaxClipBytes ||
             (c.bytes & 1u) || c.offset != Align4(previous_end) ||
             uint64_t(c.offset) + c.bytes > total)

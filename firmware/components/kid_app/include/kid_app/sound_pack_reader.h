@@ -23,7 +23,7 @@ struct SoundClipInfo {
 class SoundPackReader {
 public:
     static constexpr uint32_t kSampleRate = 24000;
-    static constexpr size_t kMaxClips = 96;
+    static constexpr size_t kMaxClips = 192;  // V8 care lines (was 96)
     static constexpr uint32_t kMaxClipBytes = 6u * kSampleRate * 2u;  // 6 s
     static constexpr uint32_t kMaxBytes = 8u * 1024u * 1024u;
     static constexpr uint32_t kHeaderBytes = 32;

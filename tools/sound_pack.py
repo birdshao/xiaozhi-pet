@@ -59,7 +59,8 @@ VERSION = 1
 RATE = 24000
 HEADER = struct.Struct("<4sHHIIIIII")  # 32 B
 RECORD = struct.Struct("<HHIII")  # 16 B
-MAX_CLIPS = 96
+MAX_CLIPS = 192  # V8: room for the care lines (was 96; older packs still load)
+MAX_ID = 1999    # V8: care lines use 1000..1999 (was 999)
 MAX_BYTES = 8 * 1024 * 1024
 OPTION_SECONDS = 2
 PHRASE_SECONDS = 6
@@ -118,10 +119,17 @@ def phrase_table(source: Path = PERSONALITY_CC) -> list[Clip]:
     return clips
 
 
+def care_table() -> list[Clip]:
+    """V8 care lines (tools/care_phrases.py, ids 1000..1999), file stem = id."""
+    from tools import care_phrases
+    return [Clip(r.id, str(r.id), "care", r.text, care_phrases.MAX_SECONDS, r.temperament,
+                 r.line) for r in care_phrases.table()]
+
+
 def catalog() -> list[Clip]:
     options = [Clip(1 + i, name, "option", zh, OPTION_SECONDS)
                for i, (name, zh) in enumerate(OPTIONS)]
-    return options + phrase_table()
+    return options + phrase_table() + care_table()
 
 
 def _by_name() -> dict[str, Clip]:
@@ -166,7 +174,7 @@ def encode(clips: dict[int, bytes], revision: int = 0) -> bytes:
     table, body = bytearray(), bytearray()
     for cid in ids:
         pcm = clips[cid]
-        if not 1 <= cid <= 999 or not pcm or len(pcm) % 2:
+        if not 1 <= cid <= MAX_ID or not pcm or len(pcm) % 2:
             raise ValueError(f"clip {cid}: bad id or PCM length")
         body.extend(b"\0" * (_align4(data_offset + len(body)) - data_offset - len(body)))
         table += RECORD.pack(cid, 0, data_offset + len(body), len(pcm), zlib.crc32(pcm))
@@ -198,7 +206,7 @@ def decode(blob: bytes) -> tuple[int, dict[int, bytes]]:
     clips, end, last = {}, data_offset, 0
     for i in range(count):
         cid, reserved, offset, size, ccrc = RECORD.unpack_from(table, i * RECORD.size)
-        if cid <= last or cid > 999 or reserved or size < 2 or size % 2 \
+        if cid <= last or cid > MAX_ID or reserved or size < 2 or size % 2 \
                 or size > PHRASE_SECONDS * RATE * 2 or offset != _align4(end):
             raise ValueError(f"clip {cid}: bad table entry")
         pcm = blob[offset:offset + size]
@@ -312,10 +320,12 @@ def demo(out_dir: Path) -> dict:
         clips = Path(tmp)
         for name, _ in OPTIONS:
             shutil.copyfile(PROMPT_DIR / f"prompt_{name}.wav", clips / f"{name}.wav")
-        for clip in phrase_table():
-            # Temperament shifts the pitch so a listener hears which one played.
-            shift = 1 + 0.12 * TEMPERAMENTS.index(clip.temperament)
-            pcm = _tone([int(f * shift) for f in DEMO_TONES[clip.context]], 0.12)
+        for clip in phrase_table() + care_table():
+            # Temperament shifts the pitch so a listener hears which one played
+            # (V8 care lines shared by every temperament: no shift).
+            shift = 1 + 0.12 * (TEMPERAMENTS.index(clip.temperament) if clip.temperament else 0)
+            tones = DEMO_TONES.get(clip.context, [659, 880]) if clip.kind == "phrase" else [659, 880]
+            pcm = _tone([int(f * shift) for f in tones], 0.12)
             with wave.open(str(clips / f"{clip.name}.wav"), "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
@@ -335,6 +345,12 @@ def checklist(temperament: str = "all") -> str:
             "|---|---|---|---|---|---|"]
     for clip in catalog():
         if clip.kind == "phrase" and temperament not in ("all", clip.temperament):
+            continue
+        if clip.kind == "care":  # V8: the full care list is `python -m tools.care_phrases checklist`
+            from tools import care_phrases
+            when, kind = care_phrases.WHEN[clip.context], "护理短句"
+            rows.append(f"| {clip.name} | {kind} | {TEMPERAMENT_ZH.get(clip.temperament, '全部')} | "
+                        f"{when} | {clip.text} | {clip.max_seconds} 秒 |")
             continue
         when = "拨轮停在该选项时" if clip.kind == "option" else PLAYED[clip.context]
         kind = "选项名" if clip.kind == "option" else "宠物短句"

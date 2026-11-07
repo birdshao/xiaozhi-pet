@@ -75,12 +75,14 @@ class FormatTests(unittest.TestCase):
         bad(b"KPB2" + bytes(blob[4:]), "not a KPS1")
 
     def test_encoder_limits(self):
-        with self.assertRaisesRegex(ValueError, "1..96"):
+        with self.assertRaisesRegex(ValueError, "1..192"):
             encode({})
-        with self.assertRaisesRegex(ValueError, "1..96"):
+        with self.assertRaisesRegex(ValueError, "1..192"):
             encode({i: b"\0\0" for i in range(1, MAX_CLIPS + 2)})
         with self.assertRaisesRegex(ValueError, "bad id"):
-            encode({1000: b"\0\0"})
+            encode({2000: b"\0\0"})
+        # V8 care lines (1000..1999) fit next to the V5 pet lines.
+        self.assertEqual(set(decode(encode({1001: b"\0\0", 211: b"\0\0"}))[1]), {211, 1001})
         with self.assertRaisesRegex(ValueError, "bad id"):
             encode({1: b"\0"})
 

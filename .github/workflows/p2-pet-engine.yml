@@ -20,6 +20,8 @@ on:
       - 'tests/fixtures/ledger/**'
       - 'tests/cpp/test_care.cc'
       - 'tests/cpp/test_care_ledger.cc'
+      - 'tools/care_phrases.py'
+      - 'tests/test_v8_care_phrases.py'
       - 'scripts/p2_test.sh'
       - '.github/workflows/p2-pet-engine.yml'
   workflow_dispatch:
@@ -34,3 +36,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile and execute deterministic C++ tests
         run: bash scripts/p2_test.sh
+      - name: V8 care lines (review checklist, TTS drafts, sound pack catalog)
+        run: python3 -m unittest discover -s tests -p 'test_v8_care_phrases.py' -v
