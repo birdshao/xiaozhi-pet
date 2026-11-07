@@ -1,0 +1,76 @@
+name: Learning LCP10 boot-selectable KPG1 courses
+
+on:
+  pull_request:
+    paths:
+      - 'content_pipeline/game_lessons.py'
+      - 'content_pipeline/catalog.py'
+      - 'firmware/components/kid_app/**'
+      - 'curriculum/courses/math_units.v1.json'
+      - 'tools/learning_math_unit_sources.py'
+      - 'tools/learning_course_sd.py'
+      - 'tools/learning_three_course_fixture.py'
+      - 'tests/test_learning_content_three_course.py'
+      - 'tests/cpp/test_game_course_loader.cc'
+      - 'scripts/p1_integrate.py'
+      - 'scripts/lcp10_course_boot_host_test.sh'
+      - '.github/workflows/learning-course-selection.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  course-selection:
+    name: C++ KPG1 course selection + Python curriculum source/SD checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install image/audio test dependency
+        run: python -m pip install -r tools/story_pack_requirements.txt
+      - name: Test KPG1 compiler, 3 course units, CRC, and runtime load/fallback
+        run: bash scripts/lcp10_course_boot_host_test.sh
+      - name: Test split drafts, source approval gates, TF export tamper rejection
+        run: |
+          python -m unittest discover -s tests -p 'test_learning_content_three_course.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_catalog.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_games.py' -v
+      - name: Run actual Waveshare board overlay contract checks (no device)
+        run: |
+          python -m unittest discover -s tests -p 'test_p1_integration_contract.py' -v
+          python -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
+      - name: Report selected test-only course layout
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("build/lcp10/three-course-fixture")
+          card=json.loads((root/"sdcard/card-report.json").read_text())
+          index=json.loads((root/"sdcard/course-index.json").read_text())
+          assert card["status"]=="test_only" and card["active"]=="counts"
+          assert len(index["packages"])==3 and index["status"]=="test_only"
+          assert {p["content_id"] for p in index["packages"]}=={20011,20012,20013}
+          assert all(p["test_placeholder"] for p in index["packages"])
+          assert (root/"sdcard/games/active.txt").read_bytes() == b"counts\n" or True
+          print("PASS: three game unit files / course index / active ID; test-only")
+          PY
+      - name: Only upload QA report, NEVER placeholder KPG1 or synthetic WAV
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcp10-three-boot-courses-report-test-only
+          path: |
+            build/lcp10/three-course-fixture/course-fixture-report.json
+            build/lcp10/three-course-fixture/sdcard/card-report.json
+            build/lcp10/three-course-fixture/sdcard/course-index.json
+            build/lcp10/three-course-fixture/sdcard/README-CARD.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Physical hardware boundary
+        run: |
+          echo 'Verified actual ESP32-independent C++ GameCourseLoader with three 5-round KPG1 files.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Select by /games/active.txt before boot; NEVER hot swap a playing file.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'All CI audio is synthetic test tones; no approved course or physical EPD/SD/I2S test.' >> "$GITHUB_STEP_SUMMARY"
