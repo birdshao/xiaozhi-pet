@@ -54,3 +54,11 @@ python -m tools.story_pack preview  --package out/my_book.kpb --output out/previ
 ## 6. 记住的东西可以删
 
 团团只记住喜好题里拨轮选中的答案（主题 + 选项编号），不记录声音。按设计家长可以查看并一键清空（设备家长入口和家长面板的这部分还在开发中，见 V5-05、V6-06）。
+
+## 7. 分支书和系列（V8）
+
+- [ ] 分支书：每条路都读一遍，各自能走到结局；选路题没有“对错”；“睡前模式走第一个选项”的那条路本身是完整的故事。
+- [ ] 系列：同一系列的 `series.id` 相同、`index` 连续、`next_content_id` 指向下一本，最后一本为 0。
+- [ ] 睡前模式：晚间在设备上整本试听——低对比度画面看得清、自动翻页节奏合适、结尾不突然。
+
+见 [V8_BOOKS.md](V8_BOOKS.md)、[V8_STORY_REVIEW.md](V8_STORY_REVIEW.md)。

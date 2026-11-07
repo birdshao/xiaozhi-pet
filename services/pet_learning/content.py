@@ -64,7 +64,9 @@ def inspect(blob: bytes, pack_id: str | None = None) -> dict:
             parsed = kpb2.parse(blob)
             meta = {"kind": "book", "content_id": parsed["content_id"],
                     "revision": parsed["revision"], "title": parsed["title"],
-                    "path": f"/books/c{parsed['content_id']}.kpb", "parsed": parsed}
+                    "path": f"/books/c{parsed['content_id']}.kpb", "parsed": parsed,
+                    # V8: KPB2 v3 story graph and series, already validated by kpb2.parse
+                    "branching": parsed["branching"], "series": parsed["series"]}
         elif magic == b"KPG1":
             parsed = game_pack.parse(blob)
             slug = pack_id or f"g{parsed['content_id']}"

@@ -357,6 +357,12 @@ PYTHONPATH="$ROOT" python3 -m tools.make_reader_test_book --output "$BUILD/reade
   -o "$BUILD/test_book_reader"
 "$BUILD/test_book_reader" "$ROOT/tests/fixtures/kpb2" "$BUILD/reader-test/books"
 
+# V8 branching books (KPB2 v3 links, graph validation, history paging, series)
+# and bedtime story mode, on the synthetic branch test book.
+PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branch-test" >/dev/null
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/book_reader.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/content_pack_reader.cc"   "$ROOT/firmware/components/kid_app/src/story_pack_reader.cc"   "$ROOT/firmware/components/kid_app/src/story_pack_file_port.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/tests/cpp/test_branch_book.cc"   -o "$BUILD/test_branch_book"
+"$BUILD/test_branch_book" "$BUILD/branch-test/books" "$ROOT/tests/fixtures/kpb2"
+
 # V4-06 mini games: built-in rounds, deterministic sessions, rewards only
 # for correct dial answers, growth memory, tones, game scene and its
 # refresh regions; KPG1 game packs read from the golden pack the tool made.

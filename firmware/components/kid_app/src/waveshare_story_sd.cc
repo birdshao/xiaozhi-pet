@@ -67,6 +67,14 @@ void LogFileNameSupport() {
 }
 }  // namespace
 
+bool WaveshareStorySd::ContentBookPresent(uint16_t content_id) const {
+    if (!mounted_ || content_id == 0) return false;
+    char path[64];
+    std::snprintf(path, sizeof(path), "%s/c%u.kpb", kBooks, static_cast<unsigned>(content_id));
+    struct stat info {};
+    return stat(path, &info) == 0 && S_ISREG(info.st_mode);
+}
+
 bool WaveshareStorySd::Initialize(const char* book_id) {
     if (ready_) return true;
     if (!book_id) return false;

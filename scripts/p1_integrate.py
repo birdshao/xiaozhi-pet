@@ -700,6 +700,10 @@ BOARD_WORKER = r'''
                 ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
                 book_missing_ = kid_app::BookMissing::BadBook;
             }
+            // V8 series: the "next book" arrow only shows when it is on the card.
+            book_outline_.next_book_present =
+                book_outline_.series_next != 0 &&
+                story_sd_.ContentBookPresent(book_outline_.series_next);
             book_outline_ready_.store(true);
             // Restored in Story without a readable book (no card, empty or
             // broken pack): go home instead of opening an empty reader. If
@@ -1290,13 +1294,26 @@ BOARD_WORKER = r'''
             return;
         if (!book_.Active()) {
             if (!book_outline_ready_.load()) return;
-            book_.Open(&book_outline_, now, book_missing_);
+            // V8 bedtime story: entering the story in the evening day phase
+            // (RTC, offline) starts the quiet mode: low-contrast pages that
+            // turn by themselves, no questions, then the normal sleep flow.
+            // Any dial turn drops back to normal reading (BookStep.bedtime_off).
+            const int phase = day_phase_.load();
+            const bool bedtime =
+                phase >= 0 && kid_app::BedtimeAvailable(static_cast<kid_app::DayPhase>(phase));
+            book_.Open(&book_outline_, now, book_missing_, bedtime);
             book_shown_.store(0);
-            ESP_LOGI(TAG, "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d",
+            ESP_LOGI(TAG,
+                     "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d branching=%d "
+                     "series=%u:%u/%u bedtime=%d",
                      story_book_, static_cast<unsigned>(book_outline_.pages),
                      static_cast<unsigned>(book_outline_.GreyPages()),
                      static_cast<unsigned>(book_outline_.QuestionTotal()),
-                     book_outline_.kpb2 ? 1 : 0);
+                     book_outline_.kpb2 ? 1 : 0, book_outline_.branching ? 1 : 0,
+                     static_cast<unsigned>(book_outline_.series_id),
+                     static_cast<unsigned>(book_outline_.series_index),
+                     static_cast<unsigned>(book_outline_.series_count),
+                     book_.Bedtime() ? 1 : 0);
             // No book: the picture says why (card / book), a press or long
             // press goes home; nothing is read aloud or remembered.
             if (book_.Missing() != kid_app::BookMissing::None)
@@ -1335,6 +1352,15 @@ BOARD_WORKER = r'''
                      static_cast<unsigned>(book_.View().question));
         }
         if (step.memory.kind != kid_app::BookMemoryKind::None) RecordBookMemory(step.memory);
+        if (step.bedtime_off) ESP_LOGI(TAG, "PET_BOOK_BEDTIME off=dial");
+        if (book_.NextBookId() != 0 && step.publish)
+            ESP_LOGI(TAG, "PET_BOOK_NEXT content=%u", static_cast<unsigned>(book_.NextBookId()));
+        if (step.sleep) {
+            // The bedtime story is over and TuanTuan yawned: the same flow as
+            // PWR / the rail (sleeping picture, 3 s to cancel).
+            ESP_LOGI(TAG, "PET_BOOK_BEDTIME sleep=1");
+            HandleSleepAction(sleep_flow_.Request(NowMs()));
+        }
         if (step.home) {
             ESP_LOGI(TAG, "PET_BOOK_HOME");
             if (!pet_service_.PostLocal(kid_app::PetAction::StopStory)) {
@@ -1406,7 +1432,7 @@ BOARD_WORKER = r'''
 
     // kid_epd: 4-grey page. Card reads and plane split happen before the
     // display lock; one 192 KiB PSRAM block only while drawing.
-    bool ShowBookGreyLocked(kid_app::ContentPackReader& content, uint16_t page) {
+    bool ShowBookGreyLocked(kid_app::ContentPackReader& content, uint16_t page, bool bedtime) {
         const size_t grey_bytes = kid_app::ContentPackReader::kGreyBytes;
         const size_t plane = kid_app::ContentPackReader::kMonoBytes;
         auto* grey = static_cast<uint8_t*>(
@@ -1414,7 +1440,9 @@ BOARD_WORKER = r'''
         if (!grey) return false;
         uint8_t* ram24 = grey + grey_bytes;
         uint8_t* ram26 = ram24 + plane;
-        const bool okay = content.ReadGrey(page, grey, grey_bytes) &&
+        const bool read = content.ReadGrey(page, grey, grey_bytes);
+        if (read && bedtime) kid_app::BedtimeTone(grey, grey_bytes);  // V8 low contrast
+        const bool okay = read &&
                           kid_app::EpdGreyPlanes(grey, grey_bytes, ram24, ram26) &&
                           display_->ShowBookGrey(ram24, ram26, book_base_->Data().data());
         heap_caps_free(grey);
@@ -1442,7 +1470,7 @@ BOARD_WORKER = r'''
             bool okay = false;
             how = "mono";
             if (page.has_grey && kBookGreyEnabled) {
-                okay = ShowBookGreyLocked(content, view.page);
+                okay = ShowBookGreyLocked(content, view.page, view.bedtime);
                 how = okay ? "grey" : "mono_after_grey";
             }
             if (!okay) okay = display_->ShowBookMono(book_base_->Data().data());
