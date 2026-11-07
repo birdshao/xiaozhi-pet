@@ -382,7 +382,8 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('if (acted) PostPhrase(kid_app::PhraseContext::Giggle)', gesture)
         self.assertEqual(gesture.count('PostLocal('), 1)
         begin = self._body(patched, 'void BeginMorning(')
-        self.assertIn('PostPhrase(kid_app::PhraseContext::MorningRecap)', begin)
+        # V8: the same good-morning line, now followed by the care lines.
+        self.assertIn('PostPhrase(kid_app::PhraseContext::MorningRecap, morning, lines)', begin)
         sleep = patched[patched.index('case kid_app::SleepAction::ShowSleepScene:'):]
         sleep = sleep[:sleep.index('return;')]
         self.assertLess(sleep.index('StopPrompt()'),
@@ -1423,6 +1424,78 @@ class DisplayOverlayTest(unittest.TestCase):
         # The wooden man reads IMU window means only while it runs.
         self.assertIn('if (play_window_.load() && motion_enabled_.load()) PushPlayWindow(s);', patched)
         self.assertIn('maze_tracker_.OnWindow(s)', patched)
+
+    def test_v8_care_wiring(self):
+        patched = self._board()
+        for header in ('activity_list.h', 'care_session.h', 'care_calendar.h', 'care_phrases.h'):
+            self.assertIn(f'#include "kid_app/{header}"', patched)
+        # Care scenes run in the game frame (same gate, same guards).
+        self.assertIn('scene.kind != kid_app::SceneKind::Care', patched)
+        publish = self._body(patched, 'void PublishGameSceneLocked()')
+        self.assertLess(publish.index('GameMode::Care'), publish.index('game_menu_.View()'))
+        # The Feed rail item opens the care menu; refused, it stays the old feed.
+        rail = self._body(patched, 'kid_app::PetInputDecision HandleHomeRailLocked(')
+        self.assertIn('HomeItem::Feed && GameStartAllowed()', rail)
+        self.assertIn('care_requested_ = true', rail)
+        self.assertIn('OpenCareMenu(0);', patched)
+        menu = self._body(patched, 'void OpenCareMenu(uint8_t start)')
+        self.assertIn('kid_app::ActivityGroup::Care', menu)
+        self.assertIn('pet_mailbox_.game_only.store(true)', menu)
+        # Menu rows dispatch through the activity table; motion rows obey the parent switch.
+        choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')
+        self.assertIn('CareKindOf(out.chosen)', choice)
+        self.assertIn('ActivityNeeds::Motion && !motion_enabled_.load()', choice)
+        self.assertLess(choice.index('CareKindOf(out.chosen)'), choice.index('reason=no_handler'))
+        # Sessions never write: one CareEvent through the ledger service.
+        apply = self._body(patched, 'void ApplyCareOutput(const kid_app::CareOutput& out)')
+        self.assertIn('pet_service_.PostCare(e)', apply)
+        self.assertIn('e.id = 0;', apply)
+        self.assertNotIn('nvs_', apply)
+        self.assertNotIn('RecordMemory', apply)
+        start = self._body(patched, 'void StartCare(kid_app::CareKind kind)')
+        self.assertIn('care_motion_.store(care_.WantsMotion())', start)
+        self.assertIn('kid_app::ComposeDiary(', start)
+        # Gestures and resting windows reach the care session only while it wants them.
+        gesture = self._body(patched, 'void HandleGesture(')
+        self.assertLess(gesture.index('care_motion_.load()'), gesture.index('motion_active_.load()'))
+        self.assertIn('care_gesture_.store(static_cast<uint8_t>(gesture))', gesture)
+        diag = self._body(patched, 'void RunDiagLoop()')
+        self.assertIn('care_window_.store(', diag)
+        update = self._body(patched, 'void UpdateGame(DeviceState state)')
+        self.assertIn('care_.OnGesture(', update)
+        self.assertIn('care_.OnWindow(window == 1, NowMs())', update)
+        self.assertLess(update.index('EndGame("voice")'), update.index('care_.OnGesture('))
+        end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
+        self.assertIn('care_motion_.store(false)', end)
+        self.assertIn('care_.Interrupt();', end)
+        # Bedtime ritual from the rail only; PWR (SleepRequest) is unchanged.
+        self.assertIn('if (BedtimeRitualAllowed()) StartCare(kid_app::CareKind::Tidy);', patched)
+        sleep_key = patched[patched.index(
+            'if (event.kind == kid_app::InputKind::SleepRequest && pet_mode_.load()) {'):]
+        sleep_key = sleep_key[:sleep_key.index('return;')]
+        self.assertIn('HandleSleepAction(sleep_flow_.Request(NowMs()));', sleep_key)
+        self.assertNotIn('StartCare', sleep_key)
+        # Home look: filled in when drawing (never packed), refreshed when idle.
+        draw = self._body(patched, 'bool DrawPetFrameLocked(')
+        self.assertIn('kid_app::UnpackLook(home_look_.load())', draw)
+        rhythm = self._body(patched, 'void UpdateRhythm()')
+        self.assertIn('local_minute_.store(kid_app::CareMinute(rtc, ok))', rhythm)
+        self.assertIn('UpdateHomeLook(rtc, ok, phase)', rhythm)
+        look = self._body(patched, 'void UpdateHomeLook(')
+        self.assertIn('kid_app::FestivalOn(rtc, clock_ok', look)
+        self.assertIn('kid_app::MemorySource::Device', look)
+        # Parent page 2 posts parent-sourced care events (no ParentSettingsCodec change).
+        save = self._body(patched, 'void SaveParentCare(const kid_app::ParentCare& next)')
+        self.assertIn('kid_app::MemorySource::Parent', save)
+        self.assertNotIn('SaveParentSettings', save)
+        ledger = self._body(patched, 'bool StartPetLedger(')
+        self.assertIn('SetMinuteProvider(&LocalMinute, this)', ledger)
+        self.assertIn('SetCareCallback(&CareCommitted, this)', ledger)
+        # Care lines chain in the prompt task; any newer request still wins.
+        prompt = self._body(patched, 'void PromptTaskLoop()')
+        self.assertIn('sound_bank_.LoadCareLine(request.care[0], &clip)', prompt)
+        self.assertIn('!uxQueueMessagesWaiting(prompt_queue_)', prompt)
+        self.assertIn('xQueueSend(prompt_queue_, &next, 0)', prompt)
 
     def test_v4_motion_games_wiring(self):
         patched = self._board()

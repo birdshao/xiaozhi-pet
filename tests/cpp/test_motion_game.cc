@@ -273,7 +273,8 @@ void TestMenu() {
     out = m.Input(GameInput::Down, 1200);
     assert(out.redraw && out.clip == GameArtTone(static_cast<uint16_t>(GameArt::BallBig)) &&
            m.View().highlight == 1);
-    // Five games, three cards at a time: the window slides with the highlight.
+    // Six cards (five games and the V8 sticker album), three at a time: the
+    // window slides with the highlight.
     const uint16_t kStar = static_cast<uint16_t>(GameArt::Star),
                    kBall = static_cast<uint16_t>(GameArt::BallBig),
                    kCat = static_cast<uint16_t>(GameArt::Cat),
@@ -351,6 +352,17 @@ void TestActivityList() {
         assert(m.Input(GameInput::Press, 1).chosen == ActivityAt(ActivityGroup::Play, i)->id);
     }
     assert(m.Group() == ActivityGroup::Play);
+    // The V8 care menu is the same menu on the Care group.
+    assert(ActivityCount(ActivityGroup::Care) == 6);
+    const GameChoice care[] = {GameChoice::Feed, GameChoice::Bath, GameChoice::Brush,
+                               GameChoice::Tickle, GameChoice::Dress, GameChoice::Habit};
+    for (uint8_t i = 0; i < 6; ++i) {
+        m.Start(0, i, ActivityGroup::Care);
+        assert(m.Group() == ActivityGroup::Care && ActivityIndexOf(care[i]) == i);
+        assert(m.Input(GameInput::Press, 1).chosen == care[i]);
+    }
+    assert(FindActivity(GameChoice::Bath)->needs == ActivityNeeds::Motion);
+    assert(FindActivity(GameChoice::Feed)->group == ActivityGroup::Care);
 }
 
 SceneModel GameScene(const GameView& view) {

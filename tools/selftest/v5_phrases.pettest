@@ -35,10 +35,13 @@ wait 6000
 # Gentle shake again: giggle (272).
 gesture gentle
 wait 6000
-# Rail Story(1) -> Feed(3), press: yummy (241).
+# Rail Story(1) -> Feed(3), press: V8 care menu; press the fish: its
+# care line (PET_CARE_*), then home: yummy (241).
 tap down 2500
 tap down 2500
+tap press 6000
 tap press 8000
+wait 4000
 # Feed(3) -> Sleep(4), press: good night (261), then cancel in the window.
 tap down 2500
 tap press 8000

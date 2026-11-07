@@ -57,6 +57,9 @@ public:
 
     bool LoadOption(uint8_t index, SoundClip* out) const;
     bool LoadPhrase(uint16_t phrase_id, SoundClip* out) const;
+    // V8 care line (care_phrases.h, ids 1000..1999): the pack clip, else the
+    // chime of the nearest pet context. False for an unknown id.
+    bool LoadCareLine(uint16_t care_id, SoundClip* out) const;
 
 private:
     bool FromPack(uint16_t id, SoundClip* out) const;

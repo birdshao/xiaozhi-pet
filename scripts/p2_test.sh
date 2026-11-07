@@ -270,6 +270,9 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
   "$ROOT/firmware/components/kid_app/src/sound_bank.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
   "$ROOT/firmware/components/kid_app/src/personality.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \

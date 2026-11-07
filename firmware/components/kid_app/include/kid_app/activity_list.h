@@ -111,7 +111,22 @@ constexpr Activity kActivities[] = {
     {GameChoice::Maze, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Carrot),
      ActivityNeeds::Motion, "maze"},
     {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None, "clock"},
+    {GameChoice::Stickers, ActivityGroup::Play, static_cast<uint16_t>(CareArt::Sticker),
+     ActivityNeeds::None, "stickers"},
     // ---- other sessions: append Play rows above this line ----
+    {GameChoice::Feed, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Fish),
+     ActivityNeeds::None, "feed"},
+    {GameChoice::Bath, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Bubbles),
+     ActivityNeeds::Motion, "bath"},
+    {GameChoice::Brush, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Comb),
+     ActivityNeeds::None, "brush"},
+    {GameChoice::Tickle, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Feather),
+     ActivityNeeds::Motion, "tickle"},
+    {GameChoice::Dress, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Hanger),
+     ActivityNeeds::None, "dress"},
+    {GameChoice::Habit, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Check),
+     ActivityNeeds::None, "habit"},
+    // ---- care rows (session 1) end here ----
 };
 constexpr size_t kActivityRows = sizeof(kActivities) / sizeof(kActivities[0]);
 
@@ -159,8 +174,8 @@ constexpr bool ActivityTableValid() {
         for (size_t j = 0; j < i; ++j)
             if (kActivities[j].id == a.id) return false;
     }
-    return ActivityCount(ActivityGroup::Play) >= 3;
+    return ActivityCount(ActivityGroup::Play) >= 3 && ActivityCount(ActivityGroup::Care) >= 3;
 }
-static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 play cards");
+static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 cards a menu");
 
 }  // namespace kid_app

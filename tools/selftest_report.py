@@ -18,8 +18,9 @@ PET_HOME_SELECT / PET_PROMPT_PLAY indices / PET_PHRASE_PLAY phrase ids, in
 order), commits (PET_EVENT_COMMITTED count), selftest_done
 (1 = PET_SELFTEST_DONE seen), max_partial_ms / max_full_ms (upper bound on
 PET_DIAG_EPD durations), full_refreshes / partial_refreshes (counts;
-the once-a-minute status band refresh, ``src=status``, is counted apart as
-status_refreshes because it depends on the wall clock, not the script),
+the once-a-minute status band refresh, ``src=status``, and the V8 home-look
+refresh, ``src=look`` (needs drift with the clock), are counted apart as
+status_refreshes because they depend on the wall clock, not the script),
 min:<TEXT> N (TEXT appears at least N times), none:<TEXT> 0 (never appears),
 timescale N (the board ran the test-only time scale N %; 100 = no scaling
 was ever applied; checked on the whole log),
@@ -39,6 +40,8 @@ import sys
 from pathlib import Path
 
 SECTOR = 4096
+# Refreshes the wall clock causes, not the script (see the module docstring).
+_CLOCK_SOURCES = ("status", "look")
 HEADER = "PETSELFTEST1"
 
 
@@ -204,14 +207,16 @@ def _observe(log: str) -> dict:
         "ledger_restored": _ledger_restored(body),
         "selftest_done": 1 if ("PET_SELFTEST_DONE" in log and
                                "PET_SELFTEST_ABORT" not in log) else 0,
-        # Durations include every refresh; counts leave out status-band ones.
+        # Durations include every refresh; counts leave out the clock-driven
+        # status-band and (V8) home-look ones.
         "partial_ms": [int(ms) for mode, ok, ms, _ in epd if mode == "partial" and ok == "1"],
         "full_ms": [int(ms) for mode, ok, ms, _ in epd if mode == "full" and ok == "1"],
         "partial_count": sum(1 for mode, ok, _, src in epd
-                             if mode == "partial" and ok == "1" and src != "status"),
+                             if mode == "partial" and ok == "1" and src not in _CLOCK_SOURCES),
         "full_count": sum(1 for mode, ok, _, src in epd
-                          if mode == "full" and ok == "1" and src != "status"),
-        "status_refreshes": sum(1 for _, ok, _, src in epd if ok == "1" and src == "status"),
+                          if mode == "full" and ok == "1" and src not in _CLOCK_SOURCES),
+        "status_refreshes": sum(1 for _, ok, _, src in epd
+                                if ok == "1" and src in _CLOCK_SOURCES),
         # Test-only time scale steps (not the reset when the script ends).
         "timescale": [int(p) for p in
                       re.findall(r"PET_SELFTEST_TIMESCALE pct=(\d+)(?!\d| reason=end)", log)],
