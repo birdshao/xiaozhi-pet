@@ -15,10 +15,12 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .config import Settings
 from .auth import ParentAuth
+from . import pairing
 from .routers import device, voice, parent
 from .quiz import QuizEngine
 from .story_reader import StoryReader
 from .store import PetStore
+from .voice import VoiceTurns
 
 
 def create_app(filename: str | Path | None = None, *, settings: Settings | None = None) -> FastAPI:
@@ -41,6 +43,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.state.pet_store = store
     app.state.quiz_engine = quiz
     app.state.story_reader = reader
+    app.state.voice_turns = VoiceTurns(store, database, settings)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -86,6 +89,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(device.create_router(store, quiz, reader))
     app.include_router(voice.create_router(store, quiz, reader))
     app.include_router(parent.router)
+    pairing.mount(app, database)
 
     return app
 

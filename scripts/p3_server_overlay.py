@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 import subprocess
 
-PINNED_SERVER_COMMIT = "f1965167cc2993556cd3e963f8657e2686006c77"
+PINNED_SERVER_COMMIT = "8f2dda09cf18f1c1ece0f906eee4cc2fabb7fb58"
 ANCHOR = "    # 检查是否有明确的退出命令"
 INSERT = """    # Child profile uses reviewed PetLearning text before any general LLM path.
     # Non-child profile: the guard returns False and upstream works unchanged.

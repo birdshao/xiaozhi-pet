@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "id": "math.shapes_basic",
+      "name": "基础形状识别",
+      "age_band": "3-5"
+    },
+    {
+      "id": "math.count_1_5",
+      "name": "数数 1–5",
+      "age_band": "3-5"
+    },
+    {
+      "id": "math.size_compare",
+      "name": "大小比较",
+      "age_band": "3-5"
+    },
+    {
+      "id": "language.action_verbs",
+      "name": "动作与日常词汇",
+      "age_band": "3-5"
+    },
+    {
+      "id": "science.weather_rain",
+      "name": "雨与生活观察",
+      "age_band": "3-5"
+    }
+  ]
+}
