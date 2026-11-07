@@ -50,6 +50,9 @@ class ParrotPrivacy(unittest.TestCase):
         self.assertRegex(code, r"volatile\s+int16_t\s*\*")
         header = code_only(PARROT[0].read_text(encoding="utf-8"))
         self.assertRegex(header, r"~ParrotSession\(\)\s*\{\s*Wipe\(\);\s*\}")
+        scrub = code[code.index("void ParrotSession::Scrub"):]
+        scrub = scrub[:scrub.index("}" + chr(10))]
+        self.assertRegex(scrub, r"volatile\s+int16_t\s*\*")
         # Stop(), PlaybackRefused() and the last Render block all wipe.
         for fn in ("ParrotOutput ParrotSession::Stop", "void ParrotSession::PlaybackRefused",
                    "size_t ParrotSession::Render"):

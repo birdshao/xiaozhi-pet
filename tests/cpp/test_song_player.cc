@@ -49,14 +49,11 @@ int main() {
         assert(!full.Offer("song_extra"));
     }
 
-    // Refusals: quiet hours, low battery, a voice session.
+    // Refusals: low battery, a voice session (quiet hours are handled below).
     {
         SongPlayer p;
         SongOutput o;
         SongContext c;
-        c.quiet_hours = true;
-        assert(!p.Open(0, c, Catalog(), &o) && o.hint == SongHint::Quiet && !p.Active());
-        c = SongContext{};
         c.low_battery = true;
         assert(!p.Open(0, c, Catalog(), &o) && o.hint == SongHint::LowBattery);
         c = SongContext{};
@@ -207,6 +204,50 @@ int main() {
         assert(p.Tick(23 + SongPlayer::kIdleExitMs).leave);
     }
 
+    // Quiet hours (owner decision): only lullabies, quiet volume, still ends in sleep.
+    {
+        SongContext night;
+        night.quiet_hours = true;
+        SongPlayer p;
+        SongOutput o;
+        assert(p.Open(0, night, Catalog(), &o) && p.Quiet());
+        assert(p.View(0).count == 1 && std::strcmp(p.Chosen().id, "lullaby_moon") == 0);
+        assert(p.VolumePct(0) == SongPlayer::kQuietVolumePct);
+        p.Input(GameInput::Press, 1);  // timer screen
+        assert(p.Input(GameInput::Press, 2).load == 1);
+        p.Loaded(1, 3);
+        assert(p.Bedtime() && p.VolumePct(3) == SongPlayer::kQuietVolumePct);
+        // The fade never goes above the quiet cap, and the timer still ends in sleep.
+        const uint32_t end = 3 + 20 * kMin;
+        assert(p.VolumePct(end - 15000) < SongPlayer::kQuietVolumePct);
+        assert(p.Tick(end).sleep_now);
+        // Only nursery rhymes on the card: nothing to offer at night.
+        SongCatalog rhymes;
+        rhymes.Offer("song_abc");
+        assert(p.Open(0, night, rhymes, &o) && p.View(0).phase == SongPhase::NoSongs);
+        p.Interrupt();
+        // Quiet hours begin while a nursery rhyme plays: it stops; a lullaby carries on.
+        assert(p.Open(0, SongContext{}, Catalog(), nullptr));
+        p.Input(GameInput::Down, 1);
+        p.Input(GameInput::Press, 2);
+        p.Loaded(2, 3);
+        o = p.SetQuiet(true, 4);
+        assert(o.stop_audio && o.leave && !p.Active());
+        assert(p.Open(0, SongContext{}, Catalog(), nullptr));
+        p.Input(GameInput::Press, 1);
+        p.Input(GameInput::Press, 2);
+        p.Loaded(2, 3);
+        o = p.SetQuiet(true, 4);
+        assert(!o.stop_audio && !o.leave && p.Bedtime());
+        assert(p.VolumePct(5) == SongPlayer::kQuietVolumePct);
+        p.Interrupt();
+        // On the list screen the list is cut down in place.
+        assert(p.Open(0, SongContext{}, Catalog(), nullptr));
+        assert(p.View(0).count == 3);
+        assert(p.SetQuiet(true, 1).redraw && p.View(1).count == 1);
+        p.Interrupt();
+    }
+
     // Audio arbitration with the real coordinator: a song is a Story-class stream;
     // BOOT (voice) preempts it and it does NOT resume by itself after the
     // player stopped; PWR (StopAll) kills it; quiet blocks it.
@@ -229,6 +270,20 @@ int main() {
         assert(plan.count == 1 && audio.Active() == AudioStream::None);
         audio.SetQuiet(true);
         assert(!audio.StartStory(13).accepted);
+        // ...except a lullaby: it may start in quiet hours, survives SetQuiet(true),
+        // but voice-first and PWR rules still hold.
+        assert(audio.StartLullaby(14).accepted && audio.Active() == AudioStream::Story);
+        assert(audio.SetQuiet(false).accepted && audio.SetQuiet(true).count == 0);
+        assert(audio.Active() == AudioStream::Story && audio.ActiveToken() == 14);
+        assert(!audio.PlayCue(15).accepted && !audio.StartStory(16).accepted);
+        assert(audio.StopAll().count == 1 && audio.Active() == AudioStream::None);
+        AudioCoordinator calm;  // quiet from the start: a plain story stops, a lullaby stays
+        calm.StartStory(1);
+        assert(calm.SetQuiet(true).count == 1);
+        assert(calm.StartLullaby(2).accepted);
+        assert(calm.SetQuiet(false).accepted);
+        assert(calm.StartStory(3).accepted);   // an ordinary story replaces it ...
+        assert(calm.SetQuiet(true).count == 1);  // ... and is no longer exempt
     }
 
     std::cout << "song player tests passed\n";

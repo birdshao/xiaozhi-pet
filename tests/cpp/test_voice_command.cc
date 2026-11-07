@@ -121,7 +121,7 @@ int main() {
     }
 
     // V8-03: the new fixed commands. Wire names round-trip.
-    for (const char* n : {"ASK_NEEDS", "OPEN_GAME", "PLAY_SONG", "GOOD_NIGHT", "TELL_JOKE",
+    for (const char* n : {"ASK_NEEDS", "OPEN_GAME", "PLAY_SONG", "TELL_JOKE",
                           "START_BRUSH", "START_WASH"})
         assert(std::strcmp(VoiceCommandName(ParseVoiceCommand(n)), n) == 0);
 
@@ -134,19 +134,19 @@ int main() {
         };
         // Off / parent menu / sleeping: nothing happens.
         for (const char* n : {"ASK_NEEDS", "OPEN_GAME", "PLAY_SONG", "TELL_JOKE", "START_BRUSH",
-                              "START_WASH", "GOOD_NIGHT"}) {
+                              "START_WASH"}) {
             assert(Is(Run(n, Ctx(VoiceScene::Off)), VoiceAction::None, VoiceHint::None, "off"));
             assert(Is(Run(n, Ctx(VoiceScene::Parent)), VoiceAction::None, VoiceHint::None, "parent"));
             assert(Run(n, Ctx(VoiceScene::Sleeping)).proposal == VoiceProposal::None);
             assert(Run(n, Ctx(VoiceScene::Sleeping)).action == VoiceAction::None);
         }
-        assert(std::strcmp(Run("GOOD_NIGHT", Ctx(VoiceScene::Sleeping)).result, "already") == 0);
+        assert(std::strcmp(Run("SLEEP_REQUEST", Ctx(VoiceScene::Sleeping)).result, "already") == 0);
 
-        // Good night is the sleep flow, also at night and on a low battery.
+        // Good night ("晚安" = SLEEP_REQUEST on the server) is the one sleep flow, also at night and on a low battery.
         for (VoiceScene s : {VoiceScene::Home, VoiceScene::Reader, VoiceScene::Game}) {
             auto c = Ctx(s);
             c.quiet_hours = c.low_battery = true;
-            assert(Is(Run("GOOD_NIGHT", c), VoiceAction::BeginSleep, VoiceHint::None, "done"));
+            assert(Is(Run("SLEEP_REQUEST", c), VoiceAction::BeginSleep, VoiceHint::None, "done"));
         }
 
         // Are you hungry? At home; generic until the care state is readable.

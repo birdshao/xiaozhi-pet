@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import unittest
 
-from services.pet_learning.intent import ACTIONS, match_fixed
+from services.pet_learning.intent import ACTIONS, NEUTRAL, match_fixed
 from services.pet_learning.jokes import JOKES, MAX_CHARS, REVIEW_ID
 from test_v6_voice_turn import VoiceBase
 
@@ -16,7 +16,7 @@ NEW = {
     "ASK_NEEDS": ["团团饿了吗", "团团饿了吗？", "团团饿了吗?", "团团，饿不饿", "团团饿了没有"],
     "OPEN_GAME": ["玩游戏", "我要玩游戏"],
     "PLAY_SONG": ["唱首歌", "唱首歌吧", "唱歌", "团团，唱首歌！"],
-    "GOOD_NIGHT": ["晚安", "团团晚安", "晚安团团", "晚安！"],
+    "SLEEP_REQUEST": ["晚安", "团团晚安", "晚安团团", "晚安！"],
     "TELL_JOKE": ["讲个笑话", "讲笑话", "团团讲个笑话", "说个笑话！"],
     "START_BRUSH": ["刷牙", "刷牙吧", "该刷牙了", "我们刷牙"],
     "START_WASH": ["洗手", "洗手吧", "去洗手", "团团洗手"],
@@ -89,10 +89,25 @@ class VoiceTurnNewCommands(VoiceBase):
 
     def test_quiet_hours_precede_new_commands(self):
         self.set_quiet()
-        for phrase in ("唱首歌", "讲个笑话", "刷牙", "洗手", "晚安", "团团饿了吗", "玩游戏"):
+        for phrase in ("唱首歌", "讲个笑话", "刷牙", "洗手", "团团饿了吗", "玩游戏", "喂团团"):
             data = self.say(phrase)
             self.assertEqual((data["kind"], data["action"], data["reason"]),
                              ("fixed", None, "quiet_hours"), phrase)
+
+    def test_good_night_is_welcome_in_quiet_hours_and_is_the_one_sleep_action(self):
+        self.set_quiet()
+        for phrase in ("晚安", "团团晚安", "团团睡觉"):
+            data = self.say(phrase)
+            self.assertEqual((data["kind"], data["action"]), ("local_command", "SLEEP_REQUEST"), phrase)
+        self.assertEqual(self.say("晚安")["tts_text"], "晚安，做个好梦。")
+        self.assertNotIn("GOOD_NIGHT", ACTIONS)
+
+    def test_refusable_activities_get_a_neutral_confirmation(self):
+        # The device may refuse (low battery, a book is open): the server never promises.
+        for phrase in ("刷牙", "洗手", "唱首歌"):
+            text = self.say(phrase)["tts_text"]
+            self.assertEqual(text, NEUTRAL, phrase)
+            self.assertNotIn("好呀", text)
 
     def test_commands_do_not_change_the_pet_or_memory(self):
         before = self.sql("SELECT * FROM audit_log")

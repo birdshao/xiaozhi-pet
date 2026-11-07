@@ -22,7 +22,9 @@ namespace kid_app {
 // Bedtime mode: a lullaby asks for 10 / 20 / 30 minutes; it loops until the
 // time is up, fades the last 30 s, stops, then the board runs the normal
 // sleep flow (3 s cancel window). Quiet hours and a low battery refuse the
-// player (docs/P2_AUDIO.md: quiet overrides every stream).
+// player. Quiet hours (decided by the owner, V8 review): only lullabies are
+// offered, at a low volume (kQuietVolumePct), and the timer still ends in
+// the sleep flow; nursery rhymes and everything else stay closed.
 enum class SongKind : uint8_t { Song, Lullaby };
 
 constexpr size_t kMaxSongs = 12;
@@ -43,6 +45,8 @@ public:
     size_t Count() const { return count_; }
     const SongEntry& At(size_t i) const { return entries_[i]; }
     void Clear() { count_ = 0; }
+    // Quiet hours: only lullabies stay.
+    SongCatalog LullabiesOnly() const;
 
 private:
     std::array<SongEntry, kMaxSongs> entries_{};
@@ -87,6 +91,7 @@ public:
     static constexpr uint32_t kSwayMs = 6000;        // one partial refresh per step
     static constexpr uint32_t kFadeMs = 30000;       // last 30 s of a lullaby
     static constexpr uint8_t kFadeFloorPct = 35;
+    static constexpr uint8_t kQuietVolumePct = 30;   // same as the quiet prompt volume
     static constexpr uint32_t kNoSongsMs = 15000;    // hint picture, then quietly home
     static constexpr uint32_t kIdleExitMs = 120000;  // list or timer left alone
     static constexpr uint32_t kLoadTimeoutMs = 10000;
@@ -105,8 +110,13 @@ public:
     // The stream of `page` ended on its own.
     SongOutput PageFinished(uint32_t now_ms);
     SongOutput Tick(uint32_t now_ms);
-    // BOOT talk, PWR sleep, voice session, quiet hours begin, Pet mode off.
+    // BOOT talk, PWR sleep, voice session, Pet mode off.
     SongOutput Interrupt();
+    // Quiet hours begin / end while the player is open. Beginning: a nursery
+    // rhyme stops (leave); a lullaby keeps playing; a list is cut down to the
+    // lullabies (none left: leave).
+    SongOutput SetQuiet(bool quiet, uint32_t now_ms);
+    bool Quiet() const { return quiet_; }
 
     bool Active() const { return phase_ != SongPhase::Idle; }
     SongView View(uint32_t now_ms) const;
@@ -126,6 +136,7 @@ private:
     SongOutput Back(bool stop);
 
     SongCatalog catalog_;
+    bool quiet_ = false;
     SongPhase phase_ = SongPhase::Idle;
     SongMissing missing_ = SongMissing::None;
     uint8_t selected_ = 0;

@@ -14,7 +14,7 @@ constexpr Entry kCommands[] = {
     {"TELL_BATTERY", VoiceCommand::TellBattery},   {"PAGE_NEXT", VoiceCommand::PageNext},
     {"OPEN_READER", VoiceCommand::OpenReader},     {"ASK_NEEDS", VoiceCommand::AskNeeds},
     {"OPEN_GAME", VoiceCommand::OpenGame},         {"PLAY_SONG", VoiceCommand::PlaySong},
-    {"GOOD_NIGHT", VoiceCommand::GoodNight},       {"TELL_JOKE", VoiceCommand::TellJoke},
+    {"TELL_JOKE", VoiceCommand::TellJoke},
     {"START_BRUSH", VoiceCommand::StartBrush},     {"START_WASH", VoiceCommand::StartWash}};
 
 VoiceDecision Done(VoiceAction action) {
@@ -99,14 +99,11 @@ VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
     if (c.scene == VoiceScene::Off) return Ignored("off");
     if (c.scene == VoiceScene::Parent) return Ignored("parent");
     if (c.scene == VoiceScene::Sleeping)
-        return Ignored(command == VoiceCommand::SleepRequest || command == VoiceCommand::GoodNight
-                           ? "already"
-                           : "ignored");
+        return Ignored(command == VoiceCommand::SleepRequest ? "already" : "ignored");
 
     const bool at_home = c.scene == VoiceScene::Home;
     switch (command) {
         case VoiceCommand::SleepRequest:
-        case VoiceCommand::GoodNight:
             // Bedtime talk is welcome in quiet hours and on a low battery.
             return Done(VoiceAction::BeginSleep);
         case VoiceCommand::TellTime: {

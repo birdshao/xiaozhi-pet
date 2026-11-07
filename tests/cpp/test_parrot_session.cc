@@ -241,6 +241,16 @@ int main() {
         assert(!p.Hold(false, 5, ok, 0).play);  // release without a press does nothing
     }
 
+    // The staging block Render() fills is scrubbed on request (it is a copy of the voice).
+    {
+        std::array<int16_t, 64> block;
+        block.fill(1234);
+        ParrotSession::Scrub(block.data(), 40);
+        for (size_t i = 0; i < 40; ++i) assert(block[i] == 0);
+        assert(block[40] == 1234);  // only what was asked for
+        ParrotSession::Scrub(nullptr, 10);  // harmless
+    }
+
     // Audio preemption: the parrot plays as a pet cue, so BOOT (voice) and
     // PWR (StopAll) cut it, and it never starts over a story or a voice.
     {

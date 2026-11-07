@@ -21,7 +21,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .db import connect
-from .intent import is_page_question, match_fixed
+from .intent import QUIET_OK, is_page_question, match_fixed
 from .jokes import JOKES
 from .store import BOOK_RE, DEVICE_RE
 
@@ -171,9 +171,10 @@ class VoiceTurns:
             quiet = self.store.snapshot(device_id)["quiet"]
         except ValueError:
             return reply("fallback", NOT_BOUND, "unknown_device")
-        if quiet:
-            return reply("fixed", QUIET, "quiet_hours")
         match = match_fixed(text)
+        if quiet and not (match is not None and match.kind == "local_command"
+                          and match.action in QUIET_OK):
+            return reply("fixed", QUIET, "quiet_hours")
         if match is not None:
             if match.kind == "local_command":
                 tts_text = match.tts_text

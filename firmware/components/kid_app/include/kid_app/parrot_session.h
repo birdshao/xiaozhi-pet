@@ -104,6 +104,14 @@ public:
     // Copies up to `max` samples starting at `offset`. Wipes the recording as
     // soon as the final block has been produced. Returns 0 outside Playing.
     size_t Render(size_t offset, int16_t* out, size_t max);
+    // The block Render() filled is a copy of the child's voice too (resampled,
+    // still intelligible). The board zeroes its staging block with this right
+    // after handing it to the audio path (and on every refusal/abort).
+    // Residue that is NOT ours to clear: the copy already queued inside
+    // AudioService (at most two 480-sample blocks, 40 ms of sound) and the
+    // codec DMA buffers; they are overwritten by the next audio within
+    // milliseconds of playback ending or being stopped (docs/V8 section 1).
+    static void Scrub(int16_t* block, size_t count);
 
     ParrotPhase Phase() const { return phase_; }
     ParrotView View() const { return {phase_, hint_}; }

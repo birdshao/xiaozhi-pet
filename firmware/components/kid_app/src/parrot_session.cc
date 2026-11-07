@@ -179,6 +179,12 @@ ParrotOutput ParrotSession::Tick(uint32_t now_ms) {
     return ParrotOutput{};
 }
 
+void ParrotSession::Scrub(int16_t* block, size_t count) {
+    if (!block) return;
+    volatile int16_t* p = block;
+    for (size_t i = 0; i < count; ++i) p[i] = 0;
+}
+
 size_t ParrotSession::Render(size_t offset, int16_t* out, size_t max) {
     if (phase_ != ParrotPhase::Playing || !out || offset >= out_samples_) return 0;
     const size_t n = out_samples_ - offset < max ? out_samples_ - offset : max;

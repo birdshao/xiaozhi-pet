@@ -76,10 +76,12 @@ ACTIONS = frozenset({
     "SLEEP_REQUEST", "PAGE_NEXT", "PAGE_PREV", "OPEN_READER", "OPEN_GAME",
     "PET_FEED", "PET_GROOM", "GO_HOME",
     # V8-03: proposals only; the device decides, voice never rewards.
-    "ASK_NEEDS", "PLAY_SONG", "GOOD_NIGHT", "TELL_JOKE", "START_BRUSH", "START_WASH",
+    "ASK_NEEDS", "PLAY_SONG", "TELL_JOKE", "START_BRUSH", "START_WASH",
 })
 # Spoken as a question on purpose ("团团饿了吗？"): the question mark is allowed.
 QUESTION_OK = frozenset({"ASK_NEEDS"})
+# Bedtime talk is welcome in quiet hours (the device runs its one sleep flow).
+QUIET_OK = frozenset({"SLEEP_REQUEST"})
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,11 @@ def normalize_speech(text: str) -> str:
     return "".join(c for c in folded if unicodedata.category(c)[0] not in "PZC")
 
 
+# The device may still refuse (low battery, a book is open ...), so commands whose
+# activity can be refused get a neutral confirmation instead of a promise.
+NEUTRAL = "好的，我们来准备一下。"
+
+
 def _commands() -> dict[str, FixedMatch]:
     rows = {
         ("SLEEP_REQUEST", "好的，我们准备睡觉啦。"): ("团团睡觉", "团团睡觉吧", "我们睡觉吧", "我们睡觉了"),
@@ -108,11 +115,11 @@ def _commands() -> dict[str, FixedMatch]:
         ("PET_GROOM", "好呀，我们给团团梳梳毛。"): ("给团团梳毛", "团团梳毛", "梳毛", "给团团梳梳毛"),
         ("GO_HOME", "好的，我们回首页。"): ("回家", "回首页", "回到首页", "回家吧"),
         ("ASK_NEEDS", "我来看看团团的小肚子。"): ("团团饿了吗", "团团饿不饿", "团团饿了没有", "团团肚子饿吗"),
-        ("PLAY_SONG", "好呀，我们来听歌。"): ("唱首歌", "唱首歌吧", "唱个歌", "唱歌", "团团唱首歌", "团团唱歌"),
-        ("GOOD_NIGHT", "晚安，做个好梦。"): ("晚安", "团团晚安", "晚安团团", "说晚安"),
+        ("PLAY_SONG", NEUTRAL): ("唱首歌", "唱首歌吧", "唱个歌", "唱歌", "团团唱首歌", "团团唱歌"),
+        ("SLEEP_REQUEST", "晚安，做个好梦。"): ("晚安", "团团晚安", "晚安团团", "说晚安"),
         ("TELL_JOKE", ""): ("讲个笑话", "讲笑话", "讲个笑话吧", "说个笑话", "团团讲个笑话"),
-        ("START_BRUSH", "好呀，我们一起刷牙。"): ("刷牙", "刷牙吧", "团团刷牙", "我们刷牙", "该刷牙了"),
-        ("START_WASH", "好呀，我们一起洗手。"): ("洗手", "洗手吧", "团团洗手", "我们洗手", "去洗手"),
+        ("START_BRUSH", NEUTRAL): ("刷牙", "刷牙吧", "团团刷牙", "我们刷牙", "该刷牙了"),
+        ("START_WASH", NEUTRAL): ("洗手", "洗手吧", "团团洗手", "我们洗手", "去洗手"),
     }
     table = {}
     for (action, reply), phrases in rows.items():

@@ -27,7 +27,7 @@ namespace kid_app {
 //                  the care state of V8-01 is wired: needs_known)
 //   OPEN_GAME      the game menu (the home rail's Game item)
 //   PLAY_SONG      the nursery-rhyme / lullaby player
-//   GOOD_NIGHT     same as SLEEP_REQUEST (sleep flow, 3 s cancel window)
+//   (good night: the server maps "晚安" to SLEEP_REQUEST, one sleep flow only)
 //   TELL_JOKE      a reviewed joke; the server's TTS speaks it, the device
 //                  only laughs (Giggle face)
 //   START_BRUSH    2-minute tooth-brushing companion
@@ -37,7 +37,7 @@ namespace kid_app {
 // they are Unknown here.
 enum class VoiceCommand : uint8_t {
     Unknown, SleepRequest, TellTime, TellBattery, PageNext, OpenReader,
-    AskNeeds, OpenGame, PlaySong, GoodNight, TellJoke, StartBrush, StartWash
+    AskNeeds, OpenGame, PlaySong, TellJoke, StartBrush, StartWash
 };
 
 // Exact, case-sensitive wire name; nullptr or any other text is Unknown.

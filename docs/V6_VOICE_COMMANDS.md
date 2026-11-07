@@ -48,4 +48,4 @@
 
 ## V8 增补
 
-`ASK_NEEDS`、`OPEN_GAME`、`PLAY_SONG`、`GOOD_NIGHT`、`TELL_JOKE`、`START_BRUSH`、`START_WASH` 已进入设备端分发表（以 `VoiceProposal` 形式提议，不改 `VoiceAction`），场景行为表见 [V8_SOUND_AND_ROUTINES.md](V8_SOUND_AND_ROUTINES.md) §4。上文“`OPEN_GAME` 设备端还没做”的说法以该文为准；`PAGE_PREV`、`PET_FEED`、`PET_GROOM`、`GO_HOME` 仍未做。
+`ASK_NEEDS`、`OPEN_GAME`、`PLAY_SONG`、`TELL_JOKE`、`START_BRUSH`、`START_WASH` 已进入设备端分发表（“晚安”由服务端映射为 `SLEEP_REQUEST`，无单独命令名）（以 `VoiceProposal` 形式提议，不改 `VoiceAction`），场景行为表见 [V8_SOUND_AND_ROUTINES.md](V8_SOUND_AND_ROUTINES.md) §4。上文“`OPEN_GAME` 设备端还没做”的说法以该文为准；`PAGE_PREV`、`PET_FEED`、`PET_GROOM`、`GO_HOME` 仍未做。

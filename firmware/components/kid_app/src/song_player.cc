@@ -58,6 +58,13 @@ bool SongCatalog::Offer(const char* stem) {
     return true;
 }
 
+SongCatalog SongCatalog::LullabiesOnly() const {
+    SongCatalog only;
+    for (size_t i = 0; i < count_; ++i)
+        if (entries_[i].kind == SongKind::Lullaby) only.entries_[only.count_++] = entries_[i];
+    return only;
+}
+
 bool SongPlayer::Open(uint32_t now_ms, const SongContext& c, const SongCatalog& catalog,
                       SongOutput* out) {
     SongOutput o;
@@ -65,14 +72,14 @@ bool SongPlayer::Open(uint32_t now_ms, const SongContext& c, const SongCatalog& 
         if (out) *out = o;
         return false;
     }
-    if (c.quiet_hours) o.hint = SongHint::Quiet;
-    else if (c.low_battery) o.hint = SongHint::LowBattery;
+    if (c.low_battery) o.hint = SongHint::LowBattery;
     else if (c.voice_active) o.hint = SongHint::Busy;
     if (o.hint != SongHint::None) {
         if (out) *out = o;
         return false;
     }
-    catalog_ = catalog;
+    quiet_ = c.quiet_hours;
+    catalog_ = quiet_ ? catalog.LullabiesOnly() : catalog;
     selected_ = 0;
     timer_choice_ = kDefaultTimer;
     timer_minutes_ = 0;
@@ -244,11 +251,33 @@ SongOutput SongPlayer::Interrupt() {
 }
 
 uint8_t SongPlayer::VolumePct(uint32_t now_ms) const {
-    if (phase_ != SongPhase::Playing || timer_minutes_ == 0) return 100;
+    const uint8_t cap = quiet_ ? kQuietVolumePct : 100;
+    if (phase_ != SongPhase::Playing || timer_minutes_ == 0) return cap;
     const uint32_t left = end_ms_ - now_ms;
-    if (static_cast<int32_t>(left) <= 0) return kFadeFloorPct;
-    if (left >= kFadeMs) return 100;
-    return static_cast<uint8_t>(kFadeFloorPct + (100u - kFadeFloorPct) * left / kFadeMs);
+    uint32_t pct = 100;
+    if (static_cast<int32_t>(left) <= 0) pct = kFadeFloorPct;
+    else if (left < kFadeMs) pct = kFadeFloorPct + (100u - kFadeFloorPct) * left / kFadeMs;
+    return static_cast<uint8_t>(pct * cap / 100);
+}
+
+SongOutput SongPlayer::SetQuiet(bool quiet, uint32_t now_ms) {
+    SongOutput o;
+    if (quiet == quiet_) return o;
+    quiet_ = quiet;
+    if (!quiet || !Active()) return o;
+    if ((phase_ == SongPhase::Playing || phase_ == SongPhase::Loading) && timer_minutes_ != 0)
+        return o;  // a lullaby carries on, quieter
+    if (phase_ == SongPhase::Playing || phase_ == SongPhase::Loading) return Back(true);
+    // A list / timer screen: keep only the lullabies, in place.
+    const SongCatalog only = catalog_.LullabiesOnly();
+    if (only.Count() == 0) return Back(false);
+    last_input_ms_ = now_ms;
+    if (phase_ == SongPhase::NoSongs) return o;
+    catalog_ = only;
+    selected_ = 0;
+    phase_ = SongPhase::List;
+    o.redraw = true;
+    return o;
 }
 
 SongView SongPlayer::View(uint32_t now_ms) const {
