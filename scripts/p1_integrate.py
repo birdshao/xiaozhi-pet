@@ -2306,6 +2306,8 @@ BOARD_WORKER = r'''
                 case kid_app::Gesture::TiltLeft:  // V4-07: only the ball game listens
                 case kid_app::Gesture::TiltRight:
                 case kid_app::Gesture::Level:
+                case kid_app::Gesture::TiltUp:  // V8: only the maze listens
+                case kid_app::Gesture::TiltDown:
                 case kid_app::Gesture::None:
                     break;
             }
@@ -3207,12 +3209,13 @@ BOARD_WORKER = r'''
             return;
         }
         if (!out.redraw) return;
-        const auto view = play_.View();
-        if (view.round != play_round_logged_) {
-            play_round_logged_ = view.round;
+        const kid_app::GameResult& result = play_.Result();
+        const uint8_t round = static_cast<uint8_t>(result.played + 1);
+        if (round != play_round_logged_) {
+            play_round_logged_ = round;
             ESP_LOGI(TAG, "PET_PLAY_ROUND game=%s n=%u/%u",
-                     kid_app::FindPlayGame(play_.Game())->name,
-                     static_cast<unsigned>(view.round), static_cast<unsigned>(view.rounds));
+                     kid_app::FindPlayGame(play_.Game())->name, static_cast<unsigned>(round),
+                     static_cast<unsigned>(result.rounds));
         }
         SceneStateLock lock(scene_state_mutex_);
         if (game_active_.load()) PublishGameSceneLocked();
