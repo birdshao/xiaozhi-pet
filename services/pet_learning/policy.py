@@ -28,6 +28,7 @@ from .memory_codec import MINUTES_PER_DAY, ParentSettings
 # S6 flips this once the TTS egress audit is finished and a real moderation
 # provider exists (§6.5): until then open chat cannot be turned on anywhere.
 OPEN_CHAT_SELECTABLE = False
+ISSUED_KEPT = 8
 SETTING_FIELDS = tuple(f.name for f in fields(ParentSettings))
 NOTICE_MERGED = "MERGED_CONSERVATIVELY"
 NOTICE_DEVICE_CHANGED = "DEVICE_CHANGED"
@@ -106,6 +107,10 @@ def _issue(db, device_id: str, settings: ParentSettings, device_rev: int, new_re
            now: int, ip: str | None, actor: str) -> dict:
     """One SET_PARENT_SETTINGS in flight per device: a newer one supersedes."""
     commands.supersede(db, device_id, "SET_PARENT_SETTINGS", now)
+    issued = json.loads(_row(db, device_id)["issued_json"])
+    issued = [v for v in issued if v != settings.as_dict()] + [settings.as_dict()]
+    db.execute("UPDATE policies SET issued_json=? WHERE device_id=?",
+               (json.dumps(issued[-ISSUED_KEPT:], sort_keys=True), device_id))
     return commands.enqueue(db, device_id, "SET_PARENT_SETTINGS",
                             {"settings_b64": _b64(settings), "base_rev": device_rev, "new_rev": new_rev},
                             now, actor=actor, ip=ip)
@@ -142,8 +147,12 @@ def view(db: sqlite3.Connection, device_id: str, now: int) -> dict[str, Any]:
             "command": commands.status(dict(last), awaiting) if last else None}
 
 
+def _issued(row) -> list[ParentSettings]:
+    return [settings_from_dict(v) for v in json.loads(row["issued_json"])] if row else []
+
+
 def update(db: sqlite3.Connection, device_id: str, *, base_rev: int, changes: dict[str, Any],
-           open_chat: bool | None, now: int, ip: str | None) -> dict[str, Any]:
+           open_chat: bool | None, now: int, ip: str | None, actor: str = "parent") -> dict[str, Any]:
     """Apply a panel edit inside the caller's write transaction."""
     row = _row(db, device_id)
     current_rev = row["rev"] if row else 0
@@ -153,6 +162,8 @@ def update(db: sqlite3.Connection, device_id: str, *, base_rev: int, changes: di
     device_settings, device_rev = device if device else (None, 0)
     desired = settings_from_dict(json.loads(row["settings_json"])) if row else (device_settings or ParentSettings())
     base = settings_from_dict(json.loads(row["base_json"])) if row else desired
+    if device_settings is not None and device_settings in _issued(row):
+        base = device_settings  # the device applied a version we sent; that is not a local edit
     notice = None
     issued = False
     settings = desired
@@ -190,8 +201,8 @@ def update(db: sqlite3.Connection, device_id: str, *, base_rev: int, changes: di
                 json.dumps(base_for_row.as_dict(), sort_keys=True), device_rev, int(chat), reason,
                 notice, now if notice else None, now))
     if issued:
-        _issue(db, device_id, settings, device_rev, new_rev, now, ip, "parent")
-    commands.audit(db, now, "parent", "policy.update", device_id, "merged" if notice else "success", ip)
+        _issue(db, device_id, settings, device_rev, new_rev, now, ip, actor)
+    commands.audit(db, now, actor, "policy.update", device_id, "merged" if notice else "success", ip)
     return view(db, device_id, now)
 
 
@@ -218,6 +229,11 @@ def on_snapshot(db: sqlite3.Connection, device_id: str, device: ParentSettings,
                        (encoded, device_rev, device_id))
         return
     if device == base:
+        return
+    if device in _issued(row):
+        # The device applied an earlier version we issued while a newer edit is still in flight:
+        # not a local edit, so no merge (a merge here would wrongly pull the newer edit down).
+        db.execute("UPDATE policies SET base_json=?,base_rev=? WHERE device_id=?", (encoded, device_rev, device_id))
         return
     new_rev = max(row["rev"], device_rev) + 1
     if _pending(db, device_id, now):

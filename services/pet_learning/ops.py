@@ -240,15 +240,23 @@ def check_deployment(env: dict) -> list[str]:
         ).validate()
     except ValueError as error:
         problems.append(str(error))
-    for name in ("KID_PET_TOTP_KEY", "KID_PET_BACKUP_KEY", "KID_PET_NOTES_KEY"):
+    for name in ("KID_PET_TOTP_KEY", "KID_PET_BACKUP_KEY"):
         try:
             fernet_from(env.get(name, ""), name)
         except OpsError as error:
             problems.append(str(error))
+    notes_keys = [k.strip() for k in env.get("KID_PET_NOTES_KEY", "").split(",") if k.strip()]
+    if not notes_keys:
+        problems.append("KID_PET_NOTES_KEY must be a Fernet key (comma separated list during rotation)")
+    for key in notes_keys:
+        try:
+            fernet_from(key, "KID_PET_NOTES_KEY")
+        except OpsError as error:
+            problems.append(str(error))
     if env.get("KID_PET_BACKUP_KEY") and env.get("KID_PET_BACKUP_KEY") == env.get("KID_PET_TOTP_KEY"):
         problems.append("KID_PET_BACKUP_KEY must differ from KID_PET_TOTP_KEY")
-    if env.get("KID_PET_NOTES_KEY") and env.get("KID_PET_NOTES_KEY") in (
-            env.get("KID_PET_TOTP_KEY"), env.get("KID_PET_BACKUP_KEY")):
+    if len(set(notes_keys)) != len(notes_keys) or set(notes_keys) & {
+            env.get("KID_PET_TOTP_KEY"), env.get("KID_PET_BACKUP_KEY")}:
         problems.append("KID_PET_NOTES_KEY must differ from KID_PET_TOTP_KEY and KID_PET_BACKUP_KEY")
     for name in ("XZ_AUTH_KEY", "KID_PET_VOICE_TOKEN"):
         value = env.get(name, "")

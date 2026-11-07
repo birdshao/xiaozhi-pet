@@ -129,9 +129,96 @@ class ValidationAndAuthTests(NotesBase):
         self.write()
         self.parent("DELETE", URL, json={"reauth": self.proof()})
         rows = self.table("SELECT actor, action, target, result FROM audit_log WHERE action LIKE 'notes.%'")
-        self.assertEqual(rows, [("parent", "notes.update", DEVICE, "success"), ("parent", "notes.delete", DEVICE, "success")])
+        self.assertEqual(rows, [("parent:1", "notes.update", DEVICE, "success"), ("parent:1", "notes.delete", DEVICE, "success")])
         for row in self.table("SELECT * FROM audit_log"):
             self.assertFalse(any(secret in " ".join(map(str, row)) for secret in SECRETS))
+
+
+class HardeningTests(NotesBase):
+    def raw_put(self, body):
+        return self.client.put(URL, content=body, headers={"X-CSRF-Token": self.csrf,
+                                                           "Content-Type": "application/json"})
+
+    def test_lone_surrogates_and_invisible_characters_are_422_not_500(self):
+        proof = self.proof()
+        raw = '{"note": "a\\ud800b", "reauth": {"password": "%s", "otp": "%s"}}' % (proof["password"], proof["otp"])
+        self.assertEqual(self.raw_put(raw).status_code, 422)
+        for bad in ("a\u202eb", "zero\u200bwidth", "line\u2028sep", "tab\there", "nul\u0000"):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.write(note=bad).status_code, 422)
+        self.assertEqual(self.write(note="第一行\n第二行 😀").status_code, 200)
+
+    def test_malformed_input_is_rejected_before_the_proof_is_spent(self):
+        # A wrong password with invalid input is 422: validation first, no failed-proof count.
+        bad = self.parent("PUT", URL, json={"note": "x" * 501, "reauth": self.proof(password="nope-nope-nope")})
+        self.assertEqual(bad.status_code, 422)
+        self.assertEqual(self.table("SELECT failed_attempts FROM parent_accounts"), [(0,)])
+        proof = self.proof()
+        self.assertEqual(self.parent("PUT", URL, json={"note": "02-30", "birthday": "02-30", "reauth": proof}).status_code, 422)
+        self.assertEqual(self.parent("PUT", URL, json={"note": NOTE, "reauth": proof}).status_code, 200)  # still usable
+
+    def test_oversized_fields_stop_at_the_schema(self):
+        for change in ({"note": "x" * 100000}, {"nickname": "n" * 100}, {"birthday": "05-17-2020"}):
+            self.assertEqual(self.write(**change).status_code, 422)
+
+    def test_revoked_devices_notes_can_still_be_deleted(self):
+        self.write()
+        with connect(self.path) as db:
+            db.execute("UPDATE devices SET status='revoked'")
+        self.assertEqual(self.write(note="new").status_code, 409)
+        self.assertEqual(self.parent("DELETE", URL, json={"reauth": self.proof()}).status_code, 200)
+        self.assertEqual(self.table("SELECT COUNT(*) FROM parent_notes"), [(0,)])
+
+
+class KeyRotationTests(NotesBase):
+    def keys(self):
+        return Fernet.generate_key().decode(), Fernet.generate_key().decode()
+
+    def use_keys(self, value):
+        self.settings = Settings(totp_key=self.settings.totp_key, notes_key=value, voice_token=VOICE_TOKEN)
+        self.app.state.profile_service.notes.settings = self.settings
+
+    def token(self):
+        return self.table("SELECT payload_enc FROM parent_notes")[0][0]
+
+    def test_rotation_reads_old_rows_and_reencrypts_with_the_first_key(self):
+        old, new = self.keys()
+        self.use_keys(old)
+        self.write()
+        self.assertEqual(Fernet(old.encode()).decrypt(self.token().encode()) is not None, True)
+        self.use_keys(f"{new},{old}")
+        got = self.client.get(URL).json()
+        self.assertEqual(got["note"], NOTE)
+        Fernet(new.encode()).decrypt(self.token().encode())  # now under the new key
+        self.use_keys(new)  # the old key can be dropped
+        self.assertEqual(self.client.get(URL).json()["note"], NOTE)
+        self.assertEqual(self.write(note="after").status_code, 200)
+        Fernet(new.encode()).decrypt(self.token().encode())
+
+    def test_rotate_all_moves_unread_rows(self):
+        old, new = self.keys()
+        self.use_keys(old)
+        self.write()
+        self.use_keys(f"{new},{old}")
+        with connect(self.path) as db:
+            self.assertEqual(self.app.state.profile_service.notes.rotate_all(db), 1)
+            self.assertEqual(self.app.state.profile_service.notes.rotate_all(db), 0)
+        Fernet(new.encode()).decrypt(self.token().encode())
+
+    def test_multi_key_settings_and_deployment_check(self):
+        a, b = self.keys()
+        Settings(notes_key=f"{a},{b}").validate()
+        for bad in (f"{a},{a}", f"{a},weak", f"{a},{self.settings.totp_key}"):
+            with self.assertRaises(ValueError):
+                Settings(notes_key=bad, totp_key=self.settings.totp_key).validate()
+        env = {"KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.example:8443",
+               "KID_PET_TRUSTED_PROXY": "192.168.1.1", "KID_PET_TOTP_KEY": Fernet.generate_key().decode(),
+               "KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "XZ_AUTH_KEY": "a" * 40,
+               "KID_PET_VOICE_TOKEN": "t" * 40, "KID_PET_CHILD_MODE": "1",
+               "KID_PET_UPSTREAM_DEVICE_ID": "aa:bb", "KID_PET_BUSINESS_DEVICE_ID": "pet-1",
+               "KID_PET_NOTES_KEY": f"{a},{b}"}
+        self.assertEqual(ops.check_deployment(env), [])
+        self.assertTrue(ops.check_deployment({**env, "KID_PET_NOTES_KEY": f"{a},{env['KID_PET_BACKUP_KEY']}"}))
 
 
 class LifecycleTests(NotesBase):

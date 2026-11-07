@@ -96,6 +96,7 @@ def main() -> None:
     cleanup.add_argument("--restore-copy-days", type=int, default=14, help="drop *.pre-restore-* copies older than this")
     for ops_cmd in (backup, restore, cleanup):
         ops_cmd.add_argument("--content-dir", type=Path, help="default: KID_PET_CONTENT_DIR or <db dir>/packages")
+    sub.add_parser("rotate-notes-key", help="Re-encrypt every parent note with the first KID_PET_NOTES_KEY")
     check = sub.add_parser("check-config", help="Validate a production .env without starting the service")
     check.add_argument("--env-file", default=".env", type=Path)
     xz = sub.add_parser("check-xiaozhi", help="Check a rendered XiaoZhi config against the child-mode checklist")
@@ -104,6 +105,16 @@ def main() -> None:
     args = parser.parse_args()
     if args.command in {"backup", "restore", "cleanup", "check-config", "check-xiaozhi"}:
         run_ops(args)
+        return
+    if args.command == "rotate-notes-key":
+        from services.pet_learning.db import connect, migrate
+        from services.pet_learning.notes import ParentNotes
+        migrate(args.db)
+        with connect(args.db) as db:
+            try:
+                print(f"NOTES_REENCRYPTED {ParentNotes(settings).rotate_all(db)}")
+            except Exception as error:  # noqa: BLE001 - never echo note content or keys
+                raise SystemExit(f"rotate-notes-key failed: {type(error).__name__}") from None
         return
     store = PetStore(args.db)
     if args.command == "create-parent":

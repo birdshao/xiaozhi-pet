@@ -80,8 +80,8 @@ def enqueue(db: sqlite3.Connection, device_id: str, kind: str, payload: dict[str
 
 def supersede(db: sqlite3.Connection, device_id: str, kind: str, now: int) -> int:
     """A newer command of the same kind replaces a still-pending one (S3 profile
-    and settings edits). The old one ends as expired/SUPERSEDED; a late device
-    receipt for it changes nothing (only TIMEOUT expiries can be revived)."""
+    and settings edits). The old one ends as expired/SUPERSEDED; a device
+    receipt for it is still recorded (the device is the authority) and S3 reconciles."""
     rows = db.execute("SELECT * FROM commands WHERE device_id=? AND kind=? AND state='pending'",
                       (device_id, kind)).fetchall()
     for row in rows:
@@ -131,7 +131,9 @@ def apply_receipts(db: sqlite3.Connection, device_id: str,
                          (command_id, device_id)).fetchone()
         if row is None:
             continue
-        late = row["state"] == "expired" and row["result_code"] == "TIMEOUT" and result != "expired"
+        # Also a superseded command: the device may already hold it (e.g. awaiting parent confirmation).
+        late = (row["state"] == "expired" and row["result_code"] in {"TIMEOUT", "SUPERSEDED"}
+                and result != "expired")
         if row["state"] == "pending" or late:
             changed.append(_finish(db, row, result, f"DEVICE_{result.upper()}", now, "device"))
     return changed

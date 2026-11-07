@@ -124,7 +124,7 @@ class InitTests(ProfileBase):
         # S2's channel: the personality needs the parent on the device, the voice pack does not.
         state = self.put_state(self.snapshot(inventory=[PACK]))
         wire = {c["kind"]: c for c in state["commands"]}
-        self.assertEqual(wire["SET_TEMPERAMENT"]["payload"], {"temperament": "lively"})
+        self.assertEqual(wire["SET_TEMPERAMENT"]["payload"], {"temperament": "lively", "seq": 1})
         self.assertTrue(wire["SET_TEMPERAMENT"]["requires_confirm"])
         self.assertEqual(wire["SELECT_VOICE_PACK"]["payload"], {"content_id": 3})
         self.assertFalse(wire["SELECT_VOICE_PACK"]["requires_confirm"])
@@ -139,6 +139,7 @@ class InitTests(ProfileBase):
         view = self.client.get(f"{BASE_URL}/profile").json()
         self.assertEqual({k: c["status"] for k, c in view["commands"].items()},
                          {"temperament": "applied", "voice_pack": "applied"})
+        self.assertEqual((view["temperament"], view["temperament_confirmed"]), ("lively", "lively"))
 
     def test_rejected_on_device_is_shown_and_the_profile_keeps_the_panel_choice(self):
         self.init()
@@ -147,7 +148,19 @@ class InitTests(ProfileBase):
         self.put_state(self.snapshot(receipts=[(t, "rejected")]))
         view = self.client.get(f"{BASE_URL}/profile").json()
         self.assertEqual(view["commands"]["temperament"]["status"], "rejected")
-        self.assertEqual(view["temperament"], "lively")
+        # Requested stays, but it is not confirmed: S6 must never see it as the pet's personality.
+        self.assertEqual((view["temperament"], view["temperament_confirmed"]), ("lively", None))
+        # Submitting the same value again re-issues the command (new seq).
+        self.assertEqual(self.parent("PUT", f"{BASE_URL}/profile", json={"base_rev": 1, "temperament": "lively"}).status_code, 200)
+        self.assertEqual([r[2] for r in self.pending("SET_TEMPERAMENT")], ["rejected", "pending"])
+        again = self.put_state(self.snapshot())["commands"][0]
+        self.assertEqual(again["payload"], {"temperament": "lively", "seq": 2})
+        self.put_state(self.snapshot(receipts=[(again["command_id"], "applied")]))
+        view = self.client.get(f"{BASE_URL}/profile").json()
+        self.assertEqual(view["temperament_confirmed"], "lively")
+        # Already confirmed on the device: submitting it again sends nothing.
+        self.parent("PUT", f"{BASE_URL}/profile", json={"base_rev": 1, "temperament": "lively"})
+        self.assertEqual(len(self.pending("SET_TEMPERAMENT")), 2)
 
     def test_unconfirmed_personality_expires_after_seven_days_other_commands_after_one(self):
         self.approve_pack()
@@ -224,10 +237,39 @@ class ProfileUpdateTests(ProfileBase):
         self.assertEqual([(r[2], r[3]) for r in rows], [("expired", "SUPERSEDED"), ("pending", None)])
         state = self.put_state(self.snapshot())
         self.assertEqual([c["payload"] for c in state["commands"] if c["kind"] == "SET_TEMPERAMENT"],
-                         [{"temperament": "curious"}])
+                         [{"temperament": "curious", "seq": 2}])
         # Re-submitting the same value is not a change: no new command, no rev bump.
         same = self.put(base_rev=2, temperament="curious")
         self.assertEqual((same.json()["rev"], len(self.pending("SET_TEMPERAMENT"))), (2, 2))
+
+    def test_superseded_command_the_device_still_held_cannot_win(self):
+        """D5: X (gentle) is awaiting confirmation on the device when the parent switches to Y (curious)."""
+        x = self.put_state(self.snapshot())["commands"][0]["command_id"]
+        self.put_state(self.snapshot(awaiting=[x]))
+        self.assertEqual(self.put(base_rev=1, temperament="curious").status_code, 200)
+        y = self.pending("SET_TEMPERAMENT")[-1][0]
+        self.assertEqual(self.pending("SET_TEMPERAMENT")[0][2:], ("expired", "SUPERSEDED"))
+        # The parent confirms Y first, then (stale) X on the device.
+        self.put_state(self.snapshot(receipts=[(y, "applied")]))
+        self.assertEqual(self.client.get(f"{BASE_URL}/profile").json()["temperament_confirmed"], "curious")
+        sent = self.put_state(self.snapshot(receipts=[(y, "applied"), (x, "applied")]))
+        view = self.client.get(f"{BASE_URL}/profile").json()
+        # The device now holds X; the server notices, still wants Y and re-issues it with a higher seq.
+        self.assertEqual((view["temperament"], view["temperament_confirmed"]), ("curious", "gentle"))
+        (again,) = [c for c in sent["commands"] if c["kind"] == "SET_TEMPERAMENT"]
+        self.assertEqual(again["payload"], {"temperament": "curious", "seq": 3})
+        self.assertTrue(again["requires_confirm"])
+        self.put_state(self.snapshot(receipts=[(again["command_id"], "applied")]))
+        self.assertEqual(self.client.get(f"{BASE_URL}/profile").json()["temperament_confirmed"], "curious")
+
+    def test_stale_confirmation_while_the_newer_request_is_still_pending_does_not_reissue(self):
+        x = self.put_state(self.snapshot())["commands"][0]["command_id"]
+        self.put(base_rev=1, temperament="curious")
+        self.put_state(self.snapshot(receipts=[(x, "applied")]))
+        view = self.client.get(f"{BASE_URL}/profile").json()
+        self.assertEqual((view["temperament_confirmed"], view["commands"]["temperament"]["status"]),
+                         ("gentle", "delivered"))
+        self.assertEqual(len(self.pending("SET_TEMPERAMENT")), 2)
 
     def test_empty_update_and_bad_values_rejected(self):
         self.assertEqual(self.put(base_rev=1).status_code, 422)
@@ -238,7 +280,7 @@ class ProfileUpdateTests(ProfileBase):
     def test_audit_records_operation_types_not_content(self):
         self.put(base_rev=1, pet_name="豆豆")
         rows = self.table("SELECT actor, action, target, result FROM audit_log WHERE action LIKE 'profile.%'")
-        self.assertEqual(rows, [("parent", "profile.init", DEVICE, "success"), ("parent", "profile.update", DEVICE, "success")])
+        self.assertEqual(rows, [("parent:1", "profile.init", DEVICE, "success"), ("parent:1", "profile.update", DEVICE, "success")])
         for row in self.table("SELECT * FROM audit_log"):
             self.assertNotIn("豆豆", " ".join(map(str, row)))
 
@@ -320,6 +362,19 @@ class PolicyTests(ProfileBase):
         self.assertGreater(view["rev"], 1)
         self.assertEqual(self.put(base_rev=1, settings={"volume_cap_pct": 100}).status_code, 409)
         self.assertEqual(len(self.pending("SET_PARENT_SETTINGS")), 1)  # no command for the adoption
+
+    def test_applied_version_whose_snapshot_arrives_late_is_not_a_local_edit(self):
+        self.put_state(self.snapshot())
+        self.put(base_rev=0, settings={"volume_cap_pct": 70})  # A, the device applies it
+        self.put(base_rev=1, settings={"volume_cap_pct": 90})  # B, issued before A's snapshot arrived
+        self.put_state(self.snapshot(ParentSettings(volume_cap_pct=70)))  # the device reports A
+        view = self.get()
+        self.assertEqual((view["notice"], view["settings"]["volume_cap_pct"]), (None, 90))  # B not pulled down
+        pending = [r for r in self.pending("SET_PARENT_SETTINGS") if r[2] == "pending"]
+        self.assertEqual(len(pending), 1)
+        # A PUT made while the stale-looking snapshot is stored does not merge either.
+        view = self.put(base_rev=view["rev"], settings={"quiet_volume_pct": 20}).json()
+        self.assertEqual((view["notice"], view["settings"]["volume_cap_pct"]), (None, 90))
 
     def test_after_the_device_applied_the_next_edit_does_not_merge(self):
         self.put_state(self.snapshot())

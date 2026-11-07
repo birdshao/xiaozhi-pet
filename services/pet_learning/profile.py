@@ -26,7 +26,7 @@ from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
 from .db import connect, migrate
 from .memory_codec import TEMPERAMENTS, ParentSettings
 from .models import StrictModel
-from .notes import NotesError, ParentNotes
+from .notes import MAX_NICKNAME_CHARS, MAX_NOTE_CHARS, NotesError, ParentNotes, validate as validate_notes
 from .routers.parent import check_origin, client_ip
 
 NO_STORE = {"Cache-Control": "no-store"}
@@ -47,15 +47,15 @@ class Reauth(StrictModel):
 
 
 class InitBody(StrictModel):
-    pet_name: str
-    temperament: str
+    pet_name: str = Field(max_length=12)
+    temperament: str = Field(max_length=16)
     voice_pack_id: StrictInt | None = Field(default=None, ge=0, le=0xFFFF)
 
 
 class ProfileBody(StrictModel):
     base_rev: StrictInt = Field(ge=0)
-    pet_name: str | None = None
-    temperament: str | None = None
+    pet_name: str | None = Field(default=None, max_length=12)
+    temperament: str | None = Field(default=None, max_length=16)
     voice_pack_id: StrictInt | None = Field(default=None, ge=0, le=0xFFFF)
 
 
@@ -80,9 +80,9 @@ class PolicyBody(StrictModel):
 
 
 class NotesBody(StrictModel):
-    nickname: str | None = Field(default=None, repr=False)
-    birthday: str | None = Field(default=None, repr=False)
-    note: str | None = Field(default=None, repr=False)
+    nickname: str | None = Field(default=None, max_length=MAX_NICKNAME_CHARS, repr=False)
+    birthday: str | None = Field(default=None, max_length=5, repr=False)
+    note: str | None = Field(default=None, max_length=MAX_NOTE_CHARS, repr=False)
     reauth: Reauth
 
 
@@ -140,7 +140,8 @@ class ProfileService:
         awaiting = json.loads(state[0]) if state else []
         return {"initialized": row is not None, "rev": row["rev"] if row else 0,
                 "pet_name": row["pet_name"] if row else None,
-                "temperament": row["temperament"] if row else None,
+                "temperament": row["temperament"] if row else None,  # requested by the parent
+                "temperament_confirmed": row["temperament_confirmed"] if row else None,  # confirmed on the device
                 "voice_pack_id": row["voice_pack_id"] if row else None,
                 "device_temperament": state[1] if state else None,
                 "temperaments": list(TEMPERAMENTS),
@@ -173,7 +174,7 @@ class ProfileService:
         if content_id not in {p["content_id"] for p in _inventory_packs(db, device_id)}:
             raise ProfileError(409, "VOICE_PACK_UNAVAILABLE")
 
-    def init(self, device_id: str, body: InitBody, ip: str | None) -> dict[str, Any]:
+    def init(self, device_id: str, body: InitBody, ip: str | None, actor: str = "parent") -> dict[str, Any]:
         """§7.2: profiles(rev=1), then SET_TEMPERAMENT (confirmed on the device) and
         SELECT_VOICE_PACK. The device has no personality yet, so the temperament
         command is always sent, even if it equals the firmware default."""
@@ -187,19 +188,50 @@ class ProfileService:
                 raise ProfileError(409, "ALREADY_INITIALIZED")
             if body.voice_pack_id is not None:
                 self._check_voice_pack(db, device_id, body.voice_pack_id)
-            db.execute("INSERT INTO profiles(device_id,rev,pet_name,temperament,voice_pack_id,created_at,"
-                       "updated_at) VALUES(?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO profiles(device_id,rev,pet_name,temperament,temperament_seq,voice_pack_id,"
+                       "created_at,updated_at) VALUES(?,?,?,?,0,?,?,?)",
                        (device_id, 1, body.pet_name, body.temperament, body.voice_pack_id, now, now))
-            commands.enqueue(db, device_id, "SET_TEMPERAMENT", {"temperament": body.temperament}, now, ip=ip)
+            self._issue_temperament(db, device_id, body.temperament, now, ip, actor)
             if body.voice_pack_id is not None:
                 commands.enqueue(db, device_id, "SELECT_VOICE_PACK", {"content_id": body.voice_pack_id},
-                                 now, ip=ip)
-            commands.audit(db, now, "parent", "profile.init", device_id, "success", ip)
+                                 now, actor=actor, ip=ip)
+            commands.audit(db, now, actor, "profile.init", device_id, "success", ip)
             view = self._profile_view(db, device_id)
             db.commit()
         return view
 
-    def update_profile(self, device_id: str, body: ProfileBody, ip: str | None) -> dict[str, Any]:
+    @staticmethod
+    def _issue_temperament(db, device_id: str, trait: str, now: int, ip: str | None, actor: str) -> None:
+        """One SET_TEMPERAMENT in flight; `seq` grows with every issue so a device can refuse
+        a superseded command it still holds (see SERVER_S3.md)."""
+        seq = db.execute("SELECT temperament_seq FROM profiles WHERE device_id=?", (device_id,)).fetchone()[0] + 1
+        db.execute("UPDATE profiles SET temperament_seq=? WHERE device_id=?", (seq, device_id))
+        commands.supersede(db, device_id, "SET_TEMPERAMENT", now)
+        commands.enqueue(db, device_id, "SET_TEMPERAMENT", {"temperament": trait, "seq": seq}, now,
+                         actor=actor, ip=ip)
+
+    @staticmethod
+    def _pending_temperament(db, device_id: str, now: int) -> str | None:
+        row = db.execute("SELECT payload_json FROM commands WHERE device_id=? AND kind='SET_TEMPERAMENT' "
+                         "AND state='pending' AND expires_at>? ORDER BY seq DESC LIMIT 1",
+                         (device_id, now)).fetchone()
+        return json.loads(row[0])["temperament"] if row else None
+
+    def on_commands(self, db, device_id: str, changed: list[dict], now: int) -> None:
+        """Hook for S2 receipts. An applied SET_TEMPERAMENT is what the device now holds,
+        even a superseded one it still had awaiting confirmation: record it as confirmed and,
+        if it is not what the parent wants, issue the wanted one again (its seq is higher)."""
+        applied = [c for c in changed if c["kind"] == "SET_TEMPERAMENT" and c["state"] == "applied"]
+        row = db.execute("SELECT temperament FROM profiles WHERE device_id=?", (device_id,)).fetchone()
+        if not applied or row is None:
+            return
+        confirmed = json.loads(applied[-1]["payload_json"])["temperament"]
+        db.execute("UPDATE profiles SET temperament_confirmed=? WHERE device_id=?", (confirmed, device_id))
+        if confirmed != row["temperament"] and self._pending_temperament(db, device_id, now) != row["temperament"]:
+            self._issue_temperament(db, device_id, row["temperament"], now, None, "server")
+
+    def update_profile(self, device_id: str, body: ProfileBody, ip: str | None,
+                       actor: str = "parent") -> dict[str, Any]:
         if body.pet_name is None and body.temperament is None and body.voice_pack_id is None:
             raise ProfileError(422, "NOTHING_TO_UPDATE")
         if body.pet_name is not None:
@@ -218,19 +250,24 @@ class ProfileService:
             name = body.pet_name if body.pet_name is not None else row["pet_name"]
             trait = body.temperament if body.temperament is not None else row["temperament"]
             pack = body.voice_pack_id if body.voice_pack_id is not None else row["voice_pack_id"]
-            trait_changed, pack_changed = trait != row["temperament"], pack != row["voice_pack_id"]
+            pack_changed = pack != row["voice_pack_id"]
             if pack_changed:
                 self._check_voice_pack(db, device_id, pack)
             if (name, trait, pack) != (row["pet_name"], row["temperament"], row["voice_pack_id"]):
                 db.execute("UPDATE profiles SET rev=rev+1,pet_name=?,temperament=?,voice_pack_id=?,"
                            "updated_at=? WHERE device_id=?", (name, trait, pack, now, device_id))
-            if trait_changed:
-                commands.supersede(db, device_id, "SET_TEMPERAMENT", now)
-                commands.enqueue(db, device_id, "SET_TEMPERAMENT", {"temperament": trait}, now, ip=ip)
+            if body.temperament is not None:
+                # Send unless the device already confirmed it or the same request is still pending:
+                # a refused or expired request is re-issued when the parent submits it again.
+                if trait != row["temperament_confirmed"] and self._pending_temperament(db, device_id, now) != trait:
+                    self._issue_temperament(db, device_id, trait, now, ip, actor)
+                elif trait == row["temperament_confirmed"]:
+                    commands.supersede(db, device_id, "SET_TEMPERAMENT", now)
             if pack_changed:
                 commands.supersede(db, device_id, "SELECT_VOICE_PACK", now)
-                commands.enqueue(db, device_id, "SELECT_VOICE_PACK", {"content_id": pack}, now, ip=ip)
-            commands.audit(db, now, "parent", "profile.update", device_id, "success", ip)
+                commands.enqueue(db, device_id, "SELECT_VOICE_PACK", {"content_id": pack}, now,
+                                 actor=actor, ip=ip)
+            commands.audit(db, now, actor, "profile.update", device_id, "success", ip)
             view = self._profile_view(db, device_id)
             db.commit()
         return view
@@ -248,7 +285,7 @@ class ProfileService:
         return view
 
     def update_policy(self, device_id: str, body: PolicyBody, ip: str | None,
-                      reauth: Callable[[], None]) -> dict[str, Any]:
+                      reauth: Callable[[], None], actor: str = "parent") -> dict[str, Any]:
         changes = body.settings.model_dump(exclude_none=True) if body.settings else {}
         if not changes and body.open_chat is None:
             raise ProfileError(422, "NOTHING_TO_UPDATE")
@@ -262,12 +299,12 @@ class ProfileService:
                 reauth()
                 db.execute("BEGIN IMMEDIATE")
                 if not policy.OPEN_CHAT_SELECTABLE:
-                    commands.audit(db, now, "parent", "policy.update", device_id, "open_chat_unavailable", ip)
+                    commands.audit(db, now, actor, "policy.update", device_id, "open_chat_unavailable", ip)
                     db.commit()
                     raise ProfileError(409, "OPEN_CHAT_UNAVAILABLE")
             try:
                 view = policy.update(db, device_id, base_rev=body.base_rev, changes=changes,
-                                     open_chat=body.open_chat, now=now, ip=ip)
+                                     open_chat=body.open_chat, now=now, ip=ip, actor=actor)
             except policy.PolicyError as error:
                 db.commit()
                 raise ProfileError(error.status, error.code) from None
@@ -285,21 +322,21 @@ class ProfileService:
             self._device(db, device_id)
             return self.notes.get(db, device_id)
 
-    def put_notes(self, device_id: str, body: NotesBody, ip: str | None) -> dict[str, Any]:
+    def put_notes(self, device_id: str, body: NotesBody, ip: str | None, actor: str = "parent") -> dict[str, Any]:
         now = int(self.clock())
         with connect(self.filename) as db:
             db.execute("BEGIN IMMEDIATE")
             self._device(db, device_id, write=True)
-            result = self.notes.put(db, device_id, body.nickname, body.birthday, body.note, now, ip)
+            result = self.notes.put(db, device_id, body.nickname, body.birthday, body.note, now, ip, actor)
             db.commit()
         return result
 
-    def delete_notes(self, device_id: str, ip: str | None) -> dict[str, Any]:
+    def delete_notes(self, device_id: str, ip: str | None, actor: str = "parent") -> dict[str, Any]:
         now = int(self.clock())
         with connect(self.filename) as db:
             db.execute("BEGIN IMMEDIATE")
-            self._device(db, device_id, write=True)
-            self.notes.delete(db, device_id, now, ip)
+            self._device(db, device_id)  # a revoked device's notes can still be deleted
+            self.notes.delete(db, device_id, now, ip, actor)
             db.commit()
         return {"status": "deleted"}
 
@@ -308,6 +345,7 @@ def create_router(app, database) -> APIRouter:
     service = ProfileService(database, app.state.settings, app.state.state_sync)
     app.state.profile_service = service
     app.state.state_sync.hooks.append(service.on_snapshot)
+    app.state.state_sync.command_hooks.append(service.on_commands)
     router = APIRouter(prefix="/v1/parent/devices/{device_id}")
 
     def parent_session(request: Request, device_id: str, *, write: bool) -> int:
@@ -346,12 +384,12 @@ def create_router(app, database) -> APIRouter:
         return call(service.get_profile, device_id)
 
     @router.post("/init")
-    def init(device_id: str, body: InitBody, request: Request, _: int = Depends(parent_write)):
-        return call(service.init, device_id, body, client_ip(request))
+    def init(device_id: str, body: InitBody, request: Request, account: int = Depends(parent_write)):
+        return call(service.init, device_id, body, client_ip(request), f"parent:{account}")
 
     @router.put("/profile")
-    def put_profile(device_id: str, body: ProfileBody, request: Request, _: int = Depends(parent_write)):
-        return call(service.update_profile, device_id, body, client_ip(request))
+    def put_profile(device_id: str, body: ProfileBody, request: Request, account: int = Depends(parent_write)):
+        return call(service.update_profile, device_id, body, client_ip(request), f"parent:{account}")
 
     @router.get("/policy")
     def get_policy(device_id: str, request: Request, _: int = Depends(parent_read)):
@@ -364,7 +402,7 @@ def create_router(app, database) -> APIRouter:
             if body.reauth is None:
                 raise HTTPException(403, "PARENT_REAUTH_REQUIRED", headers=NO_STORE)
             step_up(request, account, body.reauth)
-        return call(service.update_policy, device_id, body, client_ip(request), reauth)
+        return call(service.update_policy, device_id, body, client_ip(request), reauth, f"parent:{account}")
 
     @router.get("/notes")
     def get_notes(device_id: str, request: Request, _: int = Depends(parent_read)):
@@ -372,13 +410,17 @@ def create_router(app, database) -> APIRouter:
 
     @router.put("/notes")
     def put_notes(device_id: str, body: NotesBody, request: Request, account: int = Depends(parent_write)):
+        try:  # validate first: a malformed request never spends a TOTP step or counts as a failed proof
+            validate_notes(body.nickname, body.birthday, body.note)
+        except NotesError as error:
+            raise HTTPException(error.status, error.code, headers=NO_STORE) from None
         step_up(request, account, body.reauth)
-        return call(service.put_notes, device_id, body, client_ip(request))
+        return call(service.put_notes, device_id, body, client_ip(request), f"parent:{account}")
 
     @router.delete("/notes")
     def delete_notes(device_id: str, body: NotesDeleteBody, request: Request,
                      account: int = Depends(parent_write)):
         step_up(request, account, body.reauth)
-        return call(service.delete_notes, device_id, client_ip(request))
+        return call(service.delete_notes, device_id, client_ip(request), f"parent:{account}")
 
     return router

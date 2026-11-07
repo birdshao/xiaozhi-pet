@@ -12,9 +12,10 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import unicodedata
 from typing import Any
 
-from cryptography.fernet import InvalidToken
+from cryptography.fernet import Fernet, InvalidToken
 
 from . import commands
 
@@ -22,7 +23,6 @@ MAX_NOTE_CHARS = 500
 MAX_NICKNAME_CHARS = 20
 _DAYS_IN_MONTH = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)  # Feb 29 allowed: month-day only
 _BIRTHDAY = re.compile(r"(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])")
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class NotesError(Exception):
@@ -34,7 +34,16 @@ class NotesError(Exception):
 
 def validate(nickname: str | None, birthday: str | None, note: str | None) -> None:
     for value, limit in ((nickname, MAX_NICKNAME_CHARS), (note, MAX_NOTE_CHARS)):
-        if value is not None and (len(value) > limit or _CONTROL.search(value)):
+        if value is None:
+            continue
+        try:
+            value.encode("utf-8")  # lone surrogates from JSON escapes would otherwise 500 later
+        except UnicodeEncodeError:
+            raise NotesError(422, "NOTES_INVALID") from None
+        # Newline allowed; control, format (bidi/zero-width), line/paragraph separators and
+        # unassigned/private code points are not.
+        if len(value) > limit or any(
+                unicodedata.category(c) in {"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"} and c != "\n" for c in value):
             raise NotesError(422, "NOTES_INVALID")
     if birthday is not None:
         match = _BIRTHDAY.fullmatch(birthday)
@@ -62,13 +71,31 @@ class ParentNotes:
             data = json.loads(cipher.decrypt(row[0].encode("ascii")))
         except (InvalidToken, ValueError):
             raise NotesError(500, "NOTES_UNREADABLE") from None
+        self._rotate_row(db, cipher, device_id, row[0])
         if data.get("device_id") != device_id:  # a row moved to another device never decrypts
             raise NotesError(500, "NOTES_UNREADABLE")
         return {"exists": True, "nickname": data.get("nickname"), "birthday": data.get("birthday"),
                 "note": data.get("note"), "updated_at": row[1]}
 
+    def _rotate_row(self, db: sqlite3.Connection, cipher, device_id: str, token: str) -> bool:
+        """Re-encrypt a row still under an older key with the primary (first) key."""
+        primary = Fernet(self.settings.notes_keys()[0].encode("ascii"))
+        try:
+            primary.decrypt(token.encode("ascii"))
+            return False
+        except InvalidToken:
+            db.execute("UPDATE parent_notes SET payload_enc=? WHERE device_id=?",
+                       (cipher.rotate(token.encode("ascii")).decode("ascii"), device_id))
+            return True
+
+    def rotate_all(self, db: sqlite3.Connection) -> int:
+        """Admin CLI: move every row to the primary key so an old key can be dropped."""
+        cipher = self._cipher()
+        return sum(self._rotate_row(db, cipher, d, t)
+                   for d, t in db.execute("SELECT device_id, payload_enc FROM parent_notes").fetchall())
+
     def put(self, db: sqlite3.Connection, device_id: str, nickname: str | None, birthday: str | None,
-            note: str | None, now: int, ip: str | None) -> dict[str, Any]:
+            note: str | None, now: int, ip: str | None, actor: str = "parent") -> dict[str, Any]:
         validate(nickname, birthday, note)
         cipher = self._cipher()
         if nickname is None and birthday is None and note is None:
@@ -79,9 +106,10 @@ class ParentNotes:
                    "ON CONFLICT(device_id) DO UPDATE SET payload_enc=excluded.payload_enc,"
                    "updated_at=excluded.updated_at",
                    (device_id, cipher.encrypt(blob.encode("utf-8")).decode("ascii"), now))
-        commands.audit(db, now, "parent", "notes.update", device_id, "success", ip)  # type only
+        commands.audit(db, now, actor, "notes.update", device_id, "success", ip)  # type only
         return {"exists": True, "nickname": nickname, "birthday": birthday, "note": note, "updated_at": now}
 
-    def delete(self, db: sqlite3.Connection, device_id: str, now: int, ip: str | None) -> None:
+    def delete(self, db: sqlite3.Connection, device_id: str, now: int, ip: str | None,
+               actor: str = "parent") -> None:
         db.execute("DELETE FROM parent_notes WHERE device_id=?", (device_id,))
-        commands.audit(db, now, "parent", "notes.delete", device_id, "success", ip)
+        commands.audit(db, now, actor, "notes.delete", device_id, "success", ip)

@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 
 def read_env(path):
@@ -72,12 +72,14 @@ class Settings:
             except (ValueError, UnicodeError):
                 raise ValueError("KID_PET_TOTP_KEY must be a Fernet key") from None
         if self.notes_key:
+            keys = self.notes_keys()
             try:
-                Fernet(self.notes_key.encode("ascii"))
+                for key in keys:
+                    Fernet(key.encode("ascii"))
             except (ValueError, UnicodeError):
-                raise ValueError("KID_PET_NOTES_KEY must be a Fernet key") from None
-            if self.notes_key == self.totp_key:
-                raise ValueError("KID_PET_NOTES_KEY must differ from KID_PET_TOTP_KEY")
+                raise ValueError("KID_PET_NOTES_KEY must be Fernet keys (comma separated; the first encrypts)") from None
+            if len(set(keys)) != len(keys) or self.totp_key in keys:
+                raise ValueError("KID_PET_NOTES_KEY must be distinct keys and differ from KID_PET_TOTP_KEY")
         if self.voice_token and not 32 <= len(self.voice_token) <= 256:
             raise ValueError("KID_PET_VOICE_TOKEN must contain 32-256 characters")
         self.voice_peer_networks()
@@ -116,8 +118,13 @@ class Settings:
             raise ValueError("KID_PET_TOTP_KEY is required for parent authentication")
         return Fernet(self.totp_key.encode("ascii"))
 
+    def notes_keys(self):
+        return [k.strip() for k in self.notes_key.split(",") if k.strip()]
+
     def notes_cipher(self):
-        """Fail closed: without the key notes are unreadable and unwritable, never stored plain."""
+        """Fail closed: without the key notes are unreadable and unwritable, never stored plain.
+
+        Comma separated keys rotate: the first encrypts, every key can decrypt."""
         if not self.notes_key:
             raise ValueError("KID_PET_NOTES_KEY is required for parent notes")
-        return Fernet(self.notes_key.encode("ascii"))
+        return MultiFernet([Fernet(k.encode("ascii")) for k in self.notes_keys()])
