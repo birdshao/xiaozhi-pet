@@ -101,12 +101,12 @@ systemctl start pet-maintenance.service && journalctl -u pet-maintenance -n 20  
 
 入口实现在 `deploy/ingress/`（nginx 容器 `ingress`，监听 8443；证书由 Lucky 签发、CT 每日拉取）。`deploy/ingress/verify.sh [IP] [-k]` 一次跑完 N2/N5–N9 的大部分检查。
 
-**实测状态**（2026-11-07，CT 108；局域网 `curl --resolve` 到 192.168.1.110:8443，证书仍是占位自签）：
+**实测状态**（2026-11-07，CT 108；局域网 `curl --resolve` 到 192.168.1.110:8443，证书为 Lucky 的正式 Let's Encrypt 泛域名证书）：
 
 | # | 状态 | 说明 |
 |---|---|---|
 | N1 | 待办 | 需要用户在局域网 DNS 把 `pet.birdshao.cn` 指到 192.168.1.110；两处指纹一致要等正式证书 |
-| N2 | 部分 | TLS 1.1 被拒、仅 TLS1.2/1.3 已验证；公信 CA、剩余有效期要等拉到 Lucky 的正式证书 |
+| N2 | 已验证（局域网） | `Verify return code: 0 (ok)`，主机名匹配（泛域名），到期 2027-01-20；TLS 1.1 被拒。外网指纹一致要等光猫转发后核对 |
 | N3 | 部分 | 8780/8000/8003/8765 不对公网：只发布 8443，`DOCKER-USER` 仅对 8443 开例外；外网 nmap 要等光猫转发后由用户验证 |
 | N4 | 已验证（配置） | 入口、gateway 两层都把 `X-Forwarded-For` 改写成单个 `$remote_addr`；`KID_PET_TRUSTED_PROXY=172.28.0.3`；入口日志里的客户端地址是真实来源地址。登录审计里的 IP 因没有家长账号未实测 |
 | N5 | 已验证 | WSS 升级得 101；空闲 ≥120 s 只配了 `proxy_read_timeout 300s`，未用设备长连实测 |
