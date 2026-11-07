@@ -486,3 +486,8 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   "$ROOT/tests/cpp/test_care_ledger.cc" \
   -o "$BUILD/test_care_ledger"
 "$BUILD/test_care_ledger" "$ROOT/tests/fixtures/ledger"
+
+# V8 pictures: clothes / room / festival / need bubble on the home screen,
+# care, diary and album scenes stay in their ePaper regions.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/care_session.cc"   "$ROOT/firmware/components/kid_app/src/care_store.cc"   "$ROOT/firmware/components/kid_app/src/care_phrases.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/tests/cpp/test_care_scene.cc"   -o "$BUILD/test_care_scene"
+"$BUILD/test_care_scene"

@@ -3,6 +3,7 @@
 #include "kid_app/activity_list.h"
 #include "kid_app/care_phrases.h"
 #include "kid_app/care_store.h"
+#include "kid_app/care_view.h"
 #include "kid_app/gesture_detector.h"
 #include "kid_app/mini_game.h"
 
@@ -19,45 +20,6 @@ namespace kid_app {
 // source the guard expects (dial choice for food and clothes, Device for
 // the motion rules). Shaking hard is never rewarded, a resting board never
 // counts as a shake, and nothing is lost by stopping early.
-
-enum class CareKind : uint8_t {
-    None, Feed, Bath, Brush, Tickle, Lull, Dress, Habit, Tidy, Diary, Album,
-};
-const char* CareKindName(CareKind kind);
-
-// SceneKind::Care contents. Cards (feed, dress, habit) are drawn below
-// SceneComposer::kGameRailTop like the game answer cards; the pet, the
-// progress and the album page above it.
-struct CareView {
-    CareKind kind = CareKind::None;
-    uint8_t option_count = 0;  // 0..3 cards
-    uint8_t highlight = 0;
-    std::array<uint16_t, 3> options{};  // CareArt ids
-    uint8_t progress = 0;   // bubbles / strokes / giggles / still / toys put away
-    uint8_t goal = 0;
-    uint8_t phase = 0;      // bath: 1 = rinse; feed / dress / habit: 1 = reacting
-    uint8_t hearts = 0;     // 1..3 after a care (taste for food)
-    std::array<uint8_t, kWearSlots> worn{};  // the pet's look (dress preview)
-    // Album: one page of kAlbumPerPage stickers.
-    uint8_t page = 0, pages = 0;
-    uint32_t stickers = 0;
-    // Diary: what the page shows.
-    uint8_t food = 0;   // Food
-    bool book = false, game = false, habit_done = false;
-    uint8_t cares = 0;  // CareBucket
-
-    bool RailDiffers(const CareView& o) const {
-        return option_count != o.option_count || highlight != o.highlight || options != o.options;
-    }
-    bool TopDiffers(const CareView& o) const {
-        return kind != o.kind || progress != o.progress || goal != o.goal || phase != o.phase ||
-               hearts != o.hearts || worn != o.worn || page != o.page || pages != o.pages ||
-               stickers != o.stickers || food != o.food || book != o.book || game != o.game ||
-               habit_done != o.habit_done || cares != o.cares;
-    }
-    bool operator==(const CareView& o) const { return !RailDiffers(o) && !TopDiffers(o); }
-    bool operator!=(const CareView& o) const { return !(*this == o); }
-};
 
 constexpr uint8_t kAlbumPerPage = 6;
 constexpr uint8_t kAlbumPages = (kStickerCount + kAlbumPerPage - 1) / kAlbumPerPage;

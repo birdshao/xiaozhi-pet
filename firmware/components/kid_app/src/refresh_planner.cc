@@ -4,13 +4,16 @@ namespace kid_app {
 
 bool RefreshPlanner::TouchesRail(const SceneModel& a, const SceneModel& b) {
     return a.home_selection != b.home_selection ||
-           a.game.RailDiffers(b.game);  // game answer cards share the rail budget
+           a.game.RailDiffers(b.game) ||  // game answer cards share the rail budget
+           a.care.RailDiffers(b.care);    // so do the V8 care cards
 }
 
 bool RefreshPlanner::TouchesPet(const SceneModel& a, const SceneModel& b) {
     return a.emotion != b.emotion || a.pose != b.pose || a.book_page != b.book_page ||
            a.parent != b.parent ||  // parent menu rows share the pet budget
-           a.game.QuestionDiffers(b.game);  // so does the game question area
+           a.game.QuestionDiffers(b.game) ||  // so does the game question area
+           a.care.TopDiffers(b.care) ||       // and the V8 care picture
+           a.look != b.look;                  // and the V8 home look (clothes, needs)
 }
 
 bool RefreshPlanner::TouchesStatus(const SceneModel& a, const SceneModel& b) {

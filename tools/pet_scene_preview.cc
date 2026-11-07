@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|tip_hot|tip_cold|parent|parent_edit|game|game_right|game_count> output.pbm\n";
+        std::cerr << "Usage: pet_scene_preview <happy|sleepy|curious|surprised|listening|thinking|speaking|reader|sleep|sunrise|morning|status|charging|yawn|tip_hot|tip_cold|parent|parent_edit|game|game_right|game_count|v8_home|v8_feed|v8_bath|v8_diary|v8_album> output.pbm\n";
         return 2;
     }
     const std::string mode = argv[1];
@@ -67,6 +67,39 @@ int main(int argc, char** argv) {
             model.game.highlight = 1;
         }
         if (mode == "game_right") model.game.feedback = kid_app::GameFeedback::Right;
+    }
+    else if (mode == "v8_home") {  // V8: clothes, room, need bubble, festival prop
+        model.look.worn = {1, 1, 1, 1, 1};
+        model.look.need = 1;
+        model.look.need_level = 2;
+        model.look.festival = 6;
+    }
+    else if (mode == "v8_feed" || mode == "v8_bath" || mode == "v8_diary" || mode == "v8_album") {
+        model.kind = kid_app::SceneKind::Care;
+        auto& c = model.care;
+        c.worn = {1, 1, 0, 0, 0};
+        if (mode == "v8_feed") {
+            c.kind = kid_app::CareKind::Feed;
+            c.option_count = 3;
+            c.highlight = 0;
+            c.options = {211, 212, 213};  // CareArt Fish, Milk, Apple
+            c.hearts = 3;
+            c.phase = 1;
+        } else if (mode == "v8_bath") {
+            c.kind = kid_app::CareKind::Bath;
+            c.progress = 2;
+            c.goal = 3;
+        } else if (mode == "v8_diary") {
+            c.kind = kid_app::CareKind::Diary;
+            c.food = 3;
+            c.book = true;
+            c.cares = 3;
+            c.habit_done = true;
+        } else {
+            c.kind = kid_app::CareKind::Album;
+            c.pages = 4;
+            c.stickers = 0x2A5A5;
+        }
     }
     else if (mode == "reader") {
         model.kind = kid_app::SceneKind::Reader;

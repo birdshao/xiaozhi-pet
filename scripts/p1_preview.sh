@@ -11,7 +11,7 @@ COMMON=(-std=c++17 -O2 -Wall -Wextra -Werror -I"$INC")
 "$CXX" "${COMMON[@]}" "$SRC" "$ROOT/tests/cpp/test_pet_scene.cc" -o "$BUILD/test_pet_scene"
 "$BUILD/test_pet_scene"
 "$CXX" "${COMMON[@]}" "$SRC" "$ROOT/tools/pet_scene_preview.cc" -o "$BUILD/pet_scene_preview"
-for pose in happy sleepy curious surprised listening thinking speaking reader sleep sunrise morning status charging yawn tip_hot tip_cold parent parent_edit game game_right game_count; do
+for pose in happy sleepy curious surprised listening thinking speaking reader sleep sunrise morning status charging yawn tip_hot tip_cold parent parent_edit game game_right game_count v8_home v8_feed v8_bath v8_diary v8_album; do
     "$BUILD/pet_scene_preview" "$pose" "$BUILD/$pose.pbm"
 done
 echo "Host-only previews available in $BUILD (P4 PBM 800x480)"
