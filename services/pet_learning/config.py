@@ -4,6 +4,7 @@ import ipaddress
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
 
@@ -34,6 +35,12 @@ class Settings:
     trusted_proxy: str = ""
     totp_key: str = field(default="", repr=False)
     playground: bool = False
+    # Voice-service identity (S5): a bearer token separate from every device token.
+    voice_token: str = field(default="", repr=False)
+    # Peers (IPs/CIDRs) allowed to call /v1/voice/*: the XiaoZhi container address in compose.
+    voice_allowed_peers: str = "127.0.0.1,::1"
+    # Parent-configured display timezone for "几点了" until S3 stores it per device.
+    timezone: str = "Asia/Shanghai"
 
     @classmethod
     def load(cls, env_file=".env"):
@@ -48,6 +55,9 @@ class Settings:
             trusted_proxy=env.get("KID_PET_TRUSTED_PROXY", ""),
             totp_key=env.get("KID_PET_TOTP_KEY", ""),
             playground=env.get("KID_PET_ENABLE_PLAYGROUND") == "1",
+            voice_token=env.get("KID_PET_VOICE_TOKEN", ""),
+            voice_allowed_peers=env.get("KID_PET_VOICE_ALLOWED_PEERS", cls.voice_allowed_peers),
+            timezone=env.get("KID_PET_TIMEZONE", cls.timezone),
         )
         settings.validate()
         return settings
@@ -58,6 +68,13 @@ class Settings:
                 Fernet(self.totp_key.encode("ascii"))
             except (ValueError, UnicodeError):
                 raise ValueError("KID_PET_TOTP_KEY must be a Fernet key") from None
+        if self.voice_token and not 32 <= len(self.voice_token) <= 256:
+            raise ValueError("KID_PET_VOICE_TOKEN must contain 32-256 characters")
+        self.voice_peer_networks()
+        try:
+            ZoneInfo(self.timezone)
+        except (ValueError, OSError, KeyError):
+            raise ValueError("KID_PET_TIMEZONE must be an IANA timezone name") from None
         if self.trusted_proxy:
             ipaddress.ip_address(self.trusted_proxy)
         if self.production:
@@ -69,6 +86,16 @@ class Settings:
             if not self.totp_key or not self.trusted_proxy:
                 raise ValueError("Production requires TOTP key and trusted proxy")
         # S7 extends this hook with deployment/provider checks.
+
+    def voice_peer_networks(self):
+        try:
+            networks = [ipaddress.ip_network(item.strip(), strict=False)
+                        for item in self.voice_allowed_peers.split(",") if item.strip()]
+        except ValueError:
+            raise ValueError("KID_PET_VOICE_ALLOWED_PEERS must be IPs or CIDRs") from None
+        if not networks:
+            raise ValueError("KID_PET_VOICE_ALLOWED_PEERS must not be empty")
+        return networks
 
     def cipher(self):
         if not self.totp_key:

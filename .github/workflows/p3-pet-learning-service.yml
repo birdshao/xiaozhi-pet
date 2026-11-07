@@ -11,6 +11,7 @@ on:
       - 'integrations/xiaozhi_server/**'
       - 'scripts/p3_server_overlay.py'
       - 'tests/test_p3_xiaozhi_child_voice_guard.py'
+      - 'tests/test_v6_voice_turn.py'
       - 'tests/test_p4_approved_animal_quiz.py'
       - 'tests/test_p4_voice_story_reader.py'
       - 'tests/test_p4_local_playground.py'
@@ -25,6 +26,7 @@ on:
       - 'integrations/xiaozhi_server/**'
       - 'scripts/p3_server_overlay.py'
       - 'tests/test_p3_xiaozhi_child_voice_guard.py'
+      - 'tests/test_v6_voice_turn.py'
       - 'tests/test_p4_approved_animal_quiz.py'
       - 'tests/test_p4_voice_story_reader.py'
       - 'tests/test_p4_local_playground.py'
@@ -50,6 +52,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install isolated self-hosted API dependencies
         run: python -m pip install -r services/requirements.txt -r tools/story_pack_requirements.txt
+      - name: Install a CJK font (content pipeline tests draw a Chinese credits page)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
       - name: Check local browser UI JavaScript syntax
         run: node --check services/pet_learning/playground/play.js
       - name: Compile service source
