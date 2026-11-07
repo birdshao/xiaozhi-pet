@@ -102,6 +102,10 @@ bool ParseCommand(const JsonDoc& doc, int node, DeviceCommand* out) {
                 break;
             }
             case CommandKind::SetTemperament: {
+                const int s = doc.Get(payload, kCommandSeqKey);
+                // Absent = 0; present must be an integer inside the exact range.
+                const bool seq_ok = s < 0 || (doc.Uint(s, &c.seq) && c.seq <= kMaxCommandId);
+                if (!seq_ok) break;
                 const int t = doc.Get(payload, "temperament");
                 for (uint8_t i = 0; i <= static_cast<uint8_t>(Temperament::Lively); ++i) {
                     const auto value = static_cast<Temperament>(i);
@@ -177,26 +181,18 @@ bool ValidDeviceId(const char* id) {
 
 bool ValidDeviceToken(const char* token) { return UrlSafe(token, 32, kTokenMax); }
 
-bool AllowedServerOrigin(const char* origin, bool allow_lan_http) {
+bool AllowedServerOrigin(const char* origin) {
     if (!origin) return false;
     const size_t total = std::strlen(origin);
     if (total > 155) return false;
-    bool https = false;
-    const char* host = nullptr;
-    if (std::strncmp(origin, "https://", 8) == 0) {
-        https = true;
-        host = origin + 8;
-    } else if (std::strncmp(origin, "http://", 7) == 0) {
-        host = origin + 7;
-    } else {
-        return false;
-    }
+    if (std::strncmp(origin, "https://", 8) != 0) return false;
+    const char* host = origin + 8;
     // host[:port], nothing else (no path, credentials, query or spaces).
     const char* colon = std::strrchr(host, ':');
     const bool bracketed = host[0] == '[';
     if (bracketed) {
         const char* close = std::strchr(host, ']');
-        if (!https || !close) return false;
+        if (!close) return false;
         colon = close[1] == ':' ? close + 1 : nullptr;
         if (close[1] && !colon) return false;
     }
@@ -228,30 +224,7 @@ bool AllowedServerOrigin(const char* origin, bool allow_lan_http) {
                 return false;
         }
     }
-    if (https) return true;
-    if (!allow_lan_http) return false;
-    // Plain http: an RFC 1918 IPv4 literal only.
-    int octets[4]{};
-    int index = 0;
-    size_t i = 0;
-    while (i < host_len && index < 4) {
-        int value = 0;
-        size_t digits = 0;
-        while (i < host_len && host[i] >= '0' && host[i] <= '9' && digits < 3) {
-            value = value * 10 + (host[i] - '0');
-            ++i;
-            ++digits;
-        }
-        if (!digits || value > 255) return false;
-        octets[index++] = value;
-        if (i < host_len) {
-            if (host[i] != '.' || index == 4) return false;
-            ++i;
-        }
-    }
-    if (index != 4 || i != host_len) return false;
-    return octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
-           (octets[0] == 192 && octets[1] == 168);
+    return true;
 }
 
 bool OriginOfUrl(const char* url, char* out, size_t capacity) {
@@ -377,6 +350,29 @@ CommandKind CommandKindFromName(const char* name) {
     if (std::strcmp(name, "SELECT_VOICE_PACK") == 0) return CommandKind::SelectVoicePack;
     if (std::strcmp(name, "SYNC_CONTENT") == 0) return CommandKind::SyncContent;
     return CommandKind::Unknown;
+}
+
+int OrderClass(CommandKind kind) { return kind == CommandKind::SetTemperament ? 0 : -1; }
+
+uint64_t CommandTracker::AppliedSeq(CommandKind kind) const {
+    const int c = OrderClass(kind);
+    return c < 0 ? 0 : applied_seq_[c];
+}
+
+void CommandTracker::SetAppliedSeq(CommandKind kind, uint64_t seq) {
+    const int c = OrderClass(kind);
+    if (c >= 0) applied_seq_[c] = seq > kMaxCommandId ? kMaxCommandId : seq;
+}
+
+bool CommandTracker::NoteApplied(CommandKind kind, uint64_t seq) {
+    const int c = OrderClass(kind);
+    if (c < 0 || seq <= applied_seq_[c]) return false;
+    applied_seq_[c] = seq > kMaxCommandId ? kMaxCommandId : seq;
+    return true;
+}
+
+bool CommandTracker::Stale(const DeviceCommand& command) const {
+    return OrderClass(command.kind) >= 0 && command.seq < AppliedSeq(command.kind);
 }
 
 bool NeedsParentConfirm(CommandKind kind) {
@@ -540,6 +536,36 @@ void CommandTracker::ClearInFlight(uint64_t id) {
     }
 }
 
+void CommandTracker::EncodeApplied(uint8_t out[kAppliedBlobBytes]) const {
+    std::memset(out, 0, kAppliedBlobBytes);
+    out[0] = 'A';
+    out[1] = 'R';
+    out[2] = 1;
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < receipt_count_; ++i) {
+        if (receipts_[i].result != ReceiptResult::Applied) continue;
+        for (int b = 0; b < 8; ++b)
+            out[4 + n * 8 + b] = static_cast<uint8_t>(receipts_[i].command_id >> (8 * b));
+        ++n;
+    }
+    out[3] = n;
+}
+
+bool CommandTracker::DecodeApplied(const uint8_t* in, size_t size) {
+    if (!in || size != kAppliedBlobBytes || in[0] != 'A' || in[1] != 'R' || in[2] != 1 ||
+        in[3] > kMaxReceipts)
+        return false;
+    uint64_t ids[kMaxReceipts]{};
+    for (size_t i = 0; i < kMaxReceipts; ++i) {
+        uint64_t id = 0;
+        for (int b = 0; b < 8; ++b) id |= static_cast<uint64_t>(in[4 + i * 8 + b]) << (8 * b);
+        if (i < in[3] ? !ValidCommandId(id) : id != 0) return false;
+        ids[i] = id;
+    }
+    for (size_t i = 0; i < in[3]; ++i) AddReceipt(ids[i], ReceiptResult::Applied);
+    return true;
+}
+
 void CommandTracker::ClearAllInFlight() {
     for (auto& id : in_flight_) id = 0;
     in_flight_count_ = 0;
@@ -601,8 +627,9 @@ CommandDecision RouteCommand(const DeviceCommand& command, const CommandTracker&
         return d;  // Skip
     d.route = CommandRoute::Answer;
     d.receipt = ReceiptResult::Rejected;
-    if (tracker.Rejected(command.id) || !SupportedCommand(command.kind) || !command.payload_ok)
-        return d;
+    if (tracker.Rejected(command.id) || !SupportedCommand(command.kind) || !command.payload_ok ||
+        tracker.Stale(command))
+        return d;  // a stale command (older than one already applied) is refused
     if (CommandExpired(command, clock_known, now_utc)) {
         d.receipt = ReceiptResult::Expired;
         return d;
@@ -641,17 +668,22 @@ void PairingFlow::Retry(uint32_t now_ms, uint32_t wait_ms) {
     next_ms_ = now_ms + wait_ms;
 }
 
-PairingFlow::Action PairingFlow::Step(uint32_t now_ms) {
-    if (phase_ == Phase::Idle || waiting_) return Action::None;
-    if ((phase_ == Phase::Start || phase_ == Phase::ShowCode) &&
-        now_ms - begun_ms_ >= kMaxDurationMs) {
+void PairingFlow::Tick(uint32_t now_ms) {
+    if (phase_ == Phase::Idle) return;
+    const bool pre_save = phase_ == Phase::Start || phase_ == Phase::ShowCode;
+    if (pre_save && now_ms - begun_ms_ >= kMaxDurationMs) {
         Fail(LinkState::Failed);
-        return Action::None;
-    }
-    if (phase_ == Phase::ShowCode && static_cast<int32_t>(now_ms - deadline_ms_) >= 0) {
+    } else if (phase_ == Phase::Start && now_ms - begun_ms_ >= kStartTimeoutMs) {
+        Fail(LinkState::Failed);  // never reached the server
+    } else if (phase_ == Phase::ShowCode && static_cast<int32_t>(now_ms - deadline_ms_) >= 0) {
         Fail(LinkState::Failed);  // the code expired
-        return Action::None;
     }
+}
+
+PairingFlow::Action PairingFlow::Step(uint32_t now_ms) {
+    if (phase_ == Phase::Idle) return Action::None;
+    Tick(now_ms);
+    if (phase_ == Phase::Idle || waiting_) return Action::None;
     if (static_cast<int32_t>(now_ms - next_ms_) < 0) return Action::None;
     waiting_ = true;
     switch (phase_) {

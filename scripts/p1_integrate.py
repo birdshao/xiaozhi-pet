@@ -2538,9 +2538,10 @@ BOARD_WORKER = r'''
                                                                : kid_app::NetworkState::Offline;
         // D5: "a parent has a request" envelope on the home band.
         in.parent_request = server_sync_.WaitingRequests() > 0;
-        sync_battery_pct_.store(static_cast<uint8_t>(
-            in.battery_pct < 0 ? 0 : in.battery_pct > 100 ? 100 : in.battery_pct));
-        sync_charging_.store(in.charging);
+        if (in.battery_pct >= 0) {  // no PMIC reading: keep the last one
+            sync_battery_pct_.store(static_cast<uint8_t>(in.battery_pct > 100 ? 100 : in.battery_pct));
+            sync_charging_.store(in.charging);
+        }
         const auto bar = kid_app::MakeStatusBar(in, status_latest_);
         if (bar != status_latest_)
             ESP_LOGI(TAG, "PET_STATUS time=%02u:%02u temp_c=%d batt_bars=%u chg=%d quiet=%d net=%u",
@@ -2833,7 +2834,9 @@ BOARD_WORKER = r'''
             HandleRequestAction(confirm_dialog_.Tick(NowMs()));
         } else if (parent_page_ == kid_app::ParentPage::Link) {
             // The code stays on screen while the pairing runs.
-            if (LinkBusy()) link_input_ms_ = NowMs();
+            // Only a code on screen keeps the page open (an offline or stuck
+            // pairing still times out like any other idle parent page).
+            if (server_sync_.Link().state == kid_app::LinkState::ShowCode) link_input_ms_ = NowMs();
             if (NowMs() - link_input_ms_ >=
                 kid_app::SelfTestClock::Scaled(kid_app::ParentMenu::kIdleExitMs)) {
                 CloseParentMenu("idle");

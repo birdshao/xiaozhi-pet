@@ -97,6 +97,8 @@ private:
     bool SaveCredentials(const char* device_id, const char* token, bool confirmed);
     void EraseCredentials();
     bool SaveRejected();
+    bool SaveApplied();
+    bool SaveAppliedSeq(uint64_t seq);
     bool ResolveOrigin();
     // method "GET"/"POST"/"PUT"; bearer null = no Authorization.
     int Request(const char* method, const char* path, const char* body, size_t size,
@@ -131,7 +133,6 @@ private:
     PairingFlow pairing_;
     char fw_version_[41]{};
     char origin_[160]{};
-    bool allow_lan_http_ = false;
     char device_id_[kDeviceIdMax + 1]{};
     char token_[kTokenMax + 1]{};          // never logged
     bool have_credentials_ = false;
@@ -150,6 +151,7 @@ private:
     uint64_t accepted_generation_ = 0;     // last generation the server took
     uint64_t seen_generation_ = 0;
     uint32_t seen_receipts_rev_ = 0;
+    uint32_t applied_saved_rev_ = 0;
     uint32_t seen_requests_rev_ = 0;
     // UTC from the server's Date header against the monotonic clock: XiaoZhi
     // sets the system clock to local time, so time() is not UTC. Read by the

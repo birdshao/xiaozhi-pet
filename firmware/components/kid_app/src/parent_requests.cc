@@ -4,13 +4,42 @@
 
 namespace kid_app {
 
-bool ParentRequestQueue::Offer(const DeviceCommand& command) {
-    if (!command.id || !NeedsParentConfirm(command.kind)) return false;
-    if (Contains(command.id)) return true;
-    if (count_ >= kCapacity) return false;
-    entries_[count_++] = Entry{command, false};
+ParentRequestQueue::OfferResult ParentRequestQueue::Offer(const DeviceCommand& command,
+                                                          uint64_t* replaced_id) {
+    if (!command.id || !NeedsParentConfirm(command.kind)) return OfferResult::Refused;
+    if (Contains(command.id)) return OfferResult::Known;
+    OfferResult result = OfferResult::Added;
+    if (OrderClass(command.kind) >= 0) {
+        for (uint8_t i = 0; i < count_; ++i) {
+            const Entry& e = entries_[i];
+            if (e.command.kind != command.kind || e.Busy()) continue;
+            if (e.command.seq > command.seq) return OfferResult::Stale;
+            if (replaced_id) *replaced_id = e.command.id;
+            Remove(e.command.id);  // the newer request takes its place
+            result = OfferResult::Replaced;
+            break;
+        }
+    }
+    if (count_ >= kCapacity) return OfferResult::Refused;
+    entries_[count_++] = Entry{command, false, false};
     ++revision_;
-    return true;
+    return result;
+}
+
+size_t ParentRequestQueue::DropStale(CommandKind kind, uint64_t applied, uint64_t* out,
+                                     size_t capacity) {
+    size_t n = 0;
+    for (uint8_t i = 0; i < count_ && n < capacity;) {
+        const Entry& e = entries_[i];
+        if (e.command.kind == kind && !e.Busy() && e.command.seq < applied) {
+            if (out) out[n] = e.command.id;
+            ++n;
+            Remove(e.command.id);
+        } else {
+            ++i;
+        }
+    }
+    return n;
 }
 
 bool ParentRequestQueue::Contains(uint64_t id) const {
@@ -24,29 +53,31 @@ bool ParentRequestQueue::Find(uint64_t id, DeviceCommand* out, bool* confirming)
     for (uint8_t i = 0; i < count_; ++i) {
         if (entries_[i].command.id != id) continue;
         if (out) *out = entries_[i].command;
-        if (confirming) *confirming = entries_[i].confirming;
+        if (confirming) *confirming = entries_[i].Busy();
         return true;
     }
     return false;
 }
 
-void ParentRequestQueue::ResetConfirming() {
-    for (uint8_t i = 0; i < count_; ++i) {
+size_t ParentRequestQueue::Confirming(DeviceCommand* out, size_t capacity) const {
+    size_t n = 0;
+    for (uint8_t i = 0; i < count_ && n < capacity; ++i) {
         if (!entries_[i].confirming) continue;
-        entries_[i].confirming = false;
-        ++revision_;
+        if (out) out[n] = entries_[i].command;
+        ++n;
     }
+    return n;
 }
 
 size_t ParentRequestQueue::Waiting() const {
     size_t n = 0;
-    for (uint8_t i = 0; i < count_; ++i) n += entries_[i].confirming ? 0 : 1;
+    for (uint8_t i = 0; i < count_; ++i) n += entries_[i].Busy() ? 0 : 1;
     return n;
 }
 
 bool ParentRequestQueue::Next(DeviceCommand* out) const {
     for (uint8_t i = 0; i < count_; ++i) {
-        if (entries_[i].confirming) continue;
+        if (entries_[i].Busy()) continue;
         if (out) *out = entries_[i].command;
         return true;
     }
@@ -56,8 +87,22 @@ bool ParentRequestQueue::Next(DeviceCommand* out) const {
 bool ParentRequestQueue::SetConfirming(uint64_t id, bool confirming) {
     for (uint8_t i = 0; i < count_; ++i) {
         if (entries_[i].command.id != id) continue;
-        if (entries_[i].confirming != confirming) {
-            entries_[i].confirming = confirming;
+        const bool changed = entries_[i].confirming != confirming ||
+                             (!confirming && entries_[i].rejecting);
+        entries_[i].confirming = confirming;
+        if (!confirming) entries_[i].rejecting = false;
+        if (changed) ++revision_;
+        return true;
+    }
+    return false;
+}
+
+bool ParentRequestQueue::SetRejecting(uint64_t id) {
+    for (uint8_t i = 0; i < count_; ++i) {
+        if (entries_[i].command.id != id) continue;
+        if (!entries_[i].rejecting) {
+            entries_[i].rejecting = true;
+            entries_[i].confirming = false;
             ++revision_;
         }
         return true;
@@ -87,7 +132,7 @@ size_t ParentRequestQueue::RemoveExpired(bool clock_known, int64_t now_utc, uint
     size_t n = 0;
     for (uint8_t i = 0; i < count_ && n < capacity;) {
         const Entry& e = entries_[i];
-        if (!e.confirming && CommandExpired(e.command, clock_known, now_utc)) {
+        if (!e.Busy() && CommandExpired(e.command, clock_known, now_utc)) {
             if (out) out[n] = e.command.id;
             ++n;
             Remove(e.command.id);  // shifts the next entry into i

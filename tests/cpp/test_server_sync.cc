@@ -125,25 +125,19 @@ void TestBase64AndHelpers() {
            !ValidDeviceToken(std::string(191, 'A').c_str()) &&
            !ValidDeviceToken((std::string(40, 'A') + "+/").c_str()));
 
-    assert(AllowedServerOrigin("https://pet.example.cn", false));
-    assert(AllowedServerOrigin("https://pet.example.cn:8443", false));
-    assert(AllowedServerOrigin("https://[fd00::1]:443", false));
-    assert(!AllowedServerOrigin("https://pet.example.cn/", false));
-    assert(!AllowedServerOrigin("https://user@pet.example.cn", false));
-    assert(!AllowedServerOrigin("https://pet.example.cn:0", false));
-    assert(!AllowedServerOrigin("https://pet.example.cn:99999", false));
-    assert(!AllowedServerOrigin("ftp://pet.example.cn", true));
-    // Plain http: never by default; with the LAN flag only RFC 1918 literals.
-    assert(!AllowedServerOrigin("http://192.168.1.110:8780", false));
-    assert(AllowedServerOrigin("http://192.168.1.110:8780", true));
-    assert(AllowedServerOrigin("http://10.0.0.5", true));
-    assert(AllowedServerOrigin("http://172.16.4.1:80", true));
-    assert(!AllowedServerOrigin("http://172.32.4.1", true));
-    assert(!AllowedServerOrigin("http://8.8.8.8", true));
-    assert(!AllowedServerOrigin("http://pet.example.cn", true));
-    assert(!AllowedServerOrigin("http://192.168.1", true));
-    assert(!AllowedServerOrigin("http://192.168.1.256", true));
-    assert(!AllowedServerOrigin("http://192.168.1.1.1", true));
+    assert(AllowedServerOrigin("https://pet.example.cn"));
+    assert(AllowedServerOrigin("https://pet.example.cn:8443"));
+    assert(AllowedServerOrigin("https://[fd00::1]:443"));
+    assert(!AllowedServerOrigin("https://pet.example.cn/"));
+    assert(!AllowedServerOrigin("https://user@pet.example.cn"));
+    assert(!AllowedServerOrigin("https://pet.example.cn:0"));
+    assert(!AllowedServerOrigin("https://pet.example.cn:99999"));
+    assert(!AllowedServerOrigin("https://"));
+    assert(!AllowedServerOrigin(nullptr));
+    assert(!AllowedServerOrigin("ftp://pet.example.cn"));
+    // HTTPS only: plain http is refused, LAN addresses included.
+    assert(!AllowedServerOrigin("http://192.168.1.110:8780"));
+    assert(!AllowedServerOrigin("http://pet.example.cn"));
 
     char origin[64];
     assert(OriginOfUrl("http://192.168.1.110:8780/xiaozhi/ota/", origin, sizeof(origin)) &&
@@ -611,6 +605,21 @@ void TestPairingFlow() {
         assert(now <= PairingFlow::kMaxDurationMs + PairingFlow::kClaimIntervalMs);
     }
     assert(f.View().state == LinkState::Failed);
+    // Offline: Tick() alone ends a pairing that never reached the server, and
+    // a code on screen that ran out, without any network step.
+    f.Begin(1000);
+    f.Tick(1000 + PairingFlow::kStartTimeoutMs - 1);
+    assert(f.Active() && f.View().state == LinkState::Connecting);
+    f.Tick(1000 + PairingFlow::kStartTimeoutMs);
+    assert(!f.Active() && f.View().state == LinkState::Failed);
+    f.Begin(0);
+    f.Step(0);
+    const PairingStartReply minute = StartReply("000002", 90);
+    f.OnStart(200, &minute, 10);
+    f.Tick(90000);
+    assert(f.Active() && f.View().state == LinkState::ShowCode);
+    f.Tick(90010);
+    assert(!f.Active() && f.View().state == LinkState::Failed);
     // Late results for another phase are ignored.
     f.Begin(0);
     f.OnClaim(200, true, ClaimStatus::Claimed, 0);
@@ -666,20 +675,115 @@ void TestUploadSchedule() {
 
 // ---- D5 requests and the Pet-side applier ----------------------------------------------
 
+DeviceCommand Temper(uint64_t id, uint64_t seq, Temperament t = Temperament::Lively) {
+    DeviceCommand c = Command(id, CommandKind::SetTemperament, true, 9000);
+    c.seq = seq;
+    c.temperament = t;
+    return c;
+}
+
+// S3 + D5: the parent must never be able to confirm an old temperament
+// after a newer one, and an applied seq survives a reboot.
+void TestOrdering() {
+    using Offer = ParentRequestQueue::OfferResult;
+    JsonDoc doc;
+    DeviceCommand parsed[4];
+    uint8_t count = 0;
+    const char* body =
+        "{\"commands\":["
+        "{\"command_id\":21,\"kind\":\"SET_TEMPERAMENT\",\"expires_at\":9,\"payload\":{\"temperament\":\"gentle\",\"seq\":7}},"
+        "{\"command_id\":22,\"kind\":\"SET_TEMPERAMENT\",\"expires_at\":9,\"payload\":{\"temperament\":\"gentle\"}},"
+        "{\"command_id\":23,\"kind\":\"SET_TEMPERAMENT\",\"expires_at\":9,\"payload\":{\"temperament\":\"gentle\",\"seq\":\"7\"}},"
+        "{\"command_id\":24,\"kind\":\"SET_TEMPERAMENT\",\"expires_at\":9,\"payload\":{\"temperament\":\"gentle\",\"seq\":9007199254740992}}]}";
+    assert(ParseCommandsReply(body, std::strlen(body), &doc, parsed, 4, &count) && count == 4);
+    assert(parsed[0].payload_ok && parsed[0].seq == 7);
+    assert(parsed[1].payload_ok && parsed[1].seq == 0);      // absent: unordered, accepted
+    assert(!parsed[2].payload_ok && !parsed[3].payload_ok);  // present but not a valid integer
+
+    // Two requests arrive one after the other: only the newer one can be confirmed.
+    ParentRequestQueue q;
+    uint64_t replaced = 0;
+    assert(q.Offer(Temper(31, 5, Temperament::Curious), &replaced) == Offer::Added);
+    assert(q.Offer(Temper(32, 6), &replaced) == Offer::Replaced && replaced == 31);
+    assert(q.Count() == 1 && !q.Contains(31) && q.Contains(32));
+    DeviceCommand next{};
+    assert(q.Next(&next) && next.id == 32 && next.seq == 6);
+    // An older one arriving late (or redelivered) is stale, the waiting one stays.
+    assert(q.Offer(Temper(30, 4), &replaced) == Offer::Stale && q.Count() == 1 && q.Contains(32));
+    // A request already being committed is never pulled back: the new one waits behind it.
+    assert(q.SetConfirming(32, true));
+    assert(q.Offer(Temper(33, 7), &replaced) == Offer::Added && q.Count() == 2);
+    // Memory clear is unordered: it does not replace a temperament request.
+    assert(q.Offer(Command(34, CommandKind::MemoryClear)) == Offer::Added && q.Count() == 3);
+    assert(q.Offer(Temper(35, 7), &replaced) == Offer::Replaced && replaced == 33);
+    uint64_t ids[8];
+    // Applying seq 8 makes every older waiting request impossible.
+    assert(q.DropStale(CommandKind::SetTemperament, 8, ids, 8) == 1 && ids[0] == 35);
+    assert(q.DropStale(CommandKind::SetTemperament, 8, ids, 8) == 0);  // the confirming one stays
+
+    // Applied seq: routed commands below it are refused; equal or higher run.
+    CommandTracker t;
+    assert(t.AppliedSeq(CommandKind::SetTemperament) == 0);
+    assert(t.NoteApplied(CommandKind::SetTemperament, 6) &&
+           !t.NoteApplied(CommandKind::SetTemperament, 6) &&
+           !t.NoteApplied(CommandKind::SetTemperament, 5) &&
+           !t.NoteApplied(CommandKind::MemoryClear, 99));
+    assert(t.AppliedSeq(CommandKind::SetTemperament) == 6 && t.AppliedSeq(CommandKind::MemoryClear) == 0);
+    CommandDecision d = RouteCommand(Temper(41, 5), t, false, true, 100);
+    assert(d.route == CommandRoute::Answer && d.receipt == ReceiptResult::Rejected);
+    assert(RouteCommand(Temper(42, 6), t, false, true, 100).route == CommandRoute::ToPet);
+    assert(RouteCommand(Temper(43, 7), t, false, true, 100).route == CommandRoute::ToPet);
+    assert(RouteCommand(Command(44, CommandKind::MemoryClear), t, false, true, 100).route ==
+           CommandRoute::ToPet);
+    // "Reboot": a fresh tracker loaded with the stored seq still refuses seq 5.
+    CommandTracker rebooted;
+    rebooted.SetAppliedSeq(CommandKind::SetTemperament, t.AppliedSeq(CommandKind::SetTemperament));
+    assert(rebooted.Stale(Temper(45, 5)) && !rebooted.Stale(Temper(46, 6)) &&
+           RouteCommand(Temper(45, 5), rebooted, false, true, 100).route == CommandRoute::Answer);
+    // seq 0 (an old server) is stale once something ordered has applied.
+    assert(rebooted.Stale(Temper(47, 0)));
+
+    // Applied receipts survive a reboot until acknowledged.
+    CommandTracker applied;
+    applied.AddReceipt(51, ReceiptResult::Applied);
+    applied.AddReceipt(52, ReceiptResult::Rejected);
+    applied.AddReceipt(53, ReceiptResult::Applied);
+    uint8_t blob[CommandTracker::kAppliedBlobBytes];
+    applied.EncodeApplied(blob);
+    CommandTracker restored;
+    assert(restored.DecodeApplied(blob, sizeof(blob)));
+    assert(restored.HasReceipt(51) && !restored.HasReceipt(52) && restored.HasReceipt(53));
+    CommandReceipt receipts[kMaxReceipts];
+    assert(restored.Receipts(receipts, kMaxReceipts) == 2 && receipts[0].result == ReceiptResult::Applied);
+    // So a redelivered, already applied command is not asked again.
+    assert(RouteCommand(Command(51, CommandKind::MemoryClear), restored, false, true, 100).route ==
+           CommandRoute::Skip);
+    uint8_t bad[CommandTracker::kAppliedBlobBytes];
+    std::memcpy(bad, blob, sizeof(blob));
+    bad[1] = 'X';
+    assert(!restored.DecodeApplied(bad, sizeof(bad)) && !restored.DecodeApplied(blob, sizeof(blob) - 1));
+}
+
 void TestRequests() {
     ParentRequestQueue q;
-    assert(!q.Offer(Command(1, CommandKind::SyncContent)));  // needs no parent
-    assert(q.Offer(Command(1, CommandKind::MemoryClear, true, 100)));
+    using Offer = ParentRequestQueue::OfferResult;
+    assert(q.Offer(Command(1, CommandKind::SyncContent)) == Offer::Refused);  // needs no parent
+    assert(q.Offer(Command(1, CommandKind::MemoryClear, true, 100)) == Offer::Added);
     const uint32_t r = q.Revision();
-    assert(q.Offer(Command(1, CommandKind::MemoryClear)) && q.Revision() == r && q.Count() == 1);
-    assert(q.Offer(Command(2, CommandKind::SetTemperament, true, 900)));
+    assert(q.Offer(Command(1, CommandKind::MemoryClear)) == Offer::Known && q.Revision() == r &&
+           q.Count() == 1);
+    assert(q.Offer(Command(2, CommandKind::SetTemperament, true, 900)) == Offer::Added);
     DeviceCommand next{};
     assert(q.Next(&next) && next.id == 1 && q.Waiting() == 2);
     assert(q.SetConfirming(1, true) && q.Waiting() == 1 && q.Next(&next) && next.id == 2);
     bool confirming = false;
     assert(q.Find(1, &next, &confirming) && confirming && !q.Find(9, nullptr, nullptr));
-    q.ResetConfirming();
-    assert(q.Waiting() == 2);
+    DeviceCommand again[ParentRequestQueue::kCapacity];
+    assert(q.Confirming(again, ParentRequestQueue::kCapacity) == 1 && again[0].id == 1);
+    // A refused request is hidden too, but never reposted as a confirmation.
+    assert(q.SetRejecting(2) && q.Waiting() == 0 && q.Confirming(again, 8) == 1);
+    assert(q.SetConfirming(2, false) && q.SetConfirming(1, false));  // released
+    assert(q.Waiting() == 2 && q.Confirming(again, 8) == 0);
     uint64_t ids[ParentRequestQueue::kCapacity];
     assert(q.Ids(ids, ParentRequestQueue::kCapacity) == 2 && ids[0] == 1 && ids[1] == 2);
     // Expiry only with a known clock, never for a decided request.
@@ -689,9 +793,11 @@ void TestRequests() {
     q.SetConfirming(2, false);
     assert(q.RemoveExpired(true, 1000, ids, 8) == 1 && q.Count() == 0);
     for (uint64_t id = 1; id <= ParentRequestQueue::kCapacity; ++id)
-        assert(q.Offer(Command(id, CommandKind::MemoryClear)));
-    assert(!q.Offer(Command(99, CommandKind::MemoryClear)));
+        assert(q.Offer(Command(id, CommandKind::MemoryClear)) == Offer::Added);
+    assert(q.Offer(Command(99, CommandKind::MemoryClear)) == Offer::Refused);
     assert(q.Remove(3) && !q.Remove(3) && q.Count() == ParentRequestQueue::kCapacity - 1);
+
+    TestOrdering();
 
     ConfirmDialog d;
     assert(d.OnInput(InputKind::DialPress, 0) == ConfirmAction::None);

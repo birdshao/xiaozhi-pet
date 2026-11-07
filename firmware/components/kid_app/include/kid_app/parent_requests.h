@@ -22,9 +22,21 @@ class ParentRequestQueue {
 public:
     static constexpr size_t kCapacity = kMaxAwaitingConfirm;
 
-    // Only kinds that need the parent; a known id is kept as it is.
-    // False when full or the kind needs no confirmation.
-    bool Offer(const DeviceCommand& command);
+    enum class OfferResult : uint8_t {
+        Added,      // queued
+        Replaced,   // queued; an older request of the same class was dropped
+        Known,      // already queued (a redelivery)
+        Stale,      // an equal-or-newer one is waiting: drop this command
+        Refused,    // no confirmation needed, or the queue is full
+    };
+    // Only kinds that need the parent. A newer request of an ordered class
+    // (higher seq, or the same seq arriving later) replaces the waiting one
+    // (not one already being committed): the parent can never confirm the
+    // old value after the new one. *replaced_id gets the dropped id.
+    OfferResult Offer(const DeviceCommand& command, uint64_t* replaced_id = nullptr);
+    // Drops undecided requests of `kind` whose seq is below `applied`;
+    // returns their ids (answered rejected by the caller).
+    size_t DropStale(CommandKind kind, uint64_t applied, uint64_t* out, size_t capacity);
     bool Contains(uint64_t id) const;
     bool Find(uint64_t id, DeviceCommand* out, bool* confirming) const;
     size_t Count() const { return count_; }
@@ -35,8 +47,11 @@ public:
     // The parent confirmed: the commit is in flight on the Pet task (a
     // storage failure puts it back to waiting).
     bool SetConfirming(uint64_t id, bool confirming);
-    // Every decided-but-unfinished request waits again (lost outcome).
-    void ResetConfirming();
+    // The parent refused: hidden until the network task has stored it.
+    bool SetRejecting(uint64_t id);
+    // Requests the parent confirmed whose outcome has not come back yet
+    // (to be posted to the Pet task again: the ledger dedups by id).
+    size_t Confirming(DeviceCommand* out, size_t capacity) const;
     bool Remove(uint64_t id);
     size_t Ids(uint64_t* out, size_t capacity) const;
     // Removes undecided requests past expires_at (clock known) and returns
@@ -48,7 +63,9 @@ public:
 private:
     struct Entry {
         DeviceCommand command{};
-        bool confirming = false;
+        bool confirming = false;  // approved, commit in flight
+        bool rejecting = false;   // refused, being stored
+        bool Busy() const { return confirming || rejecting; }
     };
     Entry entries_[kCapacity]{};
     uint8_t count_ = 0;

@@ -33,10 +33,9 @@ size_t Base64Encode(const uint8_t* in, size_t size, char* out, size_t capacity);
 bool ValidDeviceId(const char* id);
 // S1 tokens are urlsafe base64: 32..kTokenMax of [A-Za-z0-9_-].
 bool ValidDeviceToken(const char* token);
-// Server origin "scheme://host[:port]" without a path. https is always
-// allowed; plain http only when allow_lan_http is set AND the host is an
-// RFC 1918 IPv4 literal (a LAN test server; never a name, never public).
-bool AllowedServerOrigin(const char* origin, bool allow_lan_http);
+// Server origin "https://host[:port]" without a path. HTTPS only (ADR:
+// certificate-checked TLS, no plain http, not even on the LAN).
+bool AllowedServerOrigin(const char* origin);
 // Origin of a URL (the board's XiaoZhi OTA URL points at the same gateway):
 // "http://192.168.1.110:8780/xiaozhi/ota/" -> "http://192.168.1.110:8780".
 bool OriginOfUrl(const char* url, char* out, size_t capacity);
@@ -102,7 +101,18 @@ struct DeviceCommand {
     Temperament temperament = Temperament::Gentle;  // SetTemperament
     uint32_t clear_epoch = 0;   // MemoryClear (informational)
     int64_t expires_at = 0;     // Unix seconds
+    // Monotonic order of commands of the same kind (payload "seq", S3; 0 =
+    // the server sent none). Only SetTemperament is ordered today.
+    uint64_t seq = 0;
 };
+
+// Name of the ordering field in a command payload.
+constexpr const char* kCommandSeqKey = "seq";
+// Commands of one ordered class must be applied in seq order: a command
+// whose seq is below the last applied one is dropped (answered rejected).
+// -1 for kinds without an order (memory clear is idempotent).
+int OrderClass(CommandKind kind);
+constexpr int kOrderClasses = 1;
 
 enum class StateResult : uint8_t { Accepted, Duplicate, Stale, GenerationConflict };
 
@@ -167,6 +177,13 @@ public:
     // next delivery routes the command again (the ledger catches repeats).
     void ClearAllInFlight();
 
+    // Applied receipts survive a reboot until a reply acknowledges them (a
+    // forgotten "applied" could make the parent confirm a wipe twice once the
+    // 128-entry replay window has moved on). 'A' 'R' version count, ids.
+    static constexpr size_t kAppliedBlobBytes = 4 + kMaxReceipts * 8;
+    void EncodeApplied(uint8_t out[kAppliedBlobBytes]) const;
+    bool DecodeApplied(const uint8_t* in, size_t size);  // adds Applied receipts
+
     // Oldest refusal is forgotten when full (its command long expired).
     void AddRejected(uint64_t id);
     bool Rejected(uint64_t id) const;
@@ -177,7 +194,15 @@ public:
     // Changes whenever the receipt list changes (an upload trigger).
     uint32_t Revision() const { return revision_; }
 
+    // Last applied seq per ordered class (persisted by the owner: load it
+    // with SetAppliedSeq at boot, store it when NoteApplied returns true).
+    uint64_t AppliedSeq(CommandKind kind) const;
+    void SetAppliedSeq(CommandKind kind, uint64_t seq);
+    bool NoteApplied(CommandKind kind, uint64_t seq);  // true = the value rose
+    bool Stale(const DeviceCommand& command) const;    // seq below the applied one
+
 private:
+    uint64_t applied_seq_[kOrderClasses]{};
     CommandReceipt receipts_[kMaxReceipts]{};
     uint8_t receipt_count_ = 0;
     uint64_t in_flight_[kInFlightCapacity]{};
@@ -212,6 +237,7 @@ public:
     static constexpr uint32_t kThrottledMs = 30000;     // after a 429
     static constexpr uint32_t kMaxDurationMs = 11 * 60 * 1000u;
     static constexpr uint8_t kMaxNetworkFailures = 6;
+    static constexpr uint32_t kStartTimeoutMs = 60 * 1000u;  // no answer to "start"
 
     enum class Action : uint8_t { None, Start, Claim, Save, Confirm };
 
@@ -221,6 +247,10 @@ public:
     bool Active() const { return phase_ != Phase::Idle; }
     // The next request to make; the flow waits for its On*() result.
     Action Step(uint32_t now_ms);
+    // Deadlines only (code expired, took too long, no server within
+    // kStartTimeoutMs). Safe to call while offline: Step() needs the network,
+    // this does not, so a pairing page can never hang forever.
+    void Tick(uint32_t now_ms);
 
     // http_status 0 = no reply (network). Bodies are parsed by the caller:
     // reply / status are only read for a 200 that parsed.

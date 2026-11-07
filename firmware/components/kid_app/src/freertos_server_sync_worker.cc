@@ -193,7 +193,7 @@ bool FreertosServerSyncWorker::RejectRequest(uint64_t id) {
     bool confirming = false;
     xSemaphoreTake(requests_mutex_, portMAX_DELAY);
     const bool usable = requests_.Find(id, &event.command, &confirming) && !confirming;
-    if (usable) requests_.SetConfirming(id, true);  // hidden while the refusal is stored
+    if (usable) requests_.SetRejecting(id);  // hidden while the refusal is stored
     xSemaphoreGive(requests_mutex_);
     if (!usable) return false;
     confirm_posted_ms_.store(NowMs());
@@ -234,7 +234,6 @@ void FreertosServerSyncWorker::LoadNvs() {
         ReadStr(handle, "token", token_, sizeof(token_));
         uint8_t flag = 0;
         confirmed_ = nvs_get_u8(handle, "confirmed", &flag) == ESP_OK && flag == 1;
-        allow_lan_http_ = nvs_get_u8(handle, "lan_http", &flag) == ESP_OK && flag == 1;
         int64_t rotated = 0;
         if (nvs_get_i64(handle, "rot_at", &rotated) == ESP_OK) rotated_at_ = rotated;
         ReadStr(handle, "origin", origin_, sizeof(origin_));
@@ -243,6 +242,14 @@ void FreertosServerSyncWorker::LoadNvs() {
         if (nvs_get_blob(handle, "rejected", blob, &size) == ESP_OK &&
             !tracker_.DecodeRejected(blob, size))
             ESP_LOGW(kTag, "PET_SYNC_REJECTED_LIST_CORRUPT");
+        uint8_t applied[CommandTracker::kAppliedBlobBytes]{};
+        size = sizeof(applied);
+        if (nvs_get_blob(handle, "applied", applied, &size) == ESP_OK &&
+            !tracker_.DecodeApplied(applied, size))
+            ESP_LOGW(kTag, "PET_SYNC_APPLIED_LIST_CORRUPT");
+        uint64_t seq = 0;
+        if (nvs_get_u64(handle, "seq_temp", &seq) == ESP_OK)
+            tracker_.SetAppliedSeq(CommandKind::SetTemperament, seq);
         nvs_close(handle);
     }
     have_credentials_ = ValidDeviceId(device_id_) && ValidDeviceToken(token_);
@@ -251,9 +258,9 @@ void FreertosServerSyncWorker::LoadNvs() {
         confirmed_ = false;
     }
     origin_ok_ = ResolveOrigin();
-    ESP_LOGI(kTag, "PET_SYNC_BOOT paired=%d confirmed=%d origin=%s origin_ok=%d lan_http=%d",
+    ESP_LOGI(kTag, "PET_SYNC_BOOT paired=%d confirmed=%d origin=%s origin_ok=%d",
              have_credentials_ ? 1 : 0, confirmed_ ? 1 : 0, origin_[0] ? origin_ : "-",
-             origin_ok_ ? 1 : 0, allow_lan_http_ ? 1 : 0);
+             origin_ok_ ? 1 : 0);
 }
 
 bool FreertosServerSyncWorker::ResolveOrigin() {
@@ -270,7 +277,9 @@ bool FreertosServerSyncWorker::ResolveOrigin() {
 #endif
         if (!OriginOfUrl(url, origin_, sizeof(origin_))) origin_[0] = '\0';
     }
-    const bool ok = AllowedServerOrigin(origin_, allow_lan_http_);
+    const bool ok = AllowedServerOrigin(origin_);
+    // Plain http (e.g. a LAN OTA URL) is refused: set kid_srv/origin to the
+    // public https origin, or point the OTA URL at it.
     if (origin_[0] && !ok) ESP_LOGW(kTag, "PET_SYNC_ORIGIN_REFUSED origin=%s", origin_);
     return ok;
 }
@@ -301,6 +310,27 @@ void FreertosServerSyncWorker::EraseCredentials() {
     confirmed_ = false;
     rotated_at_ = 0;
     ESP_LOGI(kTag, "PET_SYNC_CREDENTIALS_ERASED");
+}
+
+bool FreertosServerSyncWorker::SaveApplied() {
+    uint8_t blob[CommandTracker::kAppliedBlobBytes];
+    tracker_.EncodeApplied(blob);
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool ok = nvs_set_blob(handle, "applied", blob, sizeof(blob)) == ESP_OK &&
+                    nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=applied");
+    return ok;
+}
+
+bool FreertosServerSyncWorker::SaveAppliedSeq(uint64_t seq) {
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool ok = nvs_set_u64(handle, "seq_temp", seq) == ESP_OK && nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=seq");
+    return ok;
 }
 
 bool FreertosServerSyncWorker::SaveRejected() {
@@ -382,7 +412,12 @@ void FreertosServerSyncWorker::LogDetail(const char* what, const Http& http) {
 // ---- main loop ------------------------------------------------------------------
 
 void FreertosServerSyncWorker::Run() {
+    // Timer targets start "now": a zero target would read as "not reached"
+    // after 24.8 days of uptime (int32 wrap).
+    next_rotate_check_ms_ = NowMs();
+    next_confirm_ms_ = NowMs();
     LoadNvs();
+    applied_saved_rev_ = tracker_.Revision();
     PublishLink();
     Event event{};
     for (;;) {
@@ -406,6 +441,15 @@ void FreertosServerSyncWorker::Run() {
                 ESP_LOGW(kTag, "PET_PAIR_NO_SERVER");
             }
             PublishLink();
+        }
+        if (pairing_.Active()) {
+            // Deadlines run offline too, so the pairing page cannot hang.
+            pairing_.Tick(now);
+            if (!pairing_.Active()) {
+                if (pairing_.DiscardStored()) EraseCredentials();
+                std::memset(pending_token_, 0, sizeof(pending_token_));
+                PublishLink();
+            }
         }
         const bool online = hooks_.online && hooks_.online(hooks_.context);
         if (!online || !origin_ok_) {
@@ -438,6 +482,10 @@ void FreertosServerSyncWorker::Run() {
         for (size_t i = 0; i < expired_count; ++i) {
             tracker_.AddReceipt(expired[i], ReceiptResult::Expired);
             ESP_LOGI(kTag, "PET_SYNC_REQUEST_EXPIRED id=%" PRIu64, expired[i]);
+        }
+        if (tracker_.Revision() != applied_saved_rev_) {
+            applied_saved_rev_ = tracker_.Revision();
+            SaveApplied();
         }
         const uint64_t generation = pet_.GenerationNow();
         if (generation != seen_generation_ || tracker_.Revision() != seen_receipts_rev_ ||
@@ -475,16 +523,51 @@ void FreertosServerSyncWorker::HandleEvent(const Event& event, uint32_t now_ms) 
     }
     tracker_.ClearInFlight(id);
     ReceiptResult receipt = ReceiptResult::Rejected;
+    uint64_t dropped[ParentRequestQueue::kCapacity + 1]{};
+    size_t dropped_count = 0;
     xSemaphoreTake(requests_mutex_, portMAX_DELAY);
     if (ReceiptForOutcome(event.outcome, &receipt)) {
         requests_.Remove(id);
+        // A newer command of this class was applied: older waiting requests
+        // can never be confirmed any more (the parent would undo the newer one).
+        if (event.outcome == CommandOutcome::Applied &&
+            tracker_.NoteApplied(event.command.kind, event.command.seq)) {
+            dropped_count = requests_.DropStale(event.command.kind, event.command.seq, dropped,
+                                                ParentRequestQueue::kCapacity);
+            SaveAppliedSeq(event.command.seq);
+        }
     } else if (event.outcome == CommandOutcome::NeedsConfirm) {
-        if (!requests_.Offer(event.command)) ESP_LOGW(kTag, "PET_SYNC_REQUESTS_FULL");
+        uint64_t replaced = 0;
+        if (tracker_.Stale(event.command)) {
+            dropped[dropped_count++] = id;  // older than what was applied
+        } else {
+            switch (requests_.Offer(event.command, &replaced)) {
+                case ParentRequestQueue::OfferResult::Replaced:
+                    dropped[dropped_count++] = replaced;
+                    break;
+                case ParentRequestQueue::OfferResult::Stale:
+                    dropped[dropped_count++] = id;  // a newer request is already waiting
+                    break;
+                case ParentRequestQueue::OfferResult::Refused:
+                    ESP_LOGW(kTag, "PET_SYNC_REQUESTS_FULL");
+                    break;
+                case ParentRequestQueue::OfferResult::Added:
+                case ParentRequestQueue::OfferResult::Known:
+                    break;
+            }
+        }
     } else {
         requests_.SetConfirming(id, false);  // storage failed: ask again later
     }
     xSemaphoreGive(requests_mutex_);
     if (ReceiptForOutcome(event.outcome, &receipt)) tracker_.AddReceipt(id, receipt);
+    for (size_t i = 0; i < dropped_count; ++i) {
+        // Superseded: refused for good (stored, so a redelivery is not asked).
+        tracker_.AddRejected(dropped[i]);
+        tracker_.AddReceipt(dropped[i], ReceiptResult::Rejected);
+        ESP_LOGI(kTag, "PET_SYNC_REQUEST_SUPERSEDED id=%" PRIu64, dropped[i]);
+    }
+    if (dropped_count && !SaveRejected()) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=rejected");
     ESP_LOGI(kTag, "PET_SYNC_COMMAND id=%" PRIu64 " kind=%u outcome=%s", id,
              static_cast<unsigned>(event.command.kind), CommandOutcomeName(event.outcome));
     (void)now_ms;
@@ -497,10 +580,17 @@ void FreertosServerSyncWorker::SweepStale(uint32_t now_ms) {
     }
     const uint32_t posted = confirm_posted_ms_.load();
     if (posted && now_ms - posted > kStaleMs) {
-        confirm_posted_ms_.store(0);
+        // The outcome never came back (a full event queue). Post the
+        // confirmed commands again: the ledger answers a repeat as already
+        // applied, so nothing runs twice and nothing is reported "expired".
+        DeviceCommand again[ParentRequestQueue::kCapacity]{};
         xSemaphoreTake(requests_mutex_, portMAX_DELAY);
-        requests_.ResetConfirming();
+        const size_t n = requests_.Confirming(again, ParentRequestQueue::kCapacity);
         xSemaphoreGive(requests_mutex_);
+        for (size_t i = 0; i < n; ++i) {
+            if (pet_.PostCommand(again[i], true)) confirm_posted_ms_.store(now_ms ? now_ms : 1);
+        }
+        if (n) ESP_LOGW(kTag, "PET_SYNC_CONFIRM_REPOSTED n=%u", static_cast<unsigned>(n));
     }
 }
 
