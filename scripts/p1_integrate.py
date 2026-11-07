@@ -797,13 +797,14 @@ BOARD_WORKER = r'''
     }
 
     // Three-way dial (active low, pulled up). The schematic labels GPIO4
-    // Button_Up and GPIO6 Button_Down, but the 2026-11-02 V1 trial showed
-    // the direction a child pushes is the opposite: physical up = GPIO6,
-    // physical down = GPIO4. Centre press = GPIO5 (Button_Function).
+    // Button_Up and GPIO6 Button_Down. The 2026-11-02 V1 trial mapped them
+    // the other way round; on 2026-11-07 the user asked to swap up/down
+    // back, so up = GPIO4 and down = GPIO6 again (as the schematic says).
+    // Centre press = GPIO5 (Button_Function).
     // Button callbacks only enqueue raw edges; one task owns InputHub.
-    Button dial_up_{GPIO_NUM_6};
+    Button dial_up_{GPIO_NUM_4};
     Button dial_press_{GPIO_NUM_5};
-    Button dial_down_{GPIO_NUM_4};
+    Button dial_down_{GPIO_NUM_6};
     QueueHandle_t pet_input_queue_ = nullptr;
     kid_app::InputHub input_hub_;
 
