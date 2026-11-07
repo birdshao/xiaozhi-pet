@@ -175,6 +175,10 @@ struct GameView {
     uint8_t ball = 0;
     uint8_t hole = 0;
     bool hidden = false;
+    // V8 sound activities (sound_view.h): 0 = none; 1 parrot, 2 songs,
+    // 3 tooth brushing, 4 hand washing. sa..sd are their small fields.
+    uint8_t sound = 0;
+    uint8_t sa = 0, sb = 0, sc = 0, sd = 0;
     // V8 non-card games (0 = none): 3 memory flip, 4 maze, 5 shake (dice /
     // tree, uses the answer cards once something fell), 6 wooden man,
     // 7 day and night. `cells` holds per-cell state: memory = face index
@@ -193,6 +197,7 @@ struct GameView {
     bool RailDiffers(const GameView& o) const {
         return option_count != o.option_count || highlight != o.highlight || options != o.options ||
                motion != o.motion || ball != o.ball || hole != o.hole || hidden != o.hidden ||
+               sound != o.sound || sa != o.sa || sb != o.sb || sc != o.sc || sd != o.sd ||
                play != o.play || cols != o.cols || rows != o.rows || cells != o.cells ||
                cursor != o.cursor || pos != o.pos || goal != o.goal;
     }
@@ -200,6 +205,7 @@ struct GameView {
     bool QuestionDiffers(const GameView& o) const {
         return round != o.round || rounds != o.rounds || feedback != o.feedback ||
                question_art != o.question_art || motion != o.motion || hidden != o.hidden ||
+               sound != o.sound || sa != o.sa || sb != o.sb || sc != o.sc || sd != o.sd ||
                count != o.count || night != o.night;
     }
     bool operator==(const GameView& o) const { return !RailDiffers(o) && !QuestionDiffers(o); }

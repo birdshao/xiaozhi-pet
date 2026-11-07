@@ -821,10 +821,10 @@ void TestMenu() {
         assert(v.highlight < 3);
         for (uint16_t art : v.options)
             assert(GameArtIsQuestion(art) || PlayArtValid(art) || MicArtValid(art) ||
-                   CareArtValid(art));  // V8 session 1: the sticker album card
+                   CareArtValid(art) || SoundArtValid(art));  // V8: sticker album card, sound rows
     }
     out = menu.Input(GameInput::Press, now += 100);
-    // The last card: rows other sessions append (V8 sticker album) follow the games.
+    // The last card is the last row of the table (rows other sessions append follow the games).
     assert(out.chosen == ActivityAt(ActivityGroup::Play, cards - 1)->id);
     // A game picked from the list can be reopened on its own card.
     menu.Start(1000, ActivityIndexOf(GameChoice::Maze));

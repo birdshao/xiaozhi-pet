@@ -1,4 +1,5 @@
 #include "kid_app/scene_model.h"
+#include "kid_app/sound_view.h"
 
 #include "kid_app/activity_list.h"
 
@@ -1322,8 +1323,14 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
 #include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
 
 void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8, below
+void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8 sound, below
+void SoundScene(MonoFrame& f, const GameView& g);
 
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (SoundArtValid(art)) {  // V8 sound activities
+        SoundArtIcon(f, art, cx, cy, r);
+        return;
+    }
     if (CareArtValid(art)) {  // V8 care menu cards share the answer-card rail
         CareArtIcon(f, art, cx, cy, r);
         return;
@@ -1458,6 +1465,10 @@ void PeekabooCard(MonoFrame& f, const GameView& g) {
 }
 
 void GameScene(MonoFrame& f, const GameView& g) {
+    if (g.sound) {  // V8: parrot, songs, brushing, washing
+        SoundScene(f, g);
+        return;
+    }
     // TuanTuan watches; a correct answer (and only that) gets hearts.
     const Emotion emotion = g.hidden                               ? Emotion::Sleepy
                             : g.feedback == GameFeedback::Right    ? Emotion::Happy
@@ -2328,6 +2339,210 @@ void SleepScene(MonoFrame& f, ScenePose pose) {
     LetterZ(f, 196, 170, 20, 6, false);
     if (letters >= 2) LetterZ(f, 146, 110, 28, 7, false);
     if (letters >= 3) LetterZ(f, 84, 42, 38, 8, false);
+}
+
+// ---- V8 sound activities (sound_view.h): parrot, songs, brushing / washing --------
+
+// Microphone: capsule, cradle and stand.
+void MicIcon(MonoFrame& f, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(4, r / 9);
+    FillRoundRect(f, cx - p(26), cy - p(78), p(52), p(100), p(26));
+    Arc(f, cx, cy + p(2), p(48), p(46), 0, 180, w);
+    Stroke(f, cx, cy + p(48), cx, cy + p(76), w);
+    Stroke(f, cx - p(30), cy + p(78), cx + p(30), cy + p(78), w);
+}
+
+// Music note (quarter note with a flag).
+void NoteIcon(MonoFrame& f, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(5, r / 8);
+    FillEllipse(f, cx - p(32), cy + p(48), p(34), p(26));
+    Stroke(f, cx + p(0), cy + p(40), cx + p(0), cy - p(70), w);
+    FillTriangle(f, cx, cy - p(70), cx + p(56), cy - p(36), cx, cy - p(26));
+}
+
+// Crescent moon: a lullaby.
+void MoonIcon(MonoFrame& f, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    Disk(f, cx, cy, p(78));
+    Disk(f, cx + p(34), cy - p(20), p(66), false);
+    Sparkle(f, cx + p(62), cy - p(50), p(20));
+}
+
+// Tooth brush: slanted handle, head with bristles.
+void ToothBrushIcon(MonoFrame& f, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(8, r / 6);
+    Stroke(f, cx - p(70), cy + p(66), cx + p(26), cy - p(30), w);
+    FillTriangle(f, cx + p(8), cy - p(36), cx + p(44), cy - p(72), cx + p(62), cy - p(54));
+    for (int i = 0; i < 4; ++i)
+        Stroke(f, cx + p(26) + i * p(12), cy - p(62) - i * p(12), cx + p(46) + i * p(12),
+               cy - p(82) - i * p(12), std::max(3, w / 3));
+    Sparkle(f, cx - p(50), cy - p(48), p(22));
+}
+
+// Water drop with bubbles: hand washing.
+void HandWashIcon(MonoFrame& f, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    FillTriangle(f, cx, cy - p(86), cx - p(46), cy + p(8), cx + p(46), cy + p(8));
+    Disk(f, cx, cy + p(18), p(48));
+    Ring(f, cx + p(70), cy - p(30), p(18), p(18), std::max(3, r / 14));
+    Ring(f, cx - p(76), cy + p(40), p(12), p(12), std::max(3, r / 16));
+    Ring(f, cx + p(62), cy + p(50), p(10), p(10), std::max(3, r / 16));
+}
+
+void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    switch (static_cast<SoundArt>(art)) {
+        case SoundArt::Parrot: GameArtIcon(f, static_cast<uint16_t>(GameArt::Bird), cx, cy, r); break;
+        case SoundArt::Song: NoteIcon(f, cx, cy, r); break;
+        case SoundArt::Lullaby: MoonIcon(f, cx, cy, r); break;
+        case SoundArt::ToothBrush: ToothBrushIcon(f, cx, cy, r); break;
+        case SoundArt::HandWash: HandWashIcon(f, cx, cy, r); break;
+    }
+}
+
+// Hourglass: the sand moves from the top bulb to the bottom as step grows
+// 0..steps. Fills first, then the outline on top so the frame stays clean.
+void Hourglass(MonoFrame& f, int cx, int cy, int r, int step, int steps) {
+    const int h = r, w = r * 62 / 100, bar = std::max(6, r / 9);
+    const int steps_safe = std::max(1, steps);
+    const int done = std::min(step, steps_safe);
+    // Top bulb (apex down) and bottom bulb (apex up).
+    const int top_y = cy - h, bot_y = cy + h;
+    FillTriangle(f, cx - w, top_y, cx + w, top_y, cx, cy);
+    FillTriangle(f, cx - w, bot_y, cx + w, bot_y, cx, cy);
+    // Top sand level drops, bottom pile rises.
+    const int top_gone = (cy - top_y) * done / steps_safe;
+    if (top_gone > 0) FillRect(f, cx - w - 2, top_y, 2 * w + 4, top_gone, false);
+    const int bottom_empty = (bot_y - cy) * (steps_safe - done) / steps_safe;
+    if (bottom_empty > 0) FillRect(f, cx - w - 2, cy + 1, 2 * w + 4, bottom_empty, false);
+    // A thin falling stream while the sand runs.
+    if (done > 0 && done < steps_safe) Stroke(f, cx, cy, cx, cy + (bot_y - cy) * 6 / 10, 4);
+    // Outline and the two caps.
+    for (int side : {-1, 1}) {
+        Stroke(f, cx + side * w, top_y, cx, cy, 6);
+        Stroke(f, cx + side * w, bot_y, cx, cy, 6);
+    }
+    FillRoundRect(f, cx - w - 14, top_y - bar, 2 * w + 28, bar, bar / 2);
+    FillRoundRect(f, cx - w - 14, bot_y, 2 * w + 28, bar, bar / 2);
+}
+
+// The dial centre: "press (and hold)". Filled while it is held / running.
+void PressCue(MonoFrame& f, int cx, int cy, bool filled) {
+    Ring(f, cx, cy, 44, 44, 7);
+    if (filled) Disk(f, cx, cy, 30);
+    else Ring(f, cx, cy, 22, 22, 5);
+}
+
+void SoundScene(MonoFrame& f, const GameView& g) {
+    constexpr int kCardX = 336, kCardY = 26, kCardW = 292, kCardH = 252, kCx = 482, kCy = 152;
+    int head_x = 150;
+    Emotion emotion = Emotion::Neutral;
+    Eyes eyes = Eyes::ByEmotion;
+    if (g.sound == kSoundSongs && g.sa == static_cast<uint8_t>(SongPhase::NoSongs)) {
+        const uint8_t missing = g.sb >> 4;
+        BookMissingPicture(f, missing == static_cast<uint8_t>(SongMissing::NoCard)
+                                  ? BookMissing::NoCard
+                                  : BookMissing::NoBook);
+        return;
+    }
+    switch (g.sound) {
+        case kSoundParrot: {
+            const auto phase = static_cast<ParrotPhase>(g.sa);
+            emotion = phase == ParrotPhase::Recording ? Emotion::Listening
+                      : phase == ParrotPhase::Playing ? Emotion::Speaking
+                                                      : Emotion::Curious;
+            break;
+        }
+        case kSoundSongs: {
+            const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);
+            if (g.sa == static_cast<uint8_t>(SongPhase::Playing)) {
+                static const int kSway[4] = {-20, 0, 20, 0};
+                head_x += kSway[g.sc & 3];
+                emotion = lullaby ? Emotion::Sleepy : Emotion::Happy;
+                eyes = lullaby ? Eyes::Closed : Eyes::ByEmotion;
+            } else if (g.sa == static_cast<uint8_t>(SongPhase::Loading)) {
+                emotion = Emotion::Thinking;
+            } else {
+                emotion = Emotion::Happy;
+            }
+            break;
+        }
+        default: {  // brush / wash
+            const auto phase = static_cast<RoutinePhase>(g.sa);
+            emotion = phase == RoutinePhase::Praise ? Emotion::Happy : Emotion::Neutral;
+            eyes = phase == RoutinePhase::Praise ? Eyes::Laugh : Eyes::ByEmotion;
+            break;
+        }
+    }
+    CatHead(f, head_x, 172, 62, emotion, eyes);
+    RoundRectRing(f, kCardX, kCardY, kCardW, kCardH, 28, 6);
+
+    if (g.sound == kSoundParrot) {
+        const auto phase = static_cast<ParrotPhase>(g.sa);
+        const auto hint = static_cast<ParrotHint>(g.sb);
+        if (phase == ParrotPhase::Playing) {
+            SoundArtIcon(f, static_cast<uint16_t>(SoundArt::Parrot), kCx, kCy, 96);
+            Heart(f, 52, 64, 20);
+            Sparkle(f, 270, 120, 14);
+        } else {
+            MicIcon(f, kCx, kCy, 96);
+            if (phase == ParrotPhase::Recording)
+                for (int k = 1; k <= 2; ++k) {  // sound arcs both sides of the mic
+                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, -50, 50, 7);
+                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, 130, 230, 7);
+                }
+        }
+        if (hint == ParrotHint::TooShort) QuestionMark(f, 274, 84, 22, 8);
+        PressCue(f, 400, 392, phase == ParrotPhase::Recording);
+        return;
+    }
+
+    if (g.sound == kSoundSongs) {
+        const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);
+        SoundArtIcon(f, static_cast<uint16_t>(lullaby ? SoundArt::Lullaby : SoundArt::Song), kCx,
+                     kCy, 96);
+        if (g.sa == static_cast<uint8_t>(SongPhase::Playing)) {
+            Sparkle(f, 268, 96, 14);
+            Sparkle(f, 40, 120, 10);
+            if (g.sd) GameDots(f, g.sd, 400, 392, 56);  // bedtime: 10 / 20 / 30 minutes
+        } else if (g.sa == static_cast<uint8_t>(SongPhase::Timer)) {
+            GameDots(f, std::max<int>(1, g.sd), 400, 392, 56);
+        } else if (g.sa == static_cast<uint8_t>(SongPhase::List)) {
+            // One dot per song, the chosen one big and ringed.
+            const int n = std::min<int>(g.option_count, 12);
+            const int pitch = n > 1 ? std::min(64, 640 / n) : 0;
+            const int x0 = 400 - pitch * (n - 1) / 2;
+            for (int i = 0; i < n; ++i) {
+                const int x = x0 + i * pitch, y = 392;
+                if (i == g.highlight) {
+                    Ring(f, x, y, 26, 26, 6);
+                    Disk(f, x, y, 12);
+                } else {
+                    Disk(f, x, y, 8);
+                }
+            }
+        }
+        return;
+    }
+
+    // Brushing / washing: the hourglass in the card, the activity badge above it.
+    const auto phase = static_cast<RoutinePhase>(g.sa);
+    Hourglass(f, kCx, kCy + 6, 82, phase == RoutinePhase::Praise ? g.sc : g.sb, g.sc);
+    SoundArtIcon(f, static_cast<uint16_t>(g.sound == kSoundBrush ? SoundArt::ToothBrush
+                                                                : SoundArt::HandWash),
+                 kCardX + 64, kCardY + 66, 38);
+    if (phase == RoutinePhase::Ready) {
+        PressCue(f, 400, 392, false);
+    } else if (phase == RoutinePhase::Running) {
+        Disk(f, 400, 392, 10);  // quietly counting
+    } else if (phase == RoutinePhase::Praise) {
+        Heart(f, 52, 64, 22);
+        Heart(f, 254, 54, 16);
+        Sparkle(f, 276, 150, 14);
+        Sparkle(f, 560, 330, 14);
+    }
 }
 
 }  // namespace

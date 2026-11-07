@@ -14,13 +14,15 @@ import sqlite3
 import threading
 import time
 import unicodedata
+import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .db import connect
-from .intent import is_page_question, match_fixed
+from .intent import QUIET_OK, is_page_question, match_fixed
+from .jokes import JOKES
 from .store import BOOK_RE, DEVICE_RE
 
 log = logging.getLogger("pet_learning.voice")
@@ -169,12 +171,16 @@ class VoiceTurns:
             quiet = self.store.snapshot(device_id)["quiet"]
         except ValueError:
             return reply("fallback", NOT_BOUND, "unknown_device")
-        if quiet:
-            return reply("fixed", QUIET, "quiet_hours")
         match = match_fixed(text)
+        if quiet and not (match is not None and match.kind == "local_command"
+                          and match.action in QUIET_OK):
+            return reply("fixed", QUIET, "quiet_hours")
         if match is not None:
             if match.kind == "local_command":
-                return reply("local_command", match.tts_text, match.reason, match.action)
+                tts_text = match.tts_text
+                if match.action == "TELL_JOKE":
+                    tts_text = self._joke(body)
+                return reply("local_command", tts_text, match.reason, match.action)
             if match.kind == "time":
                 return self._time()
             return self._battery(device_id)
@@ -205,6 +211,12 @@ class VoiceTurns:
         if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Co", "Cn") for c in text):
             return None
         return text
+
+    def _joke(self, body: bytes) -> str:
+        """A reviewed joke picked by a pure function of the turn (never generated)."""
+        turn_id = self.turn_id_of(body)
+        seed = zlib.crc32(turn_id.encode("ascii")) if turn_id else int(self.clock())
+        return JOKES[seed % len(JOKES)]
 
     def _time(self) -> dict[str, Any]:
         local = datetime.fromtimestamp(self.clock(), ZoneInfo(self.settings.timezone))

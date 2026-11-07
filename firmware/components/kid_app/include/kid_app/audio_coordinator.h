@@ -29,10 +29,18 @@ class AudioCoordinator {
 public:
     AudioPlan PlayCue(uint64_t token);
     AudioPlan StartStory(uint64_t token);
+    // V8: a lullaby (Story-class stream) is the one sound allowed in quiet
+    // hours; the caller caps its volume (SongPlayer::VolumePct). Voice still
+    // wins, and SetQuiet(true) leaves a running lullaby alone.
+    AudioPlan StartLullaby(uint64_t token);
     AudioPlan BeginVoice(uint64_t token);
     AudioPlan EndVoice(uint64_t token);
     AudioPlan Finished(uint64_t token);
     AudioPlan SetQuiet(bool enabled);
+    // V8: PWR (sleep flow) and leaving a sound activity silence whatever is
+    // playing, voice included, without touching the quiet flag and without
+    // resuming a paused story afterwards.
+    AudioPlan StopAll();
 
     AudioStream Active() const { return active_; }
     uint64_t ActiveToken() const { return active_token_; }
@@ -43,6 +51,7 @@ private:
     AudioStream active_ = AudioStream::None;
     uint64_t active_token_ = 0;
     uint64_t paused_story_ = 0;
+    bool lullaby_ = false;  // the active Story-class stream is a lullaby
     bool quiet_ = false;
 };
 

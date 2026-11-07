@@ -12,11 +12,20 @@ struct Entry {
 constexpr Entry kCommands[] = {
     {"SLEEP_REQUEST", VoiceCommand::SleepRequest}, {"TELL_TIME", VoiceCommand::TellTime},
     {"TELL_BATTERY", VoiceCommand::TellBattery},   {"PAGE_NEXT", VoiceCommand::PageNext},
-    {"OPEN_READER", VoiceCommand::OpenReader}};
+    {"OPEN_READER", VoiceCommand::OpenReader},     {"ASK_NEEDS", VoiceCommand::AskNeeds},
+    {"OPEN_GAME", VoiceCommand::OpenGame},         {"PLAY_SONG", VoiceCommand::PlaySong},
+    {"TELL_JOKE", VoiceCommand::TellJoke},
+    {"START_BRUSH", VoiceCommand::StartBrush},     {"START_WASH", VoiceCommand::StartWash}};
 
 VoiceDecision Done(VoiceAction action) {
     VoiceDecision d;
     d.action = action;
+    d.result = "done";
+    return d;
+}
+VoiceDecision Proposed(VoiceProposal proposal) {
+    VoiceDecision d;
+    d.proposal = proposal;
     d.result = "done";
     return d;
 }
@@ -66,6 +75,20 @@ const char* VoiceHintName(VoiceHint hint) {
         case VoiceHint::QuietHours: return "quiet";
         case VoiceHint::ClockUnknown: return "no_clock";
         case VoiceHint::BatteryUnknown: return "no_battery";
+        case VoiceHint::LowBattery: return "low_battery";
+    }
+    return "none";
+}
+
+const char* VoiceProposalName(VoiceProposal proposal) {
+    switch (proposal) {
+        case VoiceProposal::None: return "none";
+        case VoiceProposal::AskNeeds: return "ask_needs";
+        case VoiceProposal::OpenGame: return "open_game";
+        case VoiceProposal::PlaySong: return "play_song";
+        case VoiceProposal::TellJoke: return "tell_joke";
+        case VoiceProposal::StartBrush: return "start_brush";
+        case VoiceProposal::StartWash: return "start_wash";
     }
     return "none";
 }
@@ -106,6 +129,46 @@ VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
             if (c.scene == VoiceScene::Game) return Refused(VoiceHint::Busy, "busy");
             if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
             return Done(VoiceAction::OpenReader);
+        case VoiceCommand::AskNeeds: {
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            VoiceDecision d = Proposed(VoiceProposal::AskNeeds);
+            d.generic = !c.needs_known;
+            d.silent = c.quiet_hours;
+            return d;
+        }
+        case VoiceCommand::TellJoke: {
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            VoiceDecision d = Proposed(VoiceProposal::TellJoke);
+            d.silent = c.quiet_hours;
+            return d;
+        }
+        case VoiceCommand::OpenGame:
+            if (c.scene == VoiceScene::Game) return Ignored("already");
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
+            if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
+            return Proposed(VoiceProposal::OpenGame);
+        case VoiceCommand::PlaySong: {
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
+            // Quiet hours: the player opens with lullabies only, at low volume.
+            VoiceDecision d = Proposed(VoiceProposal::PlaySong);
+            d.silent = c.quiet_hours;
+            return d;
+        }
+        case VoiceCommand::StartBrush:
+        case VoiceCommand::StartWash: {
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            // Routines are display-led: bedtime brushing is normal, so quiet
+            // hours only mute the cue sounds. The hourglass refreshes cost
+            // power, so a low battery waits for a charge.
+            if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
+            VoiceDecision d = Proposed(command == VoiceCommand::StartBrush
+                                           ? VoiceProposal::StartBrush
+                                           : VoiceProposal::StartWash);
+            d.silent = c.quiet_hours;
+            return d;
+        }
         case VoiceCommand::Unknown:
             break;
     }

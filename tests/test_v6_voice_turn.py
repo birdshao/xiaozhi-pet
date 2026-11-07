@@ -115,7 +115,8 @@ class FixedCommandTests(VoiceBase):
                 data = self.say(phrase)
                 self.assertEqual((data["kind"], data["action"]), ("local_command", action), phrase)
                 self.assertTrue(data["tts_text"])
-        self.assertEqual(set(COMMANDS), set(ACTIONS))
+        # V8-03 commands are covered by tests/test_v8_voice_commands.py
+        self.assertTrue(set(COMMANDS) <= set(ACTIONS))
 
     def test_time_and_battery_questions_may_end_with_question_mark(self):
         self.assertEqual(self.say("几点了？")["reason"], "tell_time")

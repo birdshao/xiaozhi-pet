@@ -47,6 +47,34 @@ CXX="${CXX:-g++}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
   "$ROOT/tests/cpp/test_audio_coordinator.cc" -o "$BUILD/test_audio_coordinator"
+
+# V8 sound and routines: parrot (RAM-only recording, wiped on every exit),
+# nursery-rhyme / lullaby player with sleep timer, brushing / hand-washing
+# companion, and the audio arbiter's preemption of all of them.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/parrot_session.cc" \
+  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
+  "$ROOT/tests/cpp/test_parrot_session.cc" \
+  -o "$BUILD/test_parrot_session"
+"$BUILD/test_parrot_session"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/song_player.cc" \
+  "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc" \
+  "$ROOT/tests/cpp/test_song_player.cc" \
+  -o "$BUILD/test_song_player"
+"$BUILD/test_song_player"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/routine_timer.cc" \
+  "$ROOT/tests/cpp/test_routine_timer.cc" \
+  -o "$BUILD/test_routine_timer"
+"$BUILD/test_routine_timer"
+
+# V8 sound scenes: the GameView `sound` subtype draws (no new SceneKind), the
+# activity rows, status corners stay clear, the planner sees every change.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/sound_view.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_controller.cc"   "$ROOT/tests/cpp/test_sound_view.cc"   -o "$BUILD/test_sound_view"
+"$BUILD/test_sound_view"
 "$BUILD/test_audio_coordinator"
 
 # E-paper full-refresh pacing and scene coalescing without any framebuffer heap.

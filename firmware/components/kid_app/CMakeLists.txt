@@ -27,6 +27,8 @@ idf_component_register(
          "src/pet_ledger_migration.cc"
          "src/mini_game.cc" "src/game_pack_reader.cc" "src/game_course_loader.cc" "src/motion_game.cc" "src/play_content.cc" "src/play_game.cc"
          "src/mic_envelope.cc" "src/mic_game.cc"
+         "src/parrot_session.cc" "src/song_player.cc" "src/routine_timer.cc"
+         "src/sound_view.cc" "src/freertos_song_worker.cc"
          "src/json_lite.cc" "src/server_sync.cc" "src/parent_requests.cc"
          "src/pet_command_apply.cc" "src/freertos_server_sync_worker.cc"
          "src/care_store.cc" "src/care_calendar.cc" "src/care_phrases.cc" "src/care_session.cc"
