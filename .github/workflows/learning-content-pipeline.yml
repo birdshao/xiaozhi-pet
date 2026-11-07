@@ -4,13 +4,26 @@ on:
   pull_request:
     paths:
       - 'content_pipeline/**'
+      - 'tools/kpb2.py'
+      - 'tools/story_pack.py'
+      - 'tools/game_pack.py'
+      - 'tests/test_v4_kpb2.py'
+      - 'tests/test_v4_game_pack.py'
+      - 'tests/cpp/test_kpb2_open_book.cc'
+      - 'curriculum/**'
       - 'tests/test_learning_content_*.py'
       - '.github/workflows/learning-content-pipeline.yml'
   push:
     branches: [main]
     paths:
       - 'content_pipeline/**'
-      - 'tests/test_learning_content_pipeline.py'
+      - 'tools/kpb2.py'
+      - 'tools/story_pack.py'
+      - 'tools/game_pack.py'
+      - 'tests/test_v4_kpb2.py'
+      - 'tests/test_v4_game_pack.py'
+      - 'tests/cpp/test_kpb2_open_book.cc'
+      - 'tests/test_learning_content_*.py'
       - '.github/workflows/learning-content-pipeline.yml'
   workflow_dispatch:
 
@@ -19,7 +32,7 @@ permissions:
 
 jobs:
   import-tests:
-    name: LCIR1 adapters Python ${{ matrix.python-version }}
+    name: LCIR1 + KPB2/KPG1 Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -32,9 +45,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install existing KPB2 packaging dependencies
         run: python -m pip install -r tools/story_pack_requirements.txt
+      - name: Install a CJK font (the generated credits page draws Chinese text)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
       - name: Compile LCIR1 modules
         run: python -m compileall -q content_pipeline
-      - name: Test offline source imports and reviewed KPB2 packaging
+      - name: Test offline imports, KPB2, KPG1, course index and material import
         run: |
           python -m unittest discover -s tests -p 'test_learning_content_pipeline.py' -v
           python -m unittest discover -s tests -p 'test_learning_content_packaging.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_games.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_catalog.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_assets_speech.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_real_pilot.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_math_live.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_three_course.py' -v
+          python -m unittest discover -s tests -p 'test_learning_content_review_fixes.py' -v
+          python -m unittest discover -s tests -p 'test_v4_kpb2.py' -v
+          python -m unittest discover -s tests -p 'test_v4_game_pack.py' -v
