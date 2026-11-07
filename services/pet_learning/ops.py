@@ -215,7 +215,7 @@ def check_deployment(env: dict) -> list[str]:
             problems.append(str(error))
     if env.get("KID_PET_BACKUP_KEY") and env.get("KID_PET_BACKUP_KEY") == env.get("KID_PET_TOTP_KEY"):
         problems.append("KID_PET_BACKUP_KEY must differ from KID_PET_TOTP_KEY")
-    for name in ("XZ_AUTH_KEY", "KID_PET_DEVICE_TOKEN"):
+    for name in ("XZ_AUTH_KEY", "KID_PET_VOICE_TOKEN"):
         value = env.get(name, "")
         if len(value) < 32 or _weak(value):
             problems.append(f"{name} must be a private random value of at least 32 characters")

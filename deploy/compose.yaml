@@ -31,6 +31,9 @@ services:
       KID_PET_TRUSTED_PROXY: 172.28.0.2
       KID_PET_TOTP_KEY: ${KID_PET_TOTP_KEY:?set KID_PET_TOTP_KEY}
       KID_PET_BACKUP_KEY: ${KID_PET_BACKUP_KEY:-}
+      # S5 voice route: only the XiaoZhi container's fixed address may call it, signed with this token.
+      KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
+      KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
     volumes:
       - pet-data:/data
       - pet-backups:/backups
@@ -42,8 +45,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Shares pet-learning's network namespace: the child guard only calls loopback (S5 makes the
-  # allow-list configurable; until then this keeps 127.0.0.1 true without patching the guard).
+  # The guard calls pet-learning at its literal fixed IP (S5 refuses host names).
   xiaozhi-server:
     <<: *hardening
     build:
@@ -51,10 +53,14 @@ services:
       dockerfile: deploy/Dockerfile.xiaozhi
     image: xiaozhi-server-child:s7
     user: "10001:10001"
-    network_mode: "service:pet-learning"
+    networks:
+      pet: {ipv4_address: 172.28.0.20}
     depends_on:
       pet-learning: {condition: service_healthy}
-    tmpfs: [/tmp, "/opt/xiaozhi-esp32-server/tmp:uid=10001,gid=10001"]
+    tmpfs:
+      - /tmp
+      - /opt/xiaozhi-esp32-server/tmp:uid=10001,gid=10001
+      - /opt/xiaozhi-esp32-server/config/assets/wakeup_words:uid=10001,gid=10001  # upstream mkdirs it at import
     volumes:
       - xiaozhi-data:/opt/xiaozhi-esp32-server/data
       # Local ASR model (child audio never leaves the box); fetch with deploy/fetch_models.sh
@@ -63,10 +69,10 @@ services:
       KID_PET_PUBLIC_ORIGIN: ${KID_PET_PUBLIC_ORIGIN}
       XZ_AUTH_KEY: ${XZ_AUTH_KEY:?set XZ_AUTH_KEY}
       KID_PET_CHILD_MODE: ${KID_PET_CHILD_MODE:-1}
-      KID_PET_API_URL: http://127.0.0.1:8765
+      KID_PET_API_URL: http://172.28.0.10:8765
+      KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_UPSTREAM_DEVICE_ID: ${KID_PET_UPSTREAM_DEVICE_ID:?set KID_PET_UPSTREAM_DEVICE_ID}
       KID_PET_BUSINESS_DEVICE_ID: ${KID_PET_BUSINESS_DEVICE_ID:?set KID_PET_BUSINESS_DEVICE_ID}
-      KID_PET_DEVICE_TOKEN: ${KID_PET_DEVICE_TOKEN:?set KID_PET_DEVICE_TOKEN}
       XZ_ASR_MODULE: ${XZ_ASR_MODULE:-}
       XZ_LLM_MODULE: ${XZ_LLM_MODULE:-}
       XZ_TTS_MODULE: ${XZ_TTS_MODULE:-}

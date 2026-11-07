@@ -36,12 +36,26 @@ CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780�
 
 ## 4. 验证
 
-（部署完成后填写。）
+2026-11-07 在 CT 108 上实测（`docker compose up -d --build`，三个服务均 healthy）：
+
+| 项 | 结果 |
+|---|---|
+| 内存（SherpaParaformerASR 已加载，空闲） | xiaozhi-server 719 MiB，pet-learning 52 MiB，gateway 3 MiB；CT 合计已用约 614 MB / 3072 MB（含缓存），装得下 |
+| 磁盘 | xiaozhi-server 镜像 10.8 GB（上游依赖很重），pet-learning 237 MB；CT 磁盘 32 GB，注意 |
+| `GET :8780/healthz` | `{"status":"ok"}` |
+| `/v1/voice/x`、`/docs`、`/play` | 均 404（gateway 不路由） |
+| `/xiaozhi/ota/` | 200 |
+| `/xiaozhi/v1/` WebSocket 升级 | 101 Switching Protocols（经 gateway） |
+| `POST /v1/parent/login` `{}` | `INVALID_PARENT_REQUEST` |
+| 语音一轮（守卫 → pet-learning，真实 token 与 HMAC 签名，临时库里登记测试设备，用后销毁容器） | “团团睡觉”→ local_command，守卫回“用设备按键”；“现在几点了”→“现在是12点30分。”；开放问题→固定兜底句；空文本→“没听清”；设备 id 不符→“请让家长帮忙连接儿童模式。” |
+
+没有验证的：真实音频经 ASR/TTS（EdgeTTS 需出网）的完整对话、真实设备连接、gateway 对语音路由的 403（只确认了坏 token 得 401）、公网入口（用户实施）。
+上线时小坑：上游在导入时会创建 `config/assets/wakeup_words`，只读根文件系统下用 tmpfs 解决（见 compose）。
 
 ## 5. 待办与未决项
 
-- **pin 不一致（未决，本 PR 不改）**：`scripts/p3_server_overlay.py` 的 `PINNED_SERVER_COMMIT = f1965167…` 与 `version-lock.json`（v0.9.8 = `8f2dda09…`）不是祖先关系，该脚本在锁定 checkout 上会拒绝。部署用 `deploy/apply_overlay.py` 复用其 `overlay()`，commit 由 Dockerfile 校验。S5（PR #91）正在改该脚本，请在那边统一为读取 `version-lock.json`。
+- pin 不一致已由 S5（#91）统一为 `8f2dda09…`，不再是未决项。
 - 公网接入（DNS、公信证书、端口转发/IPv6、反向代理、限流、HSTS）由用户按 SERVER_S7.md §5 实施并逐条验收。
-- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`、设备 id/令牌目前是占位值，配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
+- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`、设备 id 目前是占位值（`KID_PET_VOICE_TOKEN` 是本机生成的随机值，两侧同值，只在 `.env`），配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
 - 家长账号尚未创建（需要用户在本地终端设置密码并绑定 TOTP，见 SERVER_S7.md §2）。
 - 备份：`pet-backups` 卷只是同机副本，请在 PVE 上对 CT 108 做 `vzdump`，并把加密归档拷到另一块存储；`KID_PET_BACKUP_KEY` 单独离线保管。

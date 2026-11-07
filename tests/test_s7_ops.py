@@ -1,5 +1,6 @@
 from pathlib import Path
 from contextlib import contextmanager
+import os
 import sqlite3
 import subprocess
 import sys
@@ -12,6 +13,8 @@ from services.pet_learning import ops
 from services.pet_learning.db import migrate
 
 ROOT = Path(__file__).resolve().parents[1]
+MIGRATIONS = ROOT / "services" / "pet_learning" / "migrations"
+
 @contextmanager
 def opened(path):
     db = sqlite3.connect(str(path))
@@ -35,7 +38,7 @@ def good_env():
         "KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.example:8443",
         "KID_PET_TRUSTED_PROXY": "192.168.1.1", "KID_PET_TOTP_KEY": Fernet.generate_key().decode(),
         "KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "XZ_AUTH_KEY": "a" * 40,
-        "KID_PET_DEVICE_TOKEN": "t" * 40, "KID_PET_CHILD_MODE": "1",
+        "KID_PET_VOICE_TOKEN": "t" * 40, "KID_PET_CHILD_MODE": "1",
         "KID_PET_UPSTREAM_DEVICE_ID": "aa:bb", "KID_PET_BUSINESS_DEVICE_ID": "pet-1",
     }
 
@@ -61,7 +64,7 @@ class BackupRestoreTests(unittest.TestCase):
         ops.restore(out, db2, content2, self.key)
         with opened(db2) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM audit_log").fetchone()[0], 1)
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], len(list(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))))
         self.assertEqual((content2 / "abc" / "pkg.bin").read_bytes(), b"payload" * 1000)
 
     def test_restore_guards(self):
@@ -134,7 +137,7 @@ class ConfigCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "p.sqlite3"
             migrate(db)
-            env = {"KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "PATH": "", "SYSTEMROOT": ""}
+            env = {"KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), **{k: v for k, v in os.environ.items() if not k.startswith("KID_PET_")}}
             run = subprocess.run([sys.executable, "-m", "tools.pet_learning_admin", "--db", str(db), "backup",
                                   "--out", str(Path(tmp) / "o.enc")], cwd=ROOT, env=env,
                                  capture_output=True, text=True)

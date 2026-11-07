@@ -48,14 +48,14 @@ server {
         proxy_pass http://pet-learning:8765;
     }
 
-    # XiaoZhi runs in pet-learning's network namespace.
+    # XiaoZhi server (own container, fixed address).
     location ^~ /xiaozhi/v1/ {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 300s;                 # N5: >= 120 s idle
-        proxy_pass http://pet-learning:8000;
+        proxy_pass http://172.28.0.20:8000;
     }
-    location ^~ /xiaozhi/ota/ { proxy_pass http://pet-learning:8003; }
+    location ^~ /xiaozhi/ota/ { proxy_pass http://172.28.0.20:8003; }
 
     # Everything else (/v1/voice/, /play, /docs, /openapi.json, XiaoZhi vision/admin) is not routed.
     location / { return 404; }

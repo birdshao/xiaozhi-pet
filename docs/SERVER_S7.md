@@ -9,7 +9,7 @@
 | 服务 | 说明 |
 |---|---|
 | `pet-learning` | `services/pet_learning`，容器内 `:8765`，只读根文件系统、非 root、数据卷 `/data`（SQLite + `packages/`） |
-| `xiaozhi-server` | `xinnan-tech/xiaozhi-esp32-server` 按 `version-lock.json` 的 commit 构建，叠加儿童守卫 overlay。与 pet-learning **共用网络命名空间**，所以守卫调用的 `127.0.0.1:8765` 仍成立（S5 把守卫白名单改成配置项后可拆开） |
+| `xiaozhi-server` | `xinnan-tech/xiaozhi-esp32-server` 按 `version-lock.json` 的 commit 构建，叠加儿童守卫 overlay。固定地址 172.28.0.20；守卫经字面 IP `http://172.28.0.10:8765` 调 pet-learning 的 `/v1/voice/{id}/turn`，用 `KID_PET_VOICE_TOKEN` 验响应签名；pet-learning 的 `KID_PET_VOICE_ALLOWED_PEERS` 只放 172.28.0.20 |
 | `gateway` | nginx，**唯一发布的端口**（`PET_GATEWAY_BIND:PET_GATEWAY_PORT`，默认 `127.0.0.1:8780`），按路径分流，重复一份 N6 路径白名单与 N7 体积上限 |
 
 路由：`/v1/devices/ /v1/pairing/ /parent/ /v1/parent/ /v1/content/packages/` → PetLearning；`/xiaozhi/v1/`（WSS）和 `/xiaozhi/ota/` → 小智；其余 404（含 `/v1/voice/`、`/play`、`/docs`、`/openapi.json`、小智视觉/管理接口）。
@@ -69,11 +69,11 @@ docker compose exec pet-learning python -m tools.pet_learning_admin --db /data/p
 | X8 | `selected_module.Memory` | `nomem` | 关闭小智记忆 |
 | X9 | `selected_module.Intent` | `nointent` | 意图交给守卫和 PetLearning，不开小智的音乐/IoT 工具 |
 | X10 | `mcp_endpoint` | 未设置（保持上游占位符） | 不接外部 MCP |
-| X11 | `KID_PET_CHILD_MODE=1` + 设备 id/token | 必填 | 守卫在儿童模式吞掉每一句 ASR，绝不落到普通 LLM 路径 |
+| X11 | `KID_PET_CHILD_MODE=1` + 设备 id + `KID_PET_VOICE_TOKEN` | 必填 | 守卫在儿童模式吞掉每一句 ASR，绝不落到普通 LLM 路径 |
 
 另：`enable_greeting: false`（不生成问候语）。
 
-**已知问题（pin 不一致）**：`scripts/p3_server_overlay.py` 的 `PINNED_SERVER_COMMIT` 是 `f1965167…`，而 `version-lock.json` 是 v0.9.8 的 `8f2dda09…`，二者不是祖先关系，直接用该脚本在锁定 checkout 上会拒绝执行。部署用 `deploy/apply_overlay.py` 复用其 `overlay()` 函数（锚点检查仍有效，已在 v0.9.8 上验证锚点唯一），commit 由 Dockerfile 校验。建议另行把脚本的常量改为读 `version-lock.json`（本阶段不碰该文件，S5 在改它）。
+**pin**：S5（#91）已把 `scripts/p3_server_overlay.py` 的 `PINNED_SERVER_COMMIT` 改为 v0.9.8 的 `8f2dda09…`，与 `version-lock.json` 一致；`deploy/apply_overlay.py` 复用其 `overlay()`，Dockerfile 再校验 commit。
 
 ## 5. §3.3 公网入口验收清单（N1–N12，用户实施后逐条勾选）
 
