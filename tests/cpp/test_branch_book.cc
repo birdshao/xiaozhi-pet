@@ -160,6 +160,9 @@ void TestRejects(const std::vector<uint8_t>& good) {
         {"series bytes after the fields", [](std::vector<uint8_t>& b) { b[72] = 1; }},
         {"unknown header flag", [](std::vector<uint8_t>& b) { Put16(b, 10, 3); }},
         {"v2 with links", [](std::vector<uint8_t>& b) { Put16(b, 4, 2); }},
+        {"first option restarts", [](std::vector<uint8_t>& b) {
+             b[GotoAt(0, 0)] = 0x81; b[GotoAt(0, 1)] = 3; Put16(b, NextAt(3), 0);
+             Put16(b, NextAt(4), 5); Put16(b, NextAt(5), 6); }},
         {"flag without links", [](std::vector<uint8_t>& b) {
              Put16(b, NextAt(3), 0); Put16(b, NextAt(4), 0); Put16(b, NextAt(5), 0);
              b[GotoAt(0, 0)] = 3; b[GotoAt(0, 1)] = 4; Put16(b, 10, 0); }},
@@ -234,7 +237,9 @@ void TestBedtimeTone() {
 
 // Page numbers the reader visits going "down" with the given left/right
 // choices; checks every step of the history-based paging.
-void TestBranchWalk(const BookOutline& o) {
+void TestBranchWalk(const BookOutline& plain) {
+    BookOutline o = plain;
+    o.next_book_present = true;  // the board found /books/c902.kpb on the card
     Walk w;
     w.Open(&o);
     CHECK(w.r.View().page == 1 && !w.r.Bedtime());
@@ -278,6 +283,18 @@ void TestBranchWalk(const BookOutline& o) {
           e.option == 901 && e.source == MemorySource::Device);
     CHECK(w.r.View().next_hint && w.r.NextBookId() == 902 && !w.r.View().bedtime);
     CHECK(BookViewOf(w.r.Scene()).next_hint);
+    {
+        // The next book is not on the card: no arrow, no next book.
+        Walk x;
+        x.Open(&plain);
+        for (int i = 0; i < 3; ++i) x.In(InputKind::DialDown);
+        x.In(InputKind::DialPress);
+        x.Wait(3100);
+        x.In(InputKind::DialDown);
+        x.In(InputKind::DialDown);
+        CHECK(x.r.AtEnd() && !x.r.View().next_hint && x.r.NextBookId() == 0);
+        CHECK(!BookViewOf(x.r.Scene()).next_hint);
+    }
     // Up from the end goes back along the way we came: 5, 3, 2, 1.
     for (uint16_t page : {5, 3, 2, 1}) {
         CHECK(w.In(InputKind::DialUp).publish && w.r.View() == View(page));
@@ -347,7 +364,8 @@ void TestBedtime(const BookOutline& o) {
     CHECK(s.publish && w.r.View().page == 5 && s.memory.kind == BookMemoryKind::None);
     w.Shown();
     s = w.Wait(3600);
-    CHECK(s.publish && w.r.AtEnd() && s.memory.kind == BookMemoryKind::Finished);
+    // Read to the end by itself in bedtime mode: not "finished" (no memory).
+    CHECK(s.publish && w.r.AtEnd() && s.memory.kind == BookMemoryKind::None);
     CHECK(w.r.View().bedtime && BookScene(w.r.View(), true).emotion == Emotion::Sleepy);
     // TuanTuan yawns for 6 s, then the normal sleep flow is asked for, once.
     CHECK(!w.Wait(5900).sleep);
@@ -410,6 +428,22 @@ void TestBedtimeExit(const BookOutline& o) {
         CHECK(!w.Wait(120000).sleep);
     }
     {
+        // Back in normal mode, reading to the end does count as finished.
+        Walk w;
+        w.Open(&o, true);
+        w.Wait(3600);  // -> page 2
+        w.Shown();
+        w.In(InputKind::DialUp);  // normal mode, page 1
+        BookStep s = w.In(InputKind::DialDown);
+        CHECK(w.r.View().page == 2 && !w.r.Bedtime());
+        w.In(InputKind::DialDown);  // asked
+        w.In(InputKind::DialPress);  // left
+        w.Wait(3100);
+        w.In(InputKind::DialDown);  // page 3 -> 5
+        s = w.In(InputKind::DialDown);
+        CHECK(w.r.AtEnd() && s.memory.kind == BookMemoryKind::Finished);
+    }
+    {
         // Long press still goes home from bedtime.
         Walk w;
         w.Open(&o, true);
@@ -432,7 +466,7 @@ void TestLinearBooksUnchanged(const std::string& fixtures) {
     CHECK(s.publish && w.r.View().page == 2);
     w.Shown();
     s = w.Wait(100 + 2500);
-    CHECK(s.publish && w.r.AtEnd() && s.memory.kind == BookMemoryKind::Finished);
+    CHECK(s.publish && w.r.AtEnd() && s.memory.kind == BookMemoryKind::None);
     CHECK(w.r.NextBookId() == 0 && !w.r.View().next_hint);
 }
 

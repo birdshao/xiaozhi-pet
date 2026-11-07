@@ -28,6 +28,9 @@ public:
     // NoBook (card mounted, no such .kpb) or BadBook (file does not
     // validate). None once Ready().
     BookMissing Missing() const { return missing_; }
+    // V8 series: is the book with this content id on the card? Looked up by
+    // the catalog's card name /books/c<content_id>.kpb (existence only).
+    bool ContentBookPresent(uint16_t content_id) const;
 
 private:
     bool mounted_ = false;

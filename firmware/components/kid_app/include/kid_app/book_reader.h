@@ -46,6 +46,9 @@ struct BookOutline {
     uint16_t series_id = 0;   // 0 = standalone
     uint16_t series_index = 0, series_count = 0;
     uint16_t series_next = 0;  // content id of the next book, 0 = none
+    // Set by the board: the next book is really on the card (the end picture
+    // only points at it then).
+    bool next_book_present = false;
     std::array<BookPageInfo, ContentPackReader::kMaxPages> page{};
 
     uint16_t QuestionTotal() const;
@@ -177,7 +180,8 @@ public:
     bool AtEnd() const { return phase_ == Phase::End; }
     bool Asking() const { return phase_ == Phase::Question; }
     bool Bedtime() const { return bedtime_; }
-    // Content id of the next book of the series at the end picture, else 0.
+    // Content id of the next book of the series at the end picture, else 0
+    // (also 0 when that book is not on the card).
     uint16_t NextBookId() const;
     // None while a readable book is open (or closed).
     BookMissing Missing() const { return missing_; }

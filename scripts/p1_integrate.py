@@ -700,6 +700,10 @@ BOARD_WORKER = r'''
                 ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
                 book_missing_ = kid_app::BookMissing::BadBook;
             }
+            // V8 series: the "next book" arrow only shows when it is on the card.
+            book_outline_.next_book_present =
+                book_outline_.series_next != 0 &&
+                story_sd_.ContentBookPresent(book_outline_.series_next);
             book_outline_ready_.store(true);
             // Restored in Story without a readable book (no card, empty or
             // broken pack): go home instead of opening an empty reader. If

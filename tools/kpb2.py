@@ -269,10 +269,12 @@ def page_edges(number: int, count: int, nxt: int,
         if nxt:
             raise ValueError(f"Page {number}: a branch page has no next link")
         restart = False
-        for go in branch:
+        for k, go in enumerate(branch):
             if go == GOTO_RESTART:
-                if number == 1:
-                    raise ValueError("Page 1 cannot restart onto itself")
+                if number == 1 or k == 0:
+                    # the first option is the bedtime road: it must lead on
+                    raise ValueError("Page 1 cannot restart onto itself, and the first "
+                                     "option of a branch may not restart")
                 restart = True
             elif 1 <= go <= count and go != number:
                 succ.add(go)

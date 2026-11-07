@@ -120,6 +120,8 @@ class BranchBookTests(unittest.TestCase):
             "next to itself": [(next_at(4), 4, 2)],
             "last page only restarts": [(next_at(6), kpb2.NEXT_RESTART, 2)],
             "restart from page 1": [(next_at(1), kpb2.NEXT_RESTART, 2)],
+            "first option restarts": [(goto_at(0, 0), kpb2.GOTO_RESTART, 1), (goto_at(0, 1), 3, 1),
+                                      (next_at(3), 0, 2), (next_at(4), 5, 2), (next_at(5), 6, 2)],
             "branch page with next": [(next_at(2), 3, 2)],
             "series next is itself": [(70, 901, 2)],
             "series index past count": [(66, 3, 2)],
@@ -164,12 +166,18 @@ class BranchBookTests(unittest.TestCase):
         def answer_and_goto(d):
             d["pages"][1]["questions"][0]["answer"] = "left"
 
+        def first_restarts(d):
+            q = d["pages"][1]["questions"][0]["options"]
+            q[0]["goto"], q[1]["goto"] = "restart", 3
+            d["pages"][2]["next"], d["pages"][3]["next"], d["pages"][4]["next"] = 4, 5, 6
+
         def series(d):
             d["series"]["next_content_id"] = 0
 
         for mutate, pattern in ((target_missing, "does not exist"), (loop, "reached|loop"),
                                 (dead_end_restart, "cannot reach an ending"),
                                 (partial, "every option"), (answer_and_goto, "every option"),
+                                (first_restarts, "first option"),
                                 (series, "Series next_content_id")):
             with self.subTest(mutate.__name__), self.assertRaisesRegex(ValueError, pattern):
                 compile_with(mutate)

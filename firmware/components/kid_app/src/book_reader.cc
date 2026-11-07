@@ -123,7 +123,8 @@ void BedtimeTone(uint8_t* grey, size_t bytes) {
 }
 
 uint16_t BookReader::NextBookId() const {
-    return phase_ == Phase::End && outline_ ? outline_->series_next : 0;
+    return phase_ == Phase::End && outline_ && outline_->next_book_present ? outline_->series_next
+                                                                           : 0;
 }
 
 void BookReader::Open(const BookOutline* outline, uint32_t now_ms, BookMissing missing,
@@ -241,12 +242,15 @@ BookStep BookReader::Finish(uint32_t now_ms) {
     PushHistory(view_.page);
     BookStep step = GoTo(static_cast<uint16_t>(outline_->pages + 1));
     phase_ = Phase::End;
-    view_.next_hint = outline_->series_next != 0;
+    view_.next_hint = outline_->series_next != 0 && outline_->next_book_present;
     if (bedtime_) {
         end_sleep_armed_ = true;
         end_sleep_at_ms_ = now_ms + kBedtimeYawnMs;
     }
-    if (!finished_ && outline_->kpb2 && outline_->content_id) {
+    // A bedtime story read to the end by itself does not count as read (the
+    // child may have fallen asleep); one finished after the dial turned it
+    // back to normal reading does.
+    if (!bedtime_ && !finished_ && outline_->kpb2 && outline_->content_id) {
         finished_ = true;
         step.memory.kind = BookMemoryKind::Finished;
     }

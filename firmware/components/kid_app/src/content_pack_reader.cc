@@ -313,7 +313,8 @@ bool AddStoryEdges(StoryGraph& g, uint16_t number, uint16_t count, const Content
         for (uint8_t k = 0; k < qs[j].option_count; ++k) {
             const uint8_t go = qs[j].options[k].goto_page;
             if (go == ContentPackReader::kGotoRestart) {
-                if (number == 1) return false;
+                // The first option is the bedtime road: it must lead on.
+                if (number == 1 || k == 0) return false;
                 g.restarts[i] = true;
             } else if (go >= 1 && go <= count && go != number) {
                 g.succ[i] |= 1u << (go - 1);
