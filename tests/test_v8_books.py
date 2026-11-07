@@ -214,6 +214,8 @@ class BranchBookTests(unittest.TestCase):
         # Reader memory still only goes through the guard.
         self.assertEqual(P1.count("kid_app::BookMemoryEvent("), 1)
         self.assertIn("DayPhase::Evening", HEADER_TXT)
+        # The next-book arrow needs the book on the card (no fopen in the patch).
+        self.assertIn("story_sd_.ContentBookPresent(book_outline_.series_next)", P1)
 
 
 class TuanTuanSeriesTests(unittest.TestCase):
