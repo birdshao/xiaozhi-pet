@@ -345,11 +345,6 @@ def create_router(app, database) -> APIRouter:
         except AuthError as error:
             raise HTTPException(error.status, error.code, headers=NO_STORE) from None
 
-    def device(device_id: str, authorization: str | None) -> None:
-        if not authorization or not authorization.startswith("Bearer ") \
-                or not store.authenticated(device_id, authorization[7:]):
-            raise HTTPException(401, "DEVICE_AUTH_REQUIRED", headers=NO_STORE)
-
     # ---- parent: catalog ----------------------------------------------------
     @router.post("/v1/parent/content", status_code=201)
     async def upload(request: Request, pack_id: str | None = None):
@@ -423,40 +418,32 @@ def create_router(app, database) -> APIRouter:
             raise _fail(error) from None
 
     # ---- device -------------------------------------------------------------
-    @router.get("/v1/devices/{device_id}/content/manifest")
-    def manifest(device_id: str, authorization: str | None = Header(default=None)):
-        device(device_id, authorization)
+    @router.get("/v1/devices/{device_id}/content/manifest", dependencies=[Depends(device_auth)])
+    def manifest(device_id: str):
         return JSONResponse(dist.manifest(device_id), headers=NO_STORE)
 
-    @router.post("/v1/devices/{device_id}/content/report")
-    def report(device_id: str, body: ReportBody, request: Request,
-               authorization: str | None = Header(default=None)):
-        device(device_id, authorization)
+    @router.post("/v1/devices/{device_id}/content/report", dependencies=[Depends(device_auth)])
+    def report(device_id: str, body: ReportBody, request: Request):
         try:
             dist.report(device_id, body, ip=client_ip(request))
         except ContentError as error:
             raise _fail(error) from None
         return JSONResponse({"status": "ok"}, headers=NO_STORE)
 
-    @router.put("/v1/devices/{device_id}/content/inventory")
-    def inventory(device_id: str, body: InventoryBody,
-                  authorization: str | None = Header(default=None)):
-        device(device_id, authorization)
+    @router.put("/v1/devices/{device_id}/content/inventory", dependencies=[Depends(device_auth)])
+    def inventory(device_id: str, body: InventoryBody):
         try:
             checked = dist.reconcile(device_id, [i.model_dump() for i in body.items], body.sd_free_kib)
         except ContentError as error:
             raise _fail(error) from None
         return JSONResponse({"items": checked}, headers=NO_STORE)
 
-    @router.api_route("/v1/content/packages/{sha256}", methods=["GET", "HEAD"])
+    @router.api_route("/v1/content/packages/{sha256}", methods=["GET", "HEAD"],
+                      dependencies=[Depends(device_auth)])
     def download(sha256: str, request: Request,
                  x_device_id: str | None = Header(default=None),
-                 authorization: str | None = Header(default=None),
                  range_header: str | None = Header(default=None, alias="Range"),
                  if_range: str | None = Header(default=None)):
-        if not x_device_id:
-            raise HTTPException(401, "DEVICE_AUTH_REQUIRED", headers=NO_STORE)
-        device(x_device_id, authorization)
         # Unapproved, unassigned (or another device's) and unknown all look the same.
         package = dist.downloadable(x_device_id, sha256) if SHA_RE.fullmatch(sha256) else None
         if package is None:
