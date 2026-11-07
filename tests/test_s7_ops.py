@@ -89,16 +89,36 @@ class BackupRestoreTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.TestCase):
+    def test_prunes_real_commands_table_from_state_sync_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "p.sqlite3"
+            migrate(db_path)
+            now = 1_800_000_000
+            with opened(db_path) as db:
+                db.execute("INSERT INTO devices(device_id, token_sha) VALUES ('d', 'x')")
+                rows = [(1, "applied", now - 31 * 86400), (2, "rejected", now - 40 * 86400),
+                        (3, "applied", now - 29 * 86400), (4, "pending", None)]
+                for command_id, state, done in rows:
+                    db.execute("INSERT INTO commands(command_id, device_id, seq, kind, payload_json, created_at, "
+                               "expires_at, state, completed_at) VALUES (?, 'd', ?, 'k', '{}', 1, 2, ?, ?)",
+                               (command_id, command_id, state, done))
+            result = ops.cleanup(db_path, now=now)
+            self.assertEqual(result["commands"], 2)
+            with opened(db_path) as db:
+                kept = [r[0] for r in db.execute("SELECT command_id FROM commands ORDER BY command_id")]
+                self.assertEqual(kept, [3, 4])
+                self.assertEqual(db.execute("SELECT count(*) FROM devices").fetchone()[0], 1)
+
     def test_retention_and_memory_tables_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "p.sqlite3"
             migrate(db_path)
             now = 1_800_000_000
             with opened(db_path) as db:
-                db.execute("CREATE TABLE memory_current(device_id TEXT, at INTEGER)")
-                db.execute("CREATE TABLE daily_summaries(device_id TEXT, at INTEGER)")
-                db.executemany("INSERT INTO memory_current VALUES ('d',?)", [(1,), (now,)])
-                db.executemany("INSERT INTO daily_summaries VALUES ('d',?)", [(1,), (now,)])
+                db.executemany("INSERT INTO devices(device_id, token_sha) VALUES (?, 'x')", [("d1",), ("d2",)])
+                db.executemany("INSERT INTO memory_current VALUES (?, 1, '{}', 0)", [("d1",), ("d2",)])
+                db.executemany("INSERT INTO daily_summaries VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0)",
+                               [("d1", 1), ("d1", 2)])
                 db.executemany("INSERT INTO audit_log(at,actor,action,target,result) VALUES (?,'a','b','c','ok')",
                                [(now - 366 * 86400,), (now - 364 * 86400,)])
             result = ops.cleanup(db_path, now=now)
