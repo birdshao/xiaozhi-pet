@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/activity_list.h"
 #include "kid_app/gesture_detector.h"
 #include "kid_app/mini_game.h"
 #include "kid_app/motion_stats.h"
@@ -108,14 +109,15 @@ private:
     uint32_t hidden_since_ms_ = 0;
 };
 
-// ---- Game menu: which game? ----
-// The home rail's Game item opens this: five games, three picture cards at
-// a time (a window that slides with the highlight): the quiz (star), the
-// tilt ball, peekaboo (cat), the V4-08 candles and the clap rhythm. Dial
-// up/down to pick, press to start, long press home. Drawn by the V4-06
-// answer-card scene.
-enum class GameChoice : uint8_t { None = 0, Quiz = 1, Ball = 2, Peekaboo = 3, Candle = 4, Clap = 5 };
-constexpr uint8_t kGameChoiceCount = 5;
+// ---- Game menu: which game? / which care? ----
+// The home rail's Game item opens this on the Play group of the activity
+// table (activity_list.h): the quiz (star), the tilt ball, peekaboo (cat),
+// the V4-08 candles and the clap rhythm, then whatever later rows append.
+// Three picture cards at a time (a window that slides with the highlight).
+// Dial up/down to pick, press to start, long press home. Drawn by the V4-06
+// answer-card scene. The V8 care menu is the same menu on the Care group.
+// GameChoice now lives in activity_list.h.
+constexpr uint8_t kGameChoiceCount = 5;  // the V4 built-in games (ids 1..5)
 const char* GameChoiceName(GameChoice choice);
 
 struct GameMenuOutput {
@@ -129,18 +131,22 @@ class GameMenu {
 public:
     static constexpr uint32_t kIdleExitMs = 60000;
 
-    // start: the choice highlighted first (0-based).
-    GameMenuOutput Start(uint32_t now_ms, uint8_t start = 0);
+    // start: the card highlighted first (0-based index in the group).
+    GameMenuOutput Start(uint32_t now_ms, uint8_t start = 0,
+                         ActivityGroup group = ActivityGroup::Play);
     GameMenuOutput Input(GameInput input, uint32_t now_ms);
     GameMenuOutput Tick(uint32_t now_ms);
     void Interrupt();
 
     bool Active() const { return active_; }
+    ActivityGroup Group() const { return group_; }
     GameEnd End() const { return end_; }
     GameView View() const;
 
 private:
-    uint8_t index_ = 0;  // 0-based choice
+    uint8_t Count() const;
+    uint8_t index_ = 0;  // 0-based card in group_
+    ActivityGroup group_ = ActivityGroup::Play;
     bool active_ = false;
     GameEnd end_ = GameEnd::None;
     uint32_t last_input_ms_ = 0;

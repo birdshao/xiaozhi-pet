@@ -9,6 +9,7 @@
 #include "kid_app/selftest_clock.h"
 
 #include <cassert>
+#include <string>
 #include <cstdio>
 #include <iostream>
 #include <vector>
@@ -321,6 +322,32 @@ void TestMenu() {
     assert(m.Input(GameInput::Press, 1).chosen == GameChoice::None && !m.Tick(999999).finished);
 }
 
+// V8 shared activity list: the menu is driven by the table, ids are the
+// GameChoice values, names and card indexes come from the same rows.
+void TestActivityList() {
+    static_assert(ActivityTableValid(), "table");
+    assert(ActivityCount(ActivityGroup::Play) >= kGameChoiceCount);
+    for (uint8_t i = 0; i < kGameChoiceCount; ++i) {
+        const Activity* a = ActivityAt(ActivityGroup::Play, i);
+        assert(a && static_cast<uint8_t>(a->id) == i + 1);  // V4 order kept
+        assert(ActivityIndexOf(a->id) == i && FindActivity(a->id) == a);
+    }
+    assert(!ActivityAt(ActivityGroup::Play, ActivityCount(ActivityGroup::Play)));
+    assert(FindActivity(GameChoice::Ball)->needs == ActivityNeeds::Motion);
+    assert(FindActivity(GameChoice::Clap)->needs == ActivityNeeds::Mic);
+    assert(std::string(GameChoiceName(GameChoice::Quiz)) == "quiz");
+    assert(std::string(GameChoiceName(GameChoice::None)) == "none");
+    // Every Play row is reachable from the menu, in table order.
+    GameMenu m;
+    for (size_t i = 0; i < ActivityCount(ActivityGroup::Play); ++i) {
+        m.Start(0, static_cast<uint8_t>(i));
+        const GameView v = m.View();
+        assert(v.options[v.highlight] == ActivityAt(ActivityGroup::Play, i)->art);
+        assert(m.Input(GameInput::Press, 1).chosen == ActivityAt(ActivityGroup::Play, i)->id);
+    }
+    assert(m.Group() == ActivityGroup::Play);
+}
+
 SceneModel GameScene(const GameView& view) {
     SceneModel m{};
     m.kind = SceneKind::Game;
@@ -423,6 +450,7 @@ int main() {
     TestPeekabooTimers();
     TestGrowthOnlyForFinishedWins();
     TestMenu();
+    TestActivityList();
     TestScenes();
     // The holes for the hardware script (tools/selftest/v4_motion_games.pettest).
     MotionGameSession s = Started(MotionKind::Ball, 4242);
