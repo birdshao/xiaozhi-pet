@@ -22,10 +22,21 @@ def child_mode_enabled() -> bool:
     return os.getenv("KID_PET_CHILD_MODE", "").strip() == "1"
 
 
+DEFAULT_ALLOWED_HOSTS = "127.0.0.1,localhost,::1,pet-learning"
+_ALLOWED_KINDS = ("fixed", "approved_content", "fallback")
+
+
+def _allowed_hosts() -> frozenset[str]:
+    """Exact hostnames/IPs the guard may call; the compose service name is in the default."""
+    raw = os.getenv("KID_PET_API_ALLOWED_HOSTS", DEFAULT_ALLOWED_HOSTS)
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
 def _approved_local_url() -> str | None:
     raw = os.getenv("KID_PET_API_URL", "http://127.0.0.1:8765").rstrip("/")
     parsed = urlsplit(raw)
-    if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
+    if (parsed.scheme != "http" or not parsed.hostname
+            or parsed.hostname.lower() not in _allowed_hosts()
             or parsed.username or parsed.password or parsed.query or parsed.fragment
             or parsed.path not in ("", "/")):
         return None
@@ -33,28 +44,28 @@ def _approved_local_url() -> str | None:
 
 
 async def _voice_reply(conn, text: str) -> str:
-    """Return ONLY a reviewed fixed reply or approved book content.
+    """Forward the ASR text to PetLearning and return the sentence it chose.
 
-    This function neither triggers an action nor changes Pet store state.
-    The device's durable event queue remains sole owner of actual actions.
+    All decisions (commands, page Q&A, quiet hours, fallback) live server-side;
+    this function holds no intent logic and never triggers a device action.
     """
     upstream_id = os.getenv("KID_PET_UPSTREAM_DEVICE_ID", "")
     business_id = os.getenv("KID_PET_BUSINESS_DEVICE_ID", "")
-    token = os.getenv("KID_PET_DEVICE_TOKEN", "")
+    token = os.getenv("KID_PET_VOICE_TOKEN", "")
     base = _approved_local_url()
-    if (not upstream_id or not business_id or not token or len(token) < 32
+    if (not upstream_id or not business_id or len(token) < 32
             or not base or not getattr(conn, "device_id", None)
             or conn.device_id != upstream_id):
         return NOT_BOUND
-    if not isinstance(text, str) or not 0 < len(text) <= 120:
+    if not isinstance(text, str):
         return REVIEWED_FALLBACK
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0),
                                      follow_redirects=False, trust_env=False) as client:
             response = await client.post(
-                base + "/v1/devices/" + business_id + "/intent",
+                base + "/v1/voice/" + business_id + "/turn",
                 headers={"Authorization": "Bearer " + token},
-                json={"text": text},
+                json={"text": text, "turn_id": uuid.uuid4().hex},
             )
         response.raise_for_status()
         data = response.json()
@@ -62,9 +73,9 @@ async def _voice_reply(conn, text: str) -> str:
             return NO_SERVICE
         kind, spoken = data.get("kind"), data.get("tts_text")
         if kind == "local_command":
-            # Proposal only; no actual device event was committed yet.
+            # Until self.pet.request is verified on the pinned XiaoZhi, point at the buttons.
             return LOCAL_ACTION_HINT
-        if kind in ("approved_content", "fallback") and isinstance(spoken, str) and 0 < len(spoken) <= 320:
+        if kind in _ALLOWED_KINDS and isinstance(spoken, str) and 0 < len(spoken) <= 320:
             return spoken
     except (httpx.HTTPError, ValueError, TypeError):
         pass

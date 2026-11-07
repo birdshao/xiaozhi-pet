@@ -12,8 +12,8 @@ Implemented files:
 Develop on a separate local clone of the pinned upstream commit and a separate local PetLearning process:
 1. Set KID_PET_CHILD_MODE=1 only in the opted-in development server, else the guard returns False.
 2. Set KID_PET_UPSTREAM_DEVICE_ID to the board's actual XiaoZhi device-id header value, and KID_PET_BUSINESS_DEVICE_ID to its separately provisioned PetLearning device ID.
-3. Set KID_PET_DEVICE_TOKEN securely (same per-device secret registered in the PetLearning SQLite store). Keep it out of args, GitHub, device flash and logs.
-4. Set KID_PET_API_URL=http://127.0.0.1:8765 (only local loopback is accepted in this first MVP).
+3. Set KID_PET_VOICE_TOKEN securely (the voice-service token configured for PetLearning, separate from every device token; S5, see SERVER_S5.md). Keep it out of args, GitHub, device flash and logs.
+4. Set KID_PET_API_URL=http://127.0.0.1:8765. Hosts must be listed in KID_PET_API_ALLOWED_HOSTS (default: loopback and the compose service name pet-learning).
 5. Validate the disposable server checkout: python scripts/p3_server_overlay.py --source /path/to/xiaozhi-esp32-server/main/xiaozhi-server
 6. Only in the disposable source checkout, apply: python scripts/p3_server_overlay.py --source /path/to/xiaozhi-esp32-server/main/xiaozhi-server --apply
 7. In a controlled parent-supervised test, run the pinned upstream server with local PetLearning API.
@@ -21,3 +21,5 @@ Develop on a separate local clone of the pinned upstream commit and a separate l
 This guard intentionally NEVER directly feeds/changes reward state when a child asks for feeding or page navigation; it says to use the physical buttons, because the device-side trusted action/ACK bridge is not yet connected. Non-command text goes to a conservative fixed fallback, not a general AI model. No full child-safe LLM content filtering, model voice conversation or automated story dialogue is claimed.
 
 Limitations: only the exact pinned upstream commit has an assumed ASR hook. This patch has not been deployed to a real XiaoZhi server or tested with the ESP32 microphone/speaker. The hook does not cover every other possible upstream TTS source, such as a server-generated welcome, error or farewell; do not enable unsupervised child use without a full TTS sink audit and the separate device bridge.
+
+Update (S5): the guard now only forwards ASR text to `POST /v1/voice/{id}/turn` and speaks the returned fixed/approved sentence; intent logic lives in PetLearning ([SERVER_S5](SERVER_S5.md)).
