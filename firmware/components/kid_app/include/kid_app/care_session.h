@@ -45,6 +45,7 @@ struct CareContext {
     std::array<uint8_t, kWearSlots> worn{};
     Habit habit = Habit::None;
     bool habit_done_today = false;
+    bool clock_known = true;  // false: no habit tick (the ledger needs a date)
     DiaryPage diary{};
 };
 

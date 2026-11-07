@@ -45,6 +45,10 @@ bool LunarFestivalDates(uint16_t year, GregorianDate* spring, GregorianDate* dra
 Festival FestivalOn(const CivilTime& now, bool clock_ok, uint8_t birth_month, uint8_t birth_day) {
     if (!clock_ok || !PlausibleWallClock(now)) return Festival::None;
     if (birth_month && now.month == birth_month && now.day == birth_day) return Festival::Birthday;
+    // A 29 February birthday is celebrated on the 28th in other years.
+    const bool leap = (now.year % 4 == 0 && now.year % 100 != 0) || now.year % 400 == 0;
+    if (birth_month == 2 && birth_day == 29 && !leap && now.month == 2 && now.day == 28)
+        return Festival::Birthday;
     if (now.month == 1 && now.day == 1) return Festival::NewYear;
     if (now.month == 6 && now.day == 1) return Festival::ChildrensDay;
     GregorianDate spring{}, dragon{}, autumn{};

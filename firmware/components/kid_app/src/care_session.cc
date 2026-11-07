@@ -7,7 +7,7 @@
 namespace kid_app {
 namespace {
 constexpr uint16_t kTick = GameArtTone(static_cast<uint16_t>(GameArt::Heart));
-constexpr uint32_t kDiaryExitMs = 20000;
+constexpr uint32_t kDiaryExitMs = 45000;  // up to 7 lines are read first
 }  // namespace
 
 const char* CareKindName(CareKind kind) {
@@ -185,7 +185,7 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
     if (kind_ == CareKind::Diary) {
         if (input != GameInput::Press) return out;
         CareOutput done = Finish(0, now_ms);
-        done.sleep = true;
+        done.next = CareKind::Lull;  // bedtime ritual: then the lullaby
         return done;
     }
     if (kind_ == CareKind::Bath || kind_ == CareKind::Tickle || kind_ == CareKind::Lull)
@@ -216,6 +216,8 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
     if (kind_ == CareKind::Habit) {
         if (ctx_.habit == Habit::None) return Finish(0, now_ms);
         if (ctx_.habit_done_today) return Finish(CarePhraseId(CareLine::HabitAlready, 0, t), now_ms);
+        // Streaks are days: without a clock the tick would be refused.
+        if (!ctx_.clock_known) return Finish(kGameTonePrompt, now_ms);
         ctx_.habit_done_today = true;
         phase_ = 1;
         hearts_ = 3;
@@ -329,7 +331,10 @@ CareOutput CareSession::Tick(uint32_t now_ms) {
     const uint32_t limit = kind_ == CareKind::Diary ? kDiaryExitMs : kIdleExitMs;
     if (static_cast<int32_t>(now_ms - (last_input_ms_ + SelfTestClock::Scaled(limit))) >= 0) {
         out = Finish(0, now_ms);
-        out.sleep = kind_ == CareKind::Diary;  // the diary was the last step before bed
+        // Bedtime: the diary goes on to the lullaby; a lullaby nobody
+        // finished still ends in bed (the child put TuanTuan down).
+        if (kind_ == CareKind::Diary) out.next = CareKind::Lull;
+        out.sleep = kind_ == CareKind::Lull;
         return out;
     }
     return out;

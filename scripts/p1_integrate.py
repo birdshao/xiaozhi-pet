@@ -565,7 +565,12 @@ BOARD_WORKER = r'''
         }
         // V5-04: only committed events speak. Feeding and saying hi get a
         // short reviewed line, played by the pet_prompt task (never here).
-        if (event.action == kid_app::PetAction::Feed)
+        if (event.action == kid_app::PetAction::Feed && self->feed_sticker_.exchange(false)) {
+            // V8: a sticker earned by this meal is announced after the line.
+            const uint16_t news = kid_app::CarePhraseId(kid_app::CareLine::StickerNew, 0,
+                                                        self->pet_service_.TemperamentNow());
+            self->PostPhrase(kid_app::PhraseContext::Feed, &news, 1);
+        } else if (event.action == kid_app::PetAction::Feed)
             self->PostPhrase(kid_app::PhraseContext::Feed);
         else if (event.action == kid_app::PetAction::Pickup)
             self->PostPhrase(kid_app::PhraseContext::Greeting);
@@ -603,7 +608,12 @@ BOARD_WORKER = r'''
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self) return;
         if (result == kid_app::CommitResult::Committed) self->rhythm_refresh_.store(true);
-        if (new_stickers) self->sticker_news_.store(true);
+        if (new_stickers && event.kind != kid_app::CareEventKind::FestivalSeen)
+            self->sticker_news_.store(true);
+        if ((event.kind == kid_app::CareEventKind::HabitSet ||
+             event.kind == kid_app::CareEventKind::BirthdaySet) &&
+            result != kid_app::CommitResult::Committed && result != kid_app::CommitResult::Duplicate)
+            self->parent_care_failed_.store(true);
         ESP_LOGI(TAG, "PET_CARE_RESULT kind=%u result=%d new_stickers=0x%x",
                  static_cast<unsigned>(event.kind), static_cast<int>(result),
                  static_cast<unsigned>(new_stickers));
@@ -1676,6 +1686,13 @@ BOARD_WORKER = r'''
             if (phrase && !phrase_id) {
                 ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
                          kid_app::PhraseContextName(context));
+                if (request.care_count && !uxQueueMessagesWaiting(prompt_queue_)) {
+                    kid_app::PromptRequest rest{};  // V8: the care lines still play
+                    rest.token = request.token;
+                    rest.care_count = request.care_count;
+                    rest.care = request.care;
+                    xQueueSend(prompt_queue_, &rest, 0);
+                }
                 continue;
             }
             // V5-04: a memory line (yesterday's book at good morning, a chosen
@@ -2999,6 +3016,16 @@ BOARD_WORKER = r'''
     // auto-repeat while a value is being edited.
     void UpdateParentMenu() {
         if (!parent_menu_.IsOpen()) return;
+        // V8 page 2: a habit / birthday the ledger refused shows what it holds.
+        if (parent_care_failed_.exchange(false)) {
+            parent_care_ = ParentCareNow();
+            parent_menu_.RevertCare(parent_care_);
+            ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=care");
+            if (parent_page_ == kid_app::ParentPage::Menu) {
+                SceneStateLock lock(scene_state_mutex_);
+                PublishParentSceneLocked();
+            }
+        }
         if (!pet_mode_.load()) {
             CloseParentMenu("pet_off");
             return;
@@ -3677,7 +3704,10 @@ BOARD_WORKER = r'''
     std::atomic<uint32_t> local_minute_{0};       // RTC care minute, 0 = unknown
     std::atomic<uint32_t> home_look_{0};          // PackLook for home pictures
     std::atomic<uint8_t> festival_{0};            // today's kid_app::Festival
-    std::atomic<bool> sticker_news_{false};       // a commit earned a sticker
+    std::atomic<bool> sticker_news_{false};       // a care commit earned a sticker
+    std::atomic<bool> feed_sticker_{false};       // announce it after the next yummy line
+    std::atomic<bool> parent_care_failed_{false}; // Pet worker: page 2 save refused
+    uint32_t look_failed_ms_ = 0;                 // kid_epd: last failed look refresh
     std::atomic<uint32_t> care_tokens_{0};
     kid_app::HomeLook look_shown_{};              // kid_epd only
     kid_app::ParentCare parent_care_{};           // pet_input: values the menu opened with
@@ -3781,6 +3811,7 @@ BOARD_WORKER = r'''
     void MaybeRefreshLook(const kid_app::SceneModel& displayed) {
         if (displayed.kind != kid_app::SceneKind::Home) return;
         if (kid_app::UnpackLook(home_look_.load()) == look_shown_) return;
+        if (look_failed_ms_ && NowMs() - look_failed_ms_ < 60000) return;
         {
             SceneStateLock lock(anim_mutex_);
             if (anim_director_.Active()) return;  // never between two frames
@@ -3789,6 +3820,7 @@ BOARD_WORKER = r'''
         bool okay = false;
         if (pet_mode_.load() && !sleep_active_.load()) okay = DrawPetFrameLocked(displayed, "look");
         xSemaphoreGive(pet_screen_mutex_);
+        look_failed_ms_ = okay ? 0 : (NowMs() ? NowMs() : 1);
         ESP_LOGI(TAG, "PET_CARE_LOOK_REFRESH ok=%d", okay ? 1 : 0);
     }
 
@@ -3797,6 +3829,7 @@ BOARD_WORKER = r'''
     void FinishCareFeed() {
         if (!care_feed_pending_) return;
         care_feed_pending_ = false;
+        if (sticker_news_.exchange(false)) feed_sticker_.store(true);
         if (!pet_service_.PostLocal(kid_app::PetAction::Feed)) ESP_LOGW(TAG, "PET_INPUT_REJECTED");
     }
 
@@ -3819,10 +3852,15 @@ BOARD_WORKER = r'''
         const auto status = NewestStatus(kid_app::SceneKind::Home);
         const bool temp_ok = status.temp_c != kid_app::StatusBar::kNoTemp;
         const auto feel = kid_app::FeelOf(static_cast<int16_t>(status.temp_c * 10), 50, temp_ok);
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        const bool clock_ok = RtcRead(&rtc, &stopped) && !stopped;
+        const auto festival = kid_app::FestivalOn(rtc, clock_ok, care.BirthMonth(), care.BirthDay());
+        festival_.store(static_cast<uint8_t>(festival));
         uint16_t ids[kid_app::kMaxDiaryLines] = {};
-        const size_t n = kid_app::ComposeMorning(
-            pet_service_.TemperamentNow(), feel, static_cast<kid_app::Festival>(festival_.load()),
-            care.GetHabit().habit, ids, kid_app::kMaxDiaryLines);
+        const size_t n = kid_app::ComposeMorning(pet_service_.TemperamentNow(), feel, festival,
+                                                 care.GetHabit().habit, ids,
+                                                 kid_app::kMaxDiaryLines);
         // ids[0] is the V8 hello: the V5-04 good-morning line says it already.
         size_t count = 0;
         for (size_t i = 1; i < n; ++i) out[count++] = ids[i];
@@ -3861,6 +3899,7 @@ BOARD_WORKER = r'''
             ctx.worn[i] = care.Worn(static_cast<kid_app::WearSlot>(i));
         ctx.habit = care.GetHabit().habit;
         ctx.habit_done_today = day && care.GetHabit().last_day == day;
+        ctx.clock_known = local_minute_.load() != 0;
         ctx.diary = kid_app::MakeDiaryPage(care, memory, day);
         kid_app::CareOutput out{};
         if (!care_.Start(kind, ctx, NowMs(), &out)) {
@@ -3926,7 +3965,7 @@ BOARD_WORKER = r'''
             const auto kind = care_.Kind();
             ESP_LOGI(TAG, "PET_CARE_END kind=%s next=%s sleep=%d", kid_app::CareKindName(kind),
                      kid_app::CareKindName(out.next), out.sleep ? 1 : 0);
-            if (out.next != kid_app::CareKind::None) {  // bedtime ritual: tidy -> diary
+            if (out.next != kid_app::CareKind::None) {  // bedtime: tidy -> diary -> lullaby
                 StartCare(out.next);
                 return;
             }

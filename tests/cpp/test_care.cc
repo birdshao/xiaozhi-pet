@@ -446,6 +446,10 @@ void TestFestivals() {
     // Birthday wins; unknown clock -> nothing.
     assert(FestivalOn(at(2026, 6, 1), true, 6, 1) == Festival::Birthday);
     assert(FestivalOn(at(2026, 3, 8), true, 3, 8) == Festival::Birthday);
+    // 29 February: on the 28th in common years, on the 29th in leap years.
+    assert(FestivalOn(at(2027, 2, 28), true, 2, 29) == Festival::Birthday);
+    assert(FestivalOn(at(2028, 2, 28), true, 2, 29) == Festival::None);
+    assert(FestivalOn(at(2028, 2, 29), true, 2, 29) == Festival::Birthday);
     assert(FestivalOn(at(2026, 1, 1), false, 0, 0) == Festival::None);
     assert(FestivalOn(CivilTime{}, true, 1, 1) == Festival::None);  // 2000: implausible
 }
@@ -645,7 +649,7 @@ void TestBrushLullTidyDiary() {
     assert(out.clip == 1212 && !out.record);
     out = s.Tick(4 + CareSession::kReactMs);
     assert(out.finished && out.next == CareKind::Diary && !out.sleep);
-    // Diary: shows the page; a press (or 20 s) goes to sleep.
+    // Diary: shows the page; a press (or 45 s) goes on to the lullaby.
     CareContext c = Ctx();
     c.diary.last_food = 2;
     c.diary.books = 1;
@@ -653,12 +657,23 @@ void TestBrushLullTidyDiary() {
     s.Start(CareKind::Diary, c, 0, &out);
     CareView v = s.View();
     assert(v.kind == CareKind::Diary && v.food == 2 && v.book && !v.game && v.cares == 4);
-    assert(!s.Tick(19999).finished);
-    out = s.Tick(20000);
-    assert(out.finished && out.sleep);
+    assert(!s.Tick(44999).finished);
+    out = s.Tick(45000);
+    assert(out.finished && !out.sleep && out.next == CareKind::Lull);
     s.Start(CareKind::Diary, c, 0, &out);
     out = s.Input(GameInput::Press, 5);
-    assert(out.finished && out.sleep);
+    assert(out.finished && !out.sleep && out.next == CareKind::Lull);
+    // A lullaby nobody finishes still ends in bed (no reward recorded).
+    s.Start(CareKind::Lull, c, 0, &out);
+    out = s.Tick(CareSession::kIdleExitMs);
+    assert(out.finished && out.sleep && !out.record);
+    // No clock: the habit card cannot tick (the ledger needs a date).
+    CareContext h = Ctx();
+    h.habit = Habit::ReadBook;
+    h.clock_known = false;
+    s.Start(CareKind::Habit, h, 0, &out);
+    out = s.Input(GameInput::Press, 1);
+    assert(out.finished && !out.record);
 }
 
 void TestDressHabitAlbum() {
