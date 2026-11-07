@@ -14,6 +14,7 @@ import re
 from content_pipeline.schema import ContentError, SKILL, write_json
 from tools import game_pack, kpb2
 
+PACK_STEM = re.compile(r"^[a-z0-9][a-z0-9_-]{2,14}$")
 UNIT_ID = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 COURSE_ID = re.compile(r"^[a-z][a-z0-9_.]{3,95}$")
 
@@ -118,21 +119,29 @@ def _verified_package(path: Path, *, allow_test_artifacts: bool) -> dict:
         sd_path = f"/books/{path.name}"
         if meta.get("package_bytes") != len(data):
             raise ContentError("package: book length mismatch")
-        placeholder = False  # book sidecars lack this flag; still only local index
+        placeholder = meta.get("placeholder") is True
+        if placeholder and not allow_test_artifacts:
+            raise ContentError("package: test placeholders are not child content")
     else:
         parsed = game_pack.parse(data)
         if meta.get("format") != "KPG1" or meta.get("reviewed") is not True:
             raise ContentError("package: KPG1 must be reviewed")
         kind = "game"
         count = len(parsed["rounds"])
-        if path.name != "default.kpg":
-            raise ContentError("package: current firmware requires default.kpg")
-        sd_path = "/games/default.kpg"
+        if not PACK_STEM.fullmatch(path.stem):
+            raise ContentError("package: unsafe or overlong game basename")
+        sd_path = f"/games/{path.name}"
         if meta.get("bytes") != len(data) or meta.get("sd_path") != sd_path:
             raise ContentError("package: game size/path mismatch")
         placeholder = meta.get("placeholder") is True
         if placeholder and not allow_test_artifacts:
             raise ContentError("package: test tone placeholders are not child content")
+    # Only the review gate records the hash a human attested; a bare
+    # make_pack(..., reviewed=True) sidecar flag is not evidence of review.
+    checked = meta.get("checked_hash")
+    if not (isinstance(checked, str) and re.fullmatch(r"[0-9a-f]{64}", checked)) \
+            and not allow_test_artifacts:
+        raise ContentError("package: no review-gate checked_hash (use --test-only for fixtures)")
     if meta.get("content_id") != parsed["content_id"] or \
             meta.get("revision") != parsed["revision"] or \
             meta.get("package_type") != kind:

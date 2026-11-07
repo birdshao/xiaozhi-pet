@@ -29,6 +29,28 @@ LICENSE = re.compile(
 )
 
 
+def adaptation_terms(license_id: str) -> dict:
+    """Licence facts needed before narrating/re-laying-out/translating a work.
+
+    Turning a story into a narrated, resized, translated pack is an adaptation
+    (derivative), so NoDerivatives licences are refused; ShareAlike is recorded.
+    """
+    if not isinstance(license_id, str) or not LICENSE.fullmatch(license_id) or             license_id == "unknown":
+        raise ContentError("licence: exact source licence required")
+    if "-ND" in license_id:
+        raise ContentError(f"licence {license_id} forbids derivatives; "
+                           "adaptation (narration/translation/re-layout) is not allowed")
+    if license_id.startswith("CC-BY"):
+        name, version = license_id.rsplit("-", 1)
+        slug = name[3:].lower()  # CC-BY-NC-SA -> by-nc-sa
+        url = f"https://creativecommons.org/licenses/{slug}/{version}/"
+    else:
+        url = None
+    return {"license_id": license_id, "license_url": url,
+            "share_alike": "-SA-" in license_id,
+            "non_commercial": "-NC" in license_id}
+
+
 def _keys(obj: Any, expected: set[str], label: str) -> dict:
     if not isinstance(obj, dict) or set(obj) != expected:
         raise ContentError(f"{label}: missing or unknown keys")
@@ -115,7 +137,13 @@ def validate_document(doc: Any) -> dict:
         _string(s["license_hint"], "license_hint", 96)
     if type(s["attribution_required"]) is not bool:
         raise ContentError("attribution_required: must be bool")
-    creators = _keys(s["creators"], {"text", "illustration", "translation"}, "creators")
+    # "design" (e.g. Book Dash's designer credit) is optional for older drafts.
+    if isinstance(s["creators"], dict) and "design" in s["creators"]:
+        creators = _keys(s["creators"], {"text", "illustration", "translation", "design"},
+                         "creators")
+    else:
+        creators = _keys(s["creators"], {"text", "illustration", "translation"},
+                         "creators")
     for key in creators:
         vals = creators[key]
         if not isinstance(vals, list) or len(vals) > 20:
@@ -139,7 +167,7 @@ def validate_document(doc: Any) -> dict:
                        "source_digest", "method", "notes"}, "translation")
         if change["kind"] != "translation" or change["source_locale"] != "en" or \
                 change["target_locale"] != "zh-Hans" or d["locale"] != "zh-Hans" or \
-                s["provider"] != "bookdash" or change["method"] != "manual_draft" or \
+                s["provider"] != "bookdash" or change["method"] not in ("manual_draft", "ai_assisted_draft") or \
                 not isinstance(change["source_digest"], str) or \
                 not HASH.fullmatch(change["source_digest"]):
             raise ContentError("translation: unsupported or unpinned transformation")
@@ -152,7 +180,16 @@ def validate_document(doc: Any) -> dict:
                   "image_mode", "skills", "questions"}, f"page {i}")
         if type(p["number"]) is not int or p["number"] != i:
             raise ContentError(f"page {i}: non-sequential number")
-        _string(p["text"], f"page {i} text", 3200)
+        if p["text"] == "":
+            # The original Book Dash archive contains genuinely wordless
+            # illustrated pages. Keep those pages silent rather than
+            # inventing words and attributing them to the book's author.
+            if not (s["provider"] == "bookdash" and
+                    d["locale"] == "en" and not d["transformations"] and
+                    p["image_ref"] is not None):
+                raise ContentError(f"page {i}: empty text only allowed in original Book Dash")
+        else:
+            _string(p["text"], f"page {i} text", 3200)
         if p["image_ref"] is not None:
             safe_relpath(p["image_ref"], f"page {i} image_ref")
         for key in ("image", "audio"):

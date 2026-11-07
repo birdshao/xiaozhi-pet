@@ -296,5 +296,23 @@ class LocalizedBook(unittest.TestCase):
         with self.assertRaisesRegex(ContentError, "exactly one"):
             localize_bookdash(self.english, self.trans, self.chinese, content_id=1301)
 
+
+class PortableFfmpeg(unittest.TestCase):
+    def test_self_contained_ffmpeg_wheel_without_system_install(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from content_pipeline.speech import _ffmpeg_binary
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "bundled-ffmpeg"
+            binary.write_bytes(b"test fake binary; not invoked")
+            fake = SimpleNamespace(get_ffmpeg_exe=lambda: str(binary))
+            with patch("content_pipeline.speech.shutil.which", return_value=None):
+                with patch.dict(sys.modules, {"imageio_ffmpeg": fake}):
+                    self.assertEqual(_ffmpeg_binary(), str(binary))
+                with patch.dict(sys.modules, {"imageio_ffmpeg": None}):
+                    with self.assertRaisesRegex(ContentError, "imageio-ffmpeg"):
+                        _ffmpeg_binary()
+
 if __name__ == "__main__":
     unittest.main()
