@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -77,6 +78,20 @@ class DeployFilesTests(unittest.TestCase):
             self.assertEqual(services[job]["profiles"], ["ops"])
             self.assertEqual(services[job]["network_mode"], "none")
             self.assertEqual(services[job]["restart"], "no")
+
+    def test_pet_learning_image_contents_are_enough_to_import_the_app(self):
+        # Build the image's file set (services/ + the COPY'd tools/ files) and import the app from it.
+        copied = re.search(r"^COPY (tools/\S+(?: tools/\S+)*) tools/$", text("Dockerfile.pet-learning"), re.M)
+        self.assertIsNotNone(copied)
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(ROOT / "services", Path(tmp) / "services",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            (Path(tmp) / "tools").mkdir()
+            for name in copied.group(1).split():
+                shutil.copy(ROOT / name, Path(tmp) / name)
+            run = subprocess.run([sys.executable, "-c", "import services.pet_learning.api"],
+                                 cwd=tmp, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr[-800:])
 
     def test_gateway_rate_limits_xiaozhi_routes(self):
         conf = text("nginx", "gateway.conf.template")

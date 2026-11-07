@@ -7,7 +7,8 @@ WORKDIR /app
 COPY services/requirements.txt services/requirements.txt
 RUN pip install --no-cache-dir -r services/requirements.txt
 COPY services services
-COPY tools/pet_learning_admin.py tools/pet_learning_admin.py
+# services/pet_learning/content.py imports the pack readers from the repo-level tools/ namespace package
+COPY tools/pet_learning_admin.py tools/game_pack.py tools/kpb2.py tools/sound_pack.py tools/make_prompt_audio.py tools/
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin pet && mkdir /data /backups && chown pet /data /backups
 USER 10001
 EXPOSE 8765
