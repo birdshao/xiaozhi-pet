@@ -47,9 +47,15 @@ enum class CareArt : uint16_t {
     Fish = 211, Milk = 212, Apple = 213, Carrot = 214, Cookie = 215, RiceBall = 216,
     // Toys for the bedtime tidy-up.
     ToyBlock = 221, ToyBall = 222, ToyBear = 223,
+    // Wardrobe cards: 231 + index in the wardrobe table (care_store.cc).
+    WearFirst = 231, WearLast = 242,
+    // Good-habit cards: 250 + Habit (1..8).
+    HabitFirst = 251, HabitLast = 258,
+    Lock = 260,  // nothing unlocked yet
 };
 constexpr bool CareArtValid(uint16_t id) {
-    return (id >= 201 && id <= 206) || (id >= 211 && id <= 216) || (id >= 221 && id <= 223);
+    return (id >= 201 && id <= 206) || (id >= 211 && id <= 216) || (id >= 221 && id <= 223) ||
+           (id >= 231 && id <= 242) || (id >= 251 && id <= 258) || id == 260;
 }
 
 struct Activity {
