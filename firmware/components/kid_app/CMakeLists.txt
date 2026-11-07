@@ -29,6 +29,7 @@ idf_component_register(
          "src/mic_envelope.cc" "src/mic_game.cc"
          "src/json_lite.cc" "src/server_sync.cc" "src/parent_requests.cc"
          "src/pet_command_apply.cc" "src/freertos_server_sync_worker.cc"
+         "src/care_store.cc" "src/care_calendar.cc" "src/care_phrases.cc" "src/care_session.cc"
     INCLUDE_DIRS "include"
     # Home-rail option prompts (24 kHz mono PCM16, HomeItem order; see
     # tools/make_prompt_audio.py). Symbols: _binary_prompt_<item>_wav_*.

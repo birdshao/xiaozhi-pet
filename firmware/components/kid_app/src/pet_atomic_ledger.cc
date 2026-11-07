@@ -18,8 +18,11 @@ static_assert(kMemoryOffset + 4 == Ledger::kV1Bytes, "v1 layout is frozen");
 static_assert(kMemoryOffset + MemoryStore::kBytes + 4 == Ledger::kV2Bytes,
               "v2 appends memory before the CRC");
 constexpr size_t kParentOffset = kMemoryOffset + MemoryStore::kBytes;
-static_assert(kParentOffset + ParentSettingsCodec::kBytes + 4 == Ledger::kBytes,
+static_assert(kParentOffset + ParentSettingsCodec::kBytes + 4 == Ledger::kV3Bytes,
               "v3 appends the parent settings before the CRC");
+constexpr size_t kCareOffset = kParentOffset + ParentSettingsCodec::kBytes;
+static_assert(kCareOffset + CareStore::kBytes + 4 == Ledger::kBytes,
+              "v4 appends the care store before the CRC");
 constexpr uint64_t kMaxSeq = static_cast<uint64_t>(INT64_MAX);
 
 void Put16(Blob& b, size_t p, uint16_t n) {
@@ -45,7 +48,7 @@ uint64_t Get64(const Blob& b, size_t p) {
     for (size_t i=0;i<8;++i) n |= uint64_t(b[p+i]) << (8*i);
     return n;
 }
-// CRC over bytes [0, length-4) of a v1/v2 (prefix) or v3 blob.
+// CRC over bytes [0, length-4) of a v1..v3 (prefix) or v4 blob.
 uint32_t Crc32(const Blob& b, size_t length) {
     uint32_t crc=0xFFFFFFFFu;
     for (size_t i=0;i<length-4;++i) {
@@ -56,7 +59,8 @@ uint32_t Crc32(const Blob& b, size_t length) {
     return ~crc;
 }
 size_t LengthOf(uint16_t version) {
-    return version==3 ? Ledger::kBytes : version==2 ? Ledger::kV2Bytes :
+    return version==4 ? Ledger::kBytes : version==3 ? Ledger::kV3Bytes :
+           version==2 ? Ledger::kV2Bytes :
            version==1 ? Ledger::kV1Bytes : 0;
 }
 // Same replay window bookkeeping as PetController::Remember.
@@ -103,7 +107,8 @@ bool PetAtomicLedger::ValidId(const char* id) {
 bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
                              const PetDeviceBridge::State& q,
                              const MemoryStore& memory,
-                             const ParentSettings& parent, uint16_t version,
+                             const ParentSettings& parent,
+                             const CareStore& care, uint16_t version,
                              uint64_t generation, Blob* output) {
     const size_t length=LengthOf(version);
     if (!output || !length || generation==0 || q.count>PetDeviceBridge::kCapacity ||
@@ -113,6 +118,8 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
     if (version==1 && !(memory==MemoryStore{})) return false;
     // v1/v2 have no parent section; only the defaults can round-trip them.
     if (version<3 && parent!=ParentSettings{}) return false;
+    // v1..v3 have no care section; only an empty care store round-trips them.
+    if (version<4 && care!=CareStore{}) return false;
 
     PetCheckpointCodec::Blob pet_blob{};
     if (!PetCheckpointCodec::Encode(pet,generation,&pet_blob)) return false;
@@ -139,9 +146,11 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
     }
     if (version>=2 &&
         !memory.Encode(b.data()+kMemoryOffset,MemoryStore::kBytes)) return false;
-    if (version==3 &&
+    if (version>=3 &&
         !ParentSettingsCodec::Encode(parent,b.data()+kParentOffset,
                                      ParentSettingsCodec::kBytes)) return false;
+    if (version==4 &&
+        !care.Encode(b.data()+kCareOffset,CareStore::kBytes)) return false;
     Put32(b,length-4,Crc32(b,length));
     *output=b;
     return true;
@@ -149,10 +158,11 @@ bool PetAtomicLedger::Encode(const PetCheckpoint& pet,
 
 bool PetAtomicLedger::Decode(const Blob& b, size_t length, PetCheckpoint* pet,
                              PetDeviceBridge::State* queue, MemoryStore* memory,
-                             ParentSettings* parent, uint64_t* generation) {
-    const uint16_t version=length==kBytes ? 3 : length==kV2Bytes ? 2 :
-                           length==kV1Bytes ? 1 : 0;
-    if (!pet || !queue || !memory || !parent || !generation || !version ||
+                             ParentSettings* parent, CareStore* care,
+                             uint64_t* generation) {
+    const uint16_t version=length==kBytes ? 4 : length==kV3Bytes ? 3 :
+                           length==kV2Bytes ? 2 : length==kV1Bytes ? 1 : 0;
+    if (!pet || !queue || !memory || !parent || !care || !generation || !version ||
         b[0]!='K'||b[1]!='P'||b[2]!='A'||b[3]!='J' ||
         Get16(b,4)!=version || Get16(b,6)!=length ||
         b[26] || b[27] ||
@@ -188,17 +198,23 @@ bool PetAtomicLedger::Decode(const Blob& b, size_t length, PetCheckpoint* pet,
         return false;
     // v2 -> v3 migration: the parent menu has not run yet, so defaults.
     ParentSettings settings{};
-    if (version==3 &&
+    if (version>=3 &&
         !ParentSettingsCodec::Decode(b.data()+kParentOffset,
                                      ParentSettingsCodec::kBytes,&settings))
         return false;
+    // v3 -> v4 migration: nothing cared for yet, so an empty care store.
+    CareStore cs{};
+    if (version==4 &&
+        !CareStore::Decode(b.data()+kCareOffset,CareStore::kBytes,&cs))
+        return false;
     Blob check{};
-    if (!Encode(candidate,q,mem,settings,version,gen,&check)) return false;
+    if (!Encode(candidate,q,mem,settings,cs,version,gen,&check)) return false;
     for (size_t i=0;i<length;++i) if (check[i]!=b[i]) return false;
     *pet=candidate;
     *queue=q;
     *memory=mem;
     *parent=settings;
+    *care=cs;
     *generation=gen;
     return true;
 }
@@ -212,6 +228,7 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     PetDeviceBridge::State best_queue{};
     MemoryStore best_memory{};
     ParentSettings best_parent{};
+    CareStore best_care{};
 
     for (unsigned slot=0;slot<2;++slot) {
         Blob b{};
@@ -223,14 +240,16 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
         PetDeviceBridge::State q{};
         MemoryStore m{};
         ParentSettings s{};
+        CareStore c{};
         uint64_t gen=0;
-        if (!Decode(b,length,&p,&q,&m,&s,&gen)) {corrupt=true;continue;}
+        if (!Decode(b,length,&p,&q,&m,&s,&c,&gen)) {corrupt=true;continue;}
         if (gen>best_gen) {
             best_gen=gen;
             best_pet=p;
             best_queue=q;
             best_memory=m;
             best_parent=s;
+            best_care=c;
             best_slot=static_cast<int>(slot);
         }
     }
@@ -251,6 +270,7 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
     queue_=best_queue;
     memory_=best_memory;
     parent_=best_parent;
+    care_=best_care;
     generation_=best_gen;
     active_slot_=best_slot;
     initialized_=true;
@@ -260,11 +280,13 @@ PetAtomicLedger::LoadResult PetAtomicLedger::Load() {
 bool PetAtomicLedger::Commit(const PetCheckpoint& pet,
                              const PetDeviceBridge::State& queue,
                              const MemoryStore& memory,
-                             const ParentSettings* next_parent) {
+                             const ParentSettings* next_parent,
+                             const CareStore* next_care) {
     if (generation_==std::numeric_limits<uint64_t>::max()) return false;
     const ParentSettings& parent=next_parent ? *next_parent : parent_;
+    const CareStore& care=next_care ? *next_care : care_;
     Blob next{};
-    if (!Encode(pet,queue,memory,parent,3,generation_+1,&next)) return false;
+    if (!Encode(pet,queue,memory,parent,care,4,generation_+1,&next)) return false;
     const unsigned slot=active_slot_==0 ? 1u : 0u;
     if (!store_.Write(slot,next)) return false;
     // Save order: commit single storage blob before acknowledging in memory.
@@ -272,6 +294,7 @@ bool PetAtomicLedger::Commit(const PetCheckpoint& pet,
     queue_=queue;
     memory_=memory;
     parent_=parent;
+    care_=care;
     ++generation_;
     active_slot_=static_cast<int>(slot);
     initialized_=true;
@@ -345,10 +368,14 @@ CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
     // replayed (Duplicate) event can never count twice.
     MemoryStore memory=memory_;
     memory.NotePetAction(event.action,day);
+    // A new active day may finish a growth milestone: its sticker too.
+    CareStore care=care_;
+    care.EarnStickers(memory.GetGrowth());
 
     // One physical NVS commit contains both updated controller checkpoint
     // and outbound message. A write failure restores the entire live state.
-    if (!can_commit || !Commit(controller_.ExportCheckpoint(),pending,memory)) {
+    if (!can_commit || !Commit(controller_.ExportCheckpoint(),pending,memory,
+                               nullptr,&care)) {
         if (!controller_.RestoreCheckpoint(before)) return CommitResult::StorageError;
         return CommitResult::StorageError;
     }
@@ -356,16 +383,44 @@ CommitResult PetAtomicLedger::ApplyDurably(const PetEvent& event,
     return CommitResult::Committed;
 }
 
-CommitResult PetAtomicLedger::RecordMemory(const MemoryEvent& event) {
+CommitResult PetAtomicLedger::RecordMemory(const MemoryEvent& event,
+                                           uint32_t care_minute) {
     if (!initialized_) return CommitResult::StorageError;
     if (!event.id) return CommitResult::Rejected;
     PetCheckpoint pet=controller_.ExportCheckpoint();
     if (WasSeen(pet,event.id)) return CommitResult::Duplicate;
     MemoryStore memory=memory_;
     if (memory.Apply(event)!=MemoryResult::Applied) return CommitResult::Rejected;
+    CareStore care=care_;
+    if (event.kind==MemoryEventKind::MemoryCleared) {
+        care.WipeChildData();  // V8: forgetting the child forgets the care too
+    } else {
+        if (event.kind==MemoryEventKind::BookFinished ||
+            event.kind==MemoryEventKind::GameCompleted)
+            care.NotePlay(care_minute);
+        care.EarnStickers(memory.GetGrowth());
+    }
     Remember(&pet,event.id);
     // Memory events are not projected to the outbox yet (server sync is V5-05).
-    if (!Commit(pet,queue_,memory)) return CommitResult::StorageError;
+    if (!Commit(pet,queue_,memory,nullptr,&care)) return CommitResult::StorageError;
+    return CommitResult::Committed;
+}
+
+CommitResult PetAtomicLedger::RecordCare(const CareEvent& event,
+                                         uint32_t* new_stickers) {
+    if (new_stickers) *new_stickers=0;
+    if (!initialized_) return CommitResult::StorageError;
+    if (!event.id) return CommitResult::Rejected;
+    PetCheckpoint pet=controller_.ExportCheckpoint();
+    if (WasSeen(pet,event.id)) return CommitResult::Duplicate;
+    CareStore care=care_;
+    const uint32_t before=care.Stickers();
+    if (care.Apply(event)!=CareResult::Applied) return CommitResult::Rejected;
+    care.EarnStickers(memory_.GetGrowth());
+    Remember(&pet,event.id);
+    // Care is local only: no outbox record (the snapshot reports stickers).
+    if (!Commit(pet,queue_,memory_,nullptr,&care)) return CommitResult::StorageError;
+    if (new_stickers) *new_stickers=care.Stickers() & ~before;
     return CommitResult::Committed;
 }
 

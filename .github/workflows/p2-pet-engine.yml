@@ -17,6 +17,9 @@ on:
       - 'tests/fixtures/memory/**'
       - 'tests/cpp/test_server_sync.cc'
       - 'tests/fixtures/sync/**'
+      - 'tests/fixtures/ledger/**'
+      - 'tests/cpp/test_care.cc'
+      - 'tests/cpp/test_care_ledger.cc'
       - 'scripts/p2_test.sh'
       - '.github/workflows/p2-pet-engine.yml'
   workflow_dispatch:

@@ -691,7 +691,7 @@ void TestPersistPolicy() {
     assert(!RestoredStoryNeedsHome(PetMode::Story, true));
     assert(!RestoredStoryNeedsHome(PetMode::Idle, false));
 
-    assert(NvsBlobEntries(Ledger::kBytes) == 59);
+    assert(NvsBlobEntries(Ledger::kBytes) == 62);  // v4: +96 byte care store (59 at v3)
     assert(NvsBlobEntries(PetCheckpointCodec::kBytes) == 36);
     assert(NvsBlobEntries(32) == 3);
 }

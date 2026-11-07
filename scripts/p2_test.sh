@@ -83,7 +83,7 @@ CXX="${CXX:-g++}"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
-  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" "$ROOT/firmware/components/kid_app/src/care_store.cc"   \
   "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
@@ -222,7 +222,7 @@ CXX="${CXX:-g++}"
   "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
-  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" "$ROOT/firmware/components/kid_app/src/care_store.cc"   \
   "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
@@ -244,7 +244,7 @@ CXX="${CXX:-g++}"
 # V5_V6 §11.2 device side of the server: JSON reader, golden state snapshots
 # (the same files the Python server test PUTs), real server replies, command
 # routing, pairing flow, upload schedule, D5 requests and the ledger applier.
-"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc"   "$ROOT/firmware/components/kid_app/src/parent_settings.cc"   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/firmware/components/kid_app/src/json_lite.cc"   "$ROOT/firmware/components/kid_app/src/server_sync.cc"   "$ROOT/firmware/components/kid_app/src/parent_requests.cc"   "$ROOT/firmware/components/kid_app/src/pet_command_apply.cc"   "$ROOT/tests/cpp/test_server_sync.cc"   -o "$BUILD/test_server_sync"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc"   "$ROOT/firmware/components/kid_app/src/care_store.cc"   "$ROOT/firmware/components/kid_app/src/parent_settings.cc"   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/firmware/components/kid_app/src/json_lite.cc"   "$ROOT/firmware/components/kid_app/src/server_sync.cc"   "$ROOT/firmware/components/kid_app/src/parent_requests.cc"   "$ROOT/firmware/components/kid_app/src/pet_command_apply.cc"   "$ROOT/tests/cpp/test_server_sync.cc"   -o "$BUILD/test_server_sync"
 "$BUILD/test_server_sync" "$ROOT/tests/fixtures/memory" "$ROOT/tests/fixtures/sync"
 
 # V5-01 personality: fixed temperament parameters, reviewed phrase ids and
@@ -316,7 +316,7 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
-  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" "$ROOT/firmware/components/kid_app/src/care_store.cc"   \
   "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
   "$ROOT/firmware/components/kid_app/src/parent_menu.cc" \
   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
@@ -332,7 +332,7 @@ PYTHONPATH="$ROOT" python3 -m tools.sound_pack demo --output "$BUILD/sound-demo"
   "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
   "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
   "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
-  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" "$ROOT/firmware/components/kid_app/src/care_store.cc"   \
   "$ROOT/firmware/components/kid_app/src/pet_ledger_migration.cc" \
   "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
@@ -456,3 +456,33 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   "$ROOT/tests/cpp/test_memory_phrases.cc" \
   -o "$BUILD/test_memory_phrases"
 "$BUILD/test_memory_phrases"
+
+# V8 care and growth: needs from RTC minutes (unknown clock = content pet),
+# taste, stickers, wardrobe, habit streaks, lunar festival table, diary and
+# good-morning lines per temperament, dial/motion care sessions (no reward
+# for hard shakes, no progress while resting), strict 96-byte codec.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/care_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_calendar.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_session.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/tests/cpp/test_care.cc" \
+  -o "$BUILD/test_care"
+"$BUILD/test_care"
+
+# V8 ledger schema v4: a real v3 blob from the pre-V8 code upgrades on the
+# next commit, care guards / replay / power loss / stickers in one commit.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$SRC" "$ROOT/firmware/components/kid_app/src/pet_persistence.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_atomic_ledger.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_care_ledger.cc" \
+  -o "$BUILD/test_care_ledger"
+"$BUILD/test_care_ledger" "$ROOT/tests/fixtures/ledger"
