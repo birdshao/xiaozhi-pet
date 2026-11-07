@@ -789,6 +789,7 @@ void FreertosServerSyncWorker::Upload(uint32_t now_ms) {
     in.pet = view.pet;
     in.memory = view.memory;
     in.parent = view.parent;
+    in.stickers = view.stickers;
     if (hooks_.battery) hooks_.battery(hooks_.context, &in.battery_pct, &in.charging);
     if (in.battery_pct > 100) in.battery_pct = 100;
     xSemaphoreTake(requests_mutex_, portMAX_DELAY);

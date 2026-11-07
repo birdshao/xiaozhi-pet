@@ -1,6 +1,8 @@
 #include "kid_app/scene_model.h"
 #include "kid_app/sound_view.h"
 
+#include "kid_app/activity_list.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -39,6 +41,26 @@ BookMissing BookMissingOf(const SceneModel& scene) {
     const uint16_t reason = static_cast<uint16_t>(scene.book_page >> 8);
     return reason <= static_cast<uint16_t>(BookMissing::BadBook) ? static_cast<BookMissing>(reason)
                                                                  : BookMissing::None;
+}
+
+uint32_t PackLook(const HomeLook& look) {
+    uint32_t bits = 0;
+    for (size_t i = 0; i < look.worn.size(); ++i)
+        if (look.worn[i] < 16) bits |= uint32_t(look.worn[i]) << (4 * i);
+    if (look.need < 16) bits |= uint32_t(look.need) << 20;
+    if (look.need_level < 4) bits |= uint32_t(look.need_level) << 24;
+    if (look.festival < 16) bits |= uint32_t(look.festival) << 26;
+    return bits;
+}
+
+HomeLook UnpackLook(uint32_t bits) {
+    HomeLook look{};
+    for (size_t i = 0; i < look.worn.size(); ++i)
+        look.worn[i] = static_cast<uint8_t>((bits >> (4 * i)) & 0x0F);
+    look.need = static_cast<uint8_t>((bits >> 20) & 0x0F);
+    look.need_level = static_cast<uint8_t>((bits >> 24) & 0x03);
+    look.festival = static_cast<uint8_t>((bits >> 26) & 0x0F);
+    return look;
 }
 
 void MonoFrame::Clear() { pixels_.fill(0xFF); }
@@ -1033,16 +1055,45 @@ void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
         case ParentItem::Server:  // the home server
             Cloud(f, cx, cy, 1, ink);
             break;
+        case ParentItem::Habit:  // a tick in a box
+            RoundRectRing(f, cx - 17, cy - 17, 34, 34, 7, 4, ink);
+            CheckMark(f, cx, cy, 10, 5, ink);
+            break;
+        case ParentItem::BirthMonth:  // a cake
+        case ParentItem::BirthDay:    // a cake with a candle
+            FillRoundRect(f, cx - 18, cy - 2, 36, 18, 5, ink);
+            FillRect(f, cx - 18, cy + 4, 36, 3, !ink);
+            if (item == ParentItem::BirthDay) {
+                FillRect(f, cx - 2, cy - 16, 4, 14, ink);
+                Disk(f, cx, cy - 20, 3, ink);
+            }
+            break;
     }
+}
+
+void HabitIcon(MonoFrame& f, uint8_t habit, int cx, int cy, int r);  // V8, below
+
+// Two seven-segment digits (a month or a day); 0 = not set, a dash.
+void TwoDigits(MonoFrame& f, int x, int cy, uint8_t value, bool ink) {
+    const int y = cy - kDigitH / 2;
+    if (!value) {
+        FillRect(f, x, cy - 3, 2 * kDigitW + 8, 6, ink);
+        return;
+    }
+    Digit(f, x, y, value / 10, ink);
+    Digit(f, x + kDigitW + 8, y, value % 10, ink);
 }
 
 void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
     const auto item = static_cast<ParentItem>(row);
-    const int top = kParentRowTop + row * kParentRowH, cy = top + kParentRowH / 2;
+    // V8: kParentRowsPerPage rows a page; the page follows the cursor.
+    const uint8_t slot = row % kParentRowsPerPage;
+    const int top = kParentRowTop + slot * kParentRowH, cy = top + kParentRowH / 2;
     const bool selected = row == view.cursor, editing = selected && view.editing;
+    const bool last_on_page = slot + 1 == kParentRowsPerPage || row + 1 == kParentItemCount;
     if (editing) FillRoundRect(f, 12, top + 2, 776, kParentRowH - 4, 14);
     else if (selected) RoundRectRing(f, 12, top + 2, 776, kParentRowH - 4, 14, 5);
-    else if (row + 1 < kParentItemCount) FillRect(f, 40, top + kParentRowH - 1, 720, 1);
+    else if (!last_on_page) FillRect(f, 40, top + kParentRowH - 1, 720, 1);
     const bool ink = !editing;
     ParentIcon(f, item, 72, cy, ink);
     const auto& s = view.settings;
@@ -1066,6 +1117,12 @@ void ParentRow(MonoFrame& f, const ParentView& view, uint8_t row) {
             else
                 LinkGlyph(f, view.link.state, kParentValueX + 40, cy, 1, ink);
             break;
+        case ParentItem::Habit:
+            if (view.care.habit) HabitIcon(f, view.care.habit, kParentValueX + 20, cy, 18);
+            else FillRect(f, kParentValueX, cy - 3, 40, 6, ink);
+            break;
+        case ParentItem::BirthMonth: TwoDigits(f, kParentValueX, cy, view.care.birth_month, ink); break;
+        case ParentItem::BirthDay: TwoDigits(f, kParentValueX, cy, view.care.birth_day, ink); break;
     }
     if (editing) {  // the dial changes this value
         FillTriangle(f, 740, cy - 4, 760, cy - 4, 750, cy - 18, false);
@@ -1168,7 +1225,15 @@ void ParentScene(MonoFrame& f, const ParentView& view) {
     for (int a = 0; a < 360; a += 45) Ray(f, 44, 32, a, 16, 22, true);
     Disk(f, 44, 32, 7, false);
     ParentHeader(f);
-    for (uint8_t row = 0; row < kParentItemCount; ++row) ParentRow(f, view, row);
+    // V8: two pages; dots under the header say which one (page 1 first).
+    const uint8_t page = static_cast<uint8_t>(view.cursor / kParentRowsPerPage);
+    for (uint8_t p = 0; p < 2; ++p) {
+        if (p == page) Disk(f, 388 + p * 24, 36, 7);
+        else Ring(f, 388 + p * 24, 36, 7, 7, 3);
+    }
+    const uint8_t first = static_cast<uint8_t>(page * kParentRowsPerPage);
+    for (uint8_t row = first; row < kParentItemCount && row < first + kParentRowsPerPage; ++row)
+        ParentRow(f, view, row);
 }
 
 // ---- Mini games (V4-06) ----------------------------------------------------------
@@ -1257,12 +1322,17 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
 
 #include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
 
+void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8, below
 void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8 sound, below
 void SoundScene(MonoFrame& f, const GameView& g);
 
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
     if (SoundArtValid(art)) {  // V8 sound activities
         SoundArtIcon(f, art, cx, cy, r);
+        return;
+    }
+    if (CareArtValid(art)) {  // V8 care menu cards share the answer-card rail
+        CareArtIcon(f, art, cx, cy, r);
         return;
     }
     if (PlayArtValid(art)) {
@@ -1462,25 +1532,675 @@ void GameScene(MonoFrame& f, const GameView& g) {
     }
 }
 
+// ---- V8 care and growth ----------------------------------------------------------
+// Clothes, the little room, festival props, the "I need something" bubble
+// and the care / diary / sticker-album scenes. Everything is drawn from
+// the primitives above (no bitmaps). Accessories take the same (cx, cy,
+// scale) as CatHead, so the home pet (scale 100) and the care pet (70)
+// wear the same things. Item numbers follow the wardrobe table in
+// care_store.cc (WardrobeItem::item per WearSlot).
+
+constexpr uint8_t kSlotHead = 0, kSlotNeck = 1, kSlotFace = 2, kSlotBed = 3, kSlotLamp = 4;
+
+void FilledStar(MonoFrame& f, int cx, int cy, int outer, bool ink = true) {
+    const int inner = outer * 42 / 100;
+    int ox[5], oy[5], ix[5], iy[5];
+    for (int k = 0; k < 5; ++k) {
+        const double a = (-90 + 72 * k) * kPi / 180.0, b = a + 36 * kPi / 180.0;
+        ox[k] = cx + static_cast<int>(std::lround(outer * std::cos(a)));
+        oy[k] = cy + static_cast<int>(std::lround(outer * std::sin(a)));
+        ix[k] = cx + static_cast<int>(std::lround(inner * std::cos(b)));
+        iy[k] = cy + static_cast<int>(std::lround(inner * std::sin(b)));
+    }
+    for (int k = 0; k < 5; ++k) {
+        FillTriangle(f, cx, cy, ox[k], oy[k], ix[k], iy[k], ink);
+        FillTriangle(f, cx, cy, ox[k], oy[k], ix[(k + 4) % 5], iy[(k + 4) % 5], ink);
+    }
+}
+
+// Head items sit between the ears, above the forehead stripes.
+void HeadItem(MonoFrame& f, uint8_t item, int cx, int cy, int scale) {
+    auto s = [scale](int d) { return d * scale / 100; };
+    const int w = std::max(2, s(6));
+    switch (item) {
+        case 1:  // cap: a dome with a brim to the right and a button
+            for (int dy = -s(38); dy <= 0; ++dy) {
+                const int hw = HalfWidth(dy, s(64), s(38));
+                if (hw >= 0) Span(f, cx - hw, cx + hw, cy - s(86) + dy, true);
+            }
+            Stroke(f, cx - s(10), cy - s(86), cx + s(98), cy - s(78), std::max(3, s(12)));
+            Disk(f, cx, cy - s(126), std::max(2, s(8)));
+            Arc(f, cx, cy - s(86), s(40), s(28), 200, 340, w, false);
+            break;
+        case 2:  // bow on the right ear
+            FillTriangle(f, cx + s(70), cy - s(96), cx + s(30), cy - s(122), cx + s(30), cy - s(70));
+            FillTriangle(f, cx + s(70), cy - s(96), cx + s(110), cy - s(122), cx + s(110), cy - s(70));
+            Disk(f, cx + s(70), cy - s(96), std::max(3, s(12)), false);
+            Ring(f, cx + s(70), cy - s(96), std::max(3, s(12)), std::max(3, s(12)), w);
+            break;
+        case 3: {  // crown with three points
+            const int top = cy - s(98);
+            FillRect(f, cx - s(56), top, 2 * s(56), s(18));
+            for (int k = -1; k <= 1; ++k) {
+                const int x = cx + k * s(40);
+                FillTriangle(f, x - s(22), top + 1, x + s(22), top + 1, x, top - s(34));
+                Disk(f, x, top - s(36), std::max(2, s(7)));
+            }
+            Disk(f, cx, top + s(9), std::max(2, s(6)), false);
+            break;
+        }
+        case 4:  // flower on the left ear
+            for (int k = 0; k < 5; ++k) {
+                const double a = (-90 + 72 * k) * kPi / 180.0;
+                Disk(f, cx - s(68) + static_cast<int>(std::lround(s(16) * std::cos(a))),
+                     cy - s(98) + static_cast<int>(std::lround(s(16) * std::sin(a))),
+                     std::max(3, s(11)));
+            }
+            Disk(f, cx - s(68), cy - s(98), std::max(3, s(9)), false);
+            Ring(f, cx - s(68), cy - s(98), std::max(3, s(9)), std::max(3, s(9)), std::max(1, s(3)));
+            break;
+        default:
+            break;
+    }
+}
+
+// Festival hat for New Year (replaces the head item for the day).
+void PartyHat(MonoFrame& f, int cx, int cy, int scale) {
+    auto s = [scale](int d) { return d * scale / 100; };
+    FillTriangle(f, cx - s(36), cy - s(84), cx + s(36), cy - s(84), cx + s(8), cy - s(146));
+    for (int k = 1; k <= 2; ++k)
+        Stroke(f, cx - s(36) + k * s(16), cy - s(84) - k * s(20), cx + s(36) - k * s(8),
+               cy - s(84) - k * s(20), std::max(2, s(5)), false);
+    Disk(f, cx + s(8), cy - s(146), std::max(3, s(12)));
+}
+
+void NeckItem(MonoFrame& f, uint8_t item, int cx, int cy, int scale) {
+    auto s = [scale](int d) { return d * scale / 100; };
+    switch (item) {
+        case 1:  // striped scarf with a hanging end
+            FillRoundRect(f, cx - s(86), cy + s(92), 2 * s(86), s(28), s(13));
+            FillRoundRect(f, cx + s(36), cy + s(104), s(30), s(62), s(10));
+            for (int k = -3; k <= 3; ++k)
+                Stroke(f, cx + k * s(22), cy + s(96), cx + k * s(22) + s(8), cy + s(116),
+                       std::max(2, s(5)), false);
+            break;
+        case 2:  // bow tie
+            FillTriangle(f, cx, cy + s(108), cx - s(40), cy + s(88), cx - s(40), cy + s(128));
+            FillTriangle(f, cx, cy + s(108), cx + s(40), cy + s(88), cx + s(40), cy + s(128));
+            Disk(f, cx, cy + s(108), std::max(3, s(11)));
+            break;
+        case 3:  // medal on a ribbon
+            Stroke(f, cx - s(26), cy + s(96), cx - s(4), cy + s(136), std::max(3, s(9)));
+            Stroke(f, cx + s(26), cy + s(96), cx + s(4), cy + s(136), std::max(3, s(9)));
+            Disk(f, cx, cy + s(150), std::max(6, s(22)));
+            FilledStar(f, cx, cy + s(151), std::max(4, s(14)), false);
+            break;
+        default:
+            break;
+    }
+}
+
+void FaceItem(MonoFrame& f, uint8_t item, int cx, int cy, int scale) {
+    auto s = [scale](int d) { return d * scale / 100; };
+    const int w = std::max(2, s(6)), ex = s(50), ey = cy + s(2);
+    if (item == 1) {  // round glasses
+        for (int side : {-1, 1}) Ring(f, cx + side * ex, ey, s(32), s(30), w);
+        Arc(f, cx, ey + s(4), s(18), s(12), 200, 340, w);
+    } else if (item == 2) {  // sunglasses
+        for (int side : {-1, 1}) {
+            FillEllipse(f, cx + side * ex, ey, s(34), s(26));
+            Arc(f, cx + side * ex - s(10), ey - s(8), s(12), s(8), 200, 290, std::max(1, s(4)),
+                false);
+        }
+        Stroke(f, cx - s(18), ey - s(6), cx + s(18), ey - s(6), w);
+    }
+}
+
+void Accessories(MonoFrame& f, const std::array<uint8_t, 5>& worn, uint8_t festival, int cx,
+                 int cy, int scale, bool neck = true) {
+    if (neck) NeckItem(f, worn[kSlotNeck], cx, cy, scale);
+    FaceItem(f, worn[kSlotFace], cx, cy, scale);
+    if (festival == 1) PartyHat(f, cx, cy, scale);  // Festival::NewYear
+    else HeadItem(f, worn[kSlotHead], cx, cy, scale);
+}
+
+// The little room: a bed bottom left, a lamp on the right (home only).
+void RoomBed(MonoFrame& f) {
+    RoundRectRing(f, 36, 268, 22, 104, 8, 6);                    // headboard
+    FillRoundRect(f, 40, 318, 196, 40, 12, false);
+    RoundRectRing(f, 40, 318, 196, 40, 12, 6);                    // mattress
+    ShadeRect(f, 110, 324, 120, 28, 5);                           // blanket
+    Blob(f, 84, 310, 30, 16, 5);                                  // pillow
+    Stroke(f, 48, 358, 48, 374, 6);
+    Stroke(f, 228, 358, 228, 374, 6);
+}
+
+void RoomLamp(MonoFrame& f, uint8_t item) {
+    if (item == 2) {  // star night light
+        FilledStar(f, 704, 300, 44);
+        Sparkle(f, 650, 250, 10);
+        Sparkle(f, 760, 240, 8);
+        FillRoundRect(f, 676, 346, 56, 20, 8);
+        return;
+    }
+    FillTriangle(f, 666, 222, 742, 222, 724, 176);
+    FillTriangle(f, 666, 222, 684, 176, 724, 176);
+    Stroke(f, 704, 222, 704, 348, 7);
+    FillEllipse(f, 704, 356, 40, 12);
+    for (int deg : {60, 90, 120}) Ray(f, 704, 222, deg, 18, 36, false);  // light (white on cushion)
+}
+
+// Festival props on the left, beside the pet.
+void FestivalProp(MonoFrame& f, uint8_t festival) {
+    const int x = 196, y = 232;
+    switch (festival) {
+        case 2:  // Spring Festival
+        case 3:  // Lantern
+            Stroke(f, x, y - 70, x, y - 40, 4);
+            FillRect(f, x - 22, y - 44, 44, 10);
+            FillEllipse(f, x, y, 46, 38);
+            for (int k = -1; k <= 1; ++k) Arc(f, x, y, 16 + 14 * (k + 1), 38, 270 - 20, 270 + 20, 3, false);
+            FillRect(f, x - 22, y + 34, 44, 10);
+            for (int k = -1; k <= 1; ++k) Stroke(f, x + k * 10, y + 46, x + k * 12, y + 74, 4);
+            break;
+        case 4:  // Children's Day: a balloon
+            Ring(f, x, y - 30, 36, 44, 6);
+            Shade(f, x, y - 30, 30, 38, 6);
+            FillTriangle(f, x - 8, y + 18, x + 8, y + 18, x, y + 8);
+            Arc(f, x + 14, y + 44, 14, 26, 120, 240, 3);
+            Arc(f, x - 12, y + 68, 14, 22, -60, 60, 3);
+            break;
+        case 5:  // Dragon Boat: a rice dumpling
+            FillTriangle(f, x, y - 44, x - 50, y + 40, x + 50, y + 40);
+            FillTriangle(f, x, y - 30, x - 34, y + 30, x + 34, y + 30, false);
+            FillTriangle(f, x, y - 30, x - 34, y + 30, x + 34, y + 30, true, 6);
+            Stroke(f, x - 40, y + 10, x + 40, y + 10, 6);
+            break;
+        case 6:  // Mid-Autumn: moon and a mooncake
+            Moon(f, x - 96, y - 28, 24, true);
+            Disk(f, x, y + 10, 44);
+            Ring(f, x, y + 10, 30, 30, 4, false);
+            FilledStar(f, x, y + 12, 16, false);
+            break;
+        case 7: {  // Birthday: a cake with a candle
+            FillRoundRect(f, x - 52, y + 2, 104, 50, 10);
+            FillRoundRect(f, x - 52, y + 2, 104, 18, 8, false);
+            RoundRectRing(f, x - 52, y + 2, 104, 50, 10, 5);
+            for (int k = -2; k <= 2; ++k) Disk(f, x + k * 20, y + 20, 6, false);
+            FillRect(f, x - 5, y - 34, 10, 34);
+            FillEllipse(f, x, y - 46, 8, 12);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// "I would like ...": a thought bubble left of the head (level >= 2).
+void NeedBubble(MonoFrame& f, uint8_t need, uint8_t level) {
+    if (!need || level < 2) return;
+    const int bx = 214, by = 104, w = level >= 3 ? 7 : 4;
+    Blob(f, bx, by, 46, 38, w);
+    Ring(f, 262, 140, 8, 8, 3);
+    Ring(f, 278, 156, 5, 5, 3);
+    switch (need) {
+        case 1:  // hungry: a fish
+            GameArtIcon(f, static_cast<uint16_t>(GameArt::Fish), bx, by, 26);
+            break;
+        case 2:  // sleepy: moon and a Z
+            Moon(f, bx - 8, by + 2, 18, true);
+            LetterZ(f, bx + 18, by - 10, 14, 4);
+            break;
+        case 3:  // dirty: mud spots and a water drop
+            for (int k = 0; k < 3; ++k) Shade(f, bx - 20 + k * 12, by + 12 - (k % 2) * 8, 8, 6, 10);
+            FillEllipse(f, bx + 18, by - 2, 10, 13);
+            FillTriangle(f, bx + 10, by - 6, bx + 26, by - 6, bx + 18, by - 24);
+            break;
+        case 4:  // bored: a ball
+            GameBall(f, bx, by, 22);
+            break;
+        default:
+            break;
+    }
+}
+
+// ---- care pictures for cards (CareArt) ----
+
+void HabitIcon(MonoFrame& f, uint8_t habit, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(3, r / 10);
+    switch (habit) {
+        case 1:  // brush teeth: a toothbrush
+            Stroke(f, cx - p(80), cy + p(40), cx + p(40), cy - p(20), std::max(4, p(16)));
+            FillRoundRect(f, cx + p(24), cy - p(58), p(54), p(30), p(8));
+            for (int k = 0; k < 4; ++k)
+                Stroke(f, cx + p(30) + k * p(14), cy - p(58), cx + p(30) + k * p(14), cy - p(80), w);
+            break;
+        case 2:  // wash hands: a palm and drops
+            Blob(f, cx - p(10), cy + p(14), p(42), p(52), w);
+            for (int k = 0; k < 3; ++k) {
+                const int x = cx + p(52) + (k % 2) * p(14), y = cy - p(50) + k * p(34);
+                FillEllipse(f, x, y, p(9), p(12));
+                FillTriangle(f, x - p(8), y - p(4), x + p(8), y - p(4), x, y - p(22));
+            }
+            break;
+        case 3:  // tidy toys: a toy box
+            FillRoundRect(f, cx - p(70), cy - p(10), p(140), p(70), p(10));
+            GameBall(f, cx - p(26), cy - p(30), p(24));
+            FillRect(f, cx + p(10), cy - p(50), p(40), p(40));
+            break;
+        case 4:  // drink water: a cup
+            FillTriangle(f, cx - p(46), cy - p(60), cx + p(46), cy - p(60), cx + p(32), cy + p(70));
+            FillTriangle(f, cx - p(46), cy - p(60), cx - p(32), cy + p(70), cx + p(32), cy + p(70));
+            FillTriangle(f, cx - p(34), cy - p(46), cx + p(34), cy - p(46), cx, cy - p(30), false);
+            Arc(f, cx + p(46), cy, p(22), p(26), -80, 80, w);
+            break;
+        case 5:  // dress self: a T-shirt
+            FillRect(f, cx - p(40), cy - p(50), p(80), p(110));
+            FillTriangle(f, cx - p(40), cy - p(50), cx - p(90), cy - p(10), cx - p(40), cy + p(10));
+            FillTriangle(f, cx + p(40), cy - p(50), cx + p(90), cy - p(10), cx + p(40), cy + p(10));
+            Disk(f, cx, cy - p(50), p(18), false);
+            break;
+        case 6:  // eat veggies: broccoli
+            Stroke(f, cx, cy + p(70), cx, cy, std::max(4, p(20)));
+            for (int k = -1; k <= 1; ++k) Disk(f, cx + k * p(34), cy - p(20) - (k == 0) * p(24), p(32));
+            break;
+        case 7:  // bed on time: moon over a pillow
+            Moon(f, cx, cy - p(30), p(46), true);
+            Blob(f, cx, cy + p(56), p(70), p(22), w);
+            break;
+        case 8:  // read: the rail's open book
+            RailIcon(f, 1, cx, cy, true);
+            break;
+        default:
+            break;
+    }
+}
+
+void FoodIcon(MonoFrame& f, uint8_t food, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(3, r / 10);
+    switch (food) {
+        case 1:  // fish
+            GameArtIcon(f, static_cast<uint16_t>(GameArt::Fish), cx, cy, r);
+            break;
+        case 2:  // milk bottle
+            FillRoundRect(f, cx - p(36), cy - p(40), p(72), p(110), p(16));
+            FillRect(f, cx - p(20), cy - p(70), p(40), p(34));
+            FillRect(f, cx - p(26), cy - p(84), p(52), p(16));
+            ShadeRect(f, cx - p(26), cy - p(10), p(52), p(60), 4);
+            break;
+        case 3:  // apple
+            Disk(f, cx - p(22), cy + p(10), p(48));
+            Disk(f, cx + p(22), cy + p(10), p(48));
+            Stroke(f, cx, cy - p(40), cx + p(8), cy - p(78), w);
+            FillEllipse(f, cx + p(32), cy - p(66), p(22), p(10));
+            Disk(f, cx - p(28), cy - p(10), p(10), false);
+            break;
+        case 4:  // carrot
+            FillTriangle(f, cx - p(30), cy - p(40), cx + p(30), cy - p(40), cx, cy + p(90));
+            for (int k = 0; k < 3; ++k)
+                Stroke(f, cx - p(14) + k * p(8), cy - p(10) + k * p(26), cx + p(10) - k * p(4),
+                       cy - p(4) + k * p(26), std::max(2, w / 2), false);
+            for (int k = -1; k <= 1; ++k) Stroke(f, cx, cy - p(42), cx + k * p(30), cy - p(88), w);
+            break;
+        case 5:  // cookie
+            Disk(f, cx, cy, p(76));
+            for (int k = 0; k < 5; ++k) {
+                const double a = (k * 72 + 20) * kPi / 180.0;
+                Disk(f, cx + static_cast<int>(std::lround(p(40) * std::cos(a))),
+                     cy + static_cast<int>(std::lround(p(40) * std::sin(a))), p(10), false);
+            }
+            break;
+        case 6:  // rice ball
+            FillTriangle(f, cx, cy - p(80), cx - p(80), cy + p(60), cx + p(80), cy + p(60), false);
+            for (int k = 0; k < 3; ++k) {
+                const int t = std::max(3, w);
+                Stroke(f, cx, cy - p(80) + k, cx - p(80) + k, cy + p(60), t);
+                Stroke(f, cx, cy - p(80) + k, cx + p(80) - k, cy + p(60), t);
+            }
+            Stroke(f, cx - p(80), cy + p(60), cx + p(80), cy + p(60), w);
+            FillRect(f, cx - p(30), cy + p(10), p(60), p(50));
+            break;
+        default:
+            break;
+    }
+}
+
+void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    auto p = [r](int percent) { return r * percent / 100; };
+    const int w = std::max(3, r / 10);
+    if (art >= static_cast<uint16_t>(CareArt::Fish) && art <= static_cast<uint16_t>(CareArt::RiceBall)) {
+        FoodIcon(f, static_cast<uint8_t>(art - static_cast<uint16_t>(CareArt::Fish) + 1), cx, cy, r);
+        return;
+    }
+    if (art >= static_cast<uint16_t>(CareArt::HabitFirst) && art <= static_cast<uint16_t>(CareArt::HabitLast)) {
+        HabitIcon(f, static_cast<uint8_t>(art - static_cast<uint16_t>(CareArt::HabitFirst) + 1), cx, cy, r);
+        return;
+    }
+    if (art >= static_cast<uint16_t>(CareArt::WearFirst) && art <= static_cast<uint16_t>(CareArt::WearLast)) {
+        // The wardrobe item on a small TuanTuan head (wardrobe table order).
+        static const uint8_t kSlot[12] = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 4};
+        static const uint8_t kItem[12] = {1, 2, 3, 4, 1, 2, 3, 1, 2, 1, 1, 2};
+        const size_t i = art - static_cast<uint16_t>(CareArt::WearFirst);
+        if (kSlot[i] == kSlotBed) {
+            FillRoundRect(f, cx - p(80), cy, p(160), p(40), p(10));
+            Blob(f, cx - p(46), cy - p(10), p(28), p(16), w);
+            FillRect(f, cx - p(86), cy - p(40), p(12), p(90));
+            return;
+        }
+        if (kSlot[i] == kSlotLamp) {
+            if (kItem[i] == 2) {
+                FilledStar(f, cx, cy, p(80));
+            } else {
+                FillTriangle(f, cx - p(50), cy - p(20), cx + p(50), cy - p(20), cx + p(26), cy - p(80));
+                FillTriangle(f, cx - p(50), cy - p(20), cx - p(26), cy - p(80), cx + p(26), cy - p(80));
+                Stroke(f, cx, cy - p(20), cx, cy + p(70), w);
+                FillEllipse(f, cx, cy + p(76), p(44), p(12));
+            }
+            return;
+        }
+        const int scale = r * 100 / 170;
+        const int hy = cy + p(30);
+        CatHead(f, cx, hy, scale, Emotion::Happy);
+        std::array<uint8_t, 5> worn{};
+        worn[kSlot[i]] = kItem[i];
+        Accessories(f, worn, 0, cx, hy, scale);
+        return;
+    }
+    switch (static_cast<CareArt>(art)) {
+        case CareArt::Bubbles:
+            Ring(f, cx - p(30), cy + p(20), p(40), p(40), w);
+            Ring(f, cx + p(36), cy - p(10), p(30), p(30), w);
+            Ring(f, cx + p(10), cy - p(60), p(18), p(18), w);
+            Arc(f, cx - p(40), cy + p(8), p(18), p(18), 200, 260, w);
+            break;
+        case CareArt::Comb:
+            FillRoundRect(f, cx - p(80), cy - p(50), p(160), p(36), p(12));
+            for (int k = 0; k < 8; ++k)
+                FillRect(f, cx - p(74) + k * p(20), cy - p(16), p(10), p(64));
+            break;
+        case CareArt::Feather:
+            FillEllipse(f, cx + p(8), cy - p(10), p(30), p(70));
+            Stroke(f, cx - p(40), cy + p(80), cx + p(26), cy - p(70), std::max(2, w / 2), false);
+            Stroke(f, cx - p(40), cy + p(80), cx - p(20), cy + p(36), w);
+            break;
+        case CareArt::Hanger:
+            Arc(f, cx, cy - p(56), p(18), p(18), 180, 400, w);
+            Stroke(f, cx, cy - p(38), cx - p(84), cy + p(36), w);
+            Stroke(f, cx, cy - p(38), cx + p(84), cy + p(36), w);
+            Stroke(f, cx - p(84), cy + p(36), cx + p(84), cy + p(36), w);
+            break;
+        case CareArt::Check:
+            RoundRectRing(f, cx - p(70), cy - p(70), p(140), p(140), p(20), w);
+            CheckMark(f, cx, cy, p(46), std::max(4, p(14)), true);
+            break;
+        case CareArt::Sticker:  // the album: a star sticker with a peeled corner
+            Disk(f, cx, cy, p(80));
+            FilledStar(f, cx, cy + p(4), p(52), false);
+            FillTriangle(f, cx + p(40), cy + p(70), cx + p(80), cy + p(30), cx + p(84), cy + p(84),
+                         false);
+            Stroke(f, cx + p(40), cy + p(70), cx + p(80), cy + p(30), w);
+            break;
+        case CareArt::ToyBlock:
+            FillRect(f, cx - p(50), cy - p(50), p(100), p(100));
+            FillRect(f, cx - p(30), cy - p(30), p(60), p(60), false);
+            Disk(f, cx, cy, p(14));
+            break;
+        case CareArt::ToyBall:
+            GameBall(f, cx, cy, p(70));
+            break;
+        case CareArt::ToyBear:
+            for (int side : {-1, 1}) Disk(f, cx + side * p(44), cy - p(46), p(22));
+            Blob(f, cx, cy, p(58), p(54), w);
+            for (int side : {-1, 1}) Disk(f, cx + side * p(20), cy - p(8), p(8));
+            FillEllipse(f, cx, cy + p(18), p(12), p(9));
+            break;
+        case CareArt::Lock:
+            Arc(f, cx, cy - p(20), p(36), p(44), 180, 360, std::max(4, p(14)));
+            FillRoundRect(f, cx - p(56), cy - p(20), p(112), p(90), p(14));
+            Disk(f, cx, cy + p(16), p(12), false);
+            FillRect(f, cx - p(5), cy + p(16), p(10), p(30), false);
+            break;
+        default:
+            break;
+    }
+}
+
+// ---- care scenes ----
+
+// Progress as dots: done filled, the rest rings (right panel, y = 250).
+void ProgressDots(MonoFrame& f, uint8_t done, uint8_t goal, int cx, int y) {
+    if (!goal) return;
+    const int pitch = 44, x0 = cx - (goal - 1) * pitch / 2;
+    for (uint8_t i = 0; i < goal; ++i) {
+        if (i < done) Disk(f, x0 + i * pitch, y, 14);
+        else Ring(f, x0 + i * pitch, y, 13, 13, 4);
+    }
+}
+
+void Hearts(MonoFrame& f, uint8_t n, int cx, int cy) {
+    for (uint8_t i = 0; i < n && i < 3; ++i) Heart(f, cx + (static_cast<int>(i) - (n - 1) / 2) * 70, cy, 20);
+}
+
+// One sticker badge: earned = a ringed picture, not yet = a dashed ring
+// with a question mark. Pictures reuse the rail and care icons.
+void StickerBadge(MonoFrame& f, uint8_t id, bool earned, int cx, int cy) {
+    if (!earned) {
+        for (int deg = 0; deg < 360; deg += 30) Arc(f, cx, cy, 62, 62, deg, deg + 16, 5);
+        QuestionMark(f, cx, cy - 6, 20, 8);
+        return;
+    }
+    Ring(f, cx, cy, 64, 64, 9);
+    auto count_dots = [&](int n) {
+        for (int k = 0; k < n; ++k) Disk(f, cx - (n - 1) * 9 + k * 18, cy + 40, 6);
+    };
+    switch (id) {
+        case 0: case 1: case 2:  // books 1 / 5 / 10
+            RailIcon(f, 1, cx, cy - 8, true);
+            count_dots(id + 1);
+            break;
+        case 3: case 4:  // games 1 / 10
+            RailIcon(f, 2, cx, cy - 8, true);
+            count_dots(id - 2);
+            break;
+        case 5: Heart(f, cx, cy - 16, 22); break;                     // first like
+        case 6: FilledStar(f, cx, cy, 40); count_dots(3); break;      // seven days
+        case 7: case 8:                                               // feeds 1 / 10
+            FoodIcon(f, 1, cx, cy - 8, 34);
+            count_dots(id - 6);
+            break;
+        case 9: CareArtIcon(f, static_cast<uint16_t>(CareArt::Bubbles), cx, cy, 38); break;
+        case 10: CareArtIcon(f, static_cast<uint16_t>(CareArt::Comb), cx, cy, 38); break;
+        case 11: CareArtIcon(f, static_cast<uint16_t>(CareArt::Feather), cx, cy, 38); break;
+        case 12: Moon(f, cx - 4, cy, 30, true); break;
+        case 13: case 14: case 15:  // habit 3 / 7 / 14 days
+            CheckMark(f, cx, cy - 10, 26, 9, true);
+            count_dots(id - 12);
+            break;
+        case 16:  // birthday: a small cake with a candle
+            FillRoundRect(f, cx - 34, cy - 4, 68, 34, 8);
+            FillRect(f, cx - 4, cy - 30, 8, 26);
+            FillEllipse(f, cx, cy - 38, 6, 9);
+            break;
+        case 17:  // festival: a lantern
+            FillEllipse(f, cx, cy, 30, 24);
+            FillRect(f, cx - 14, cy - 30, 28, 8);
+            FillRect(f, cx - 14, cy + 22, 28, 8);
+            break;
+        case 18: FilledStar(f, cx, cy, 46); break;  // care star
+        default: QuestionMark(f, cx, cy - 6, 20, 8); break;
+    }
+}
+
+void AlbumScene(MonoFrame& f, const CareView& c) {
+    const int per_page = 6;
+    for (int i = 0; i < per_page; ++i) {
+        const int id = c.page * per_page + i;
+        if (id >= 19) break;  // kStickerCount
+        const int cx = 170 + (i % 3) * 230, cy = 132 + (i / 3) * 180;
+        StickerBadge(f, static_cast<uint8_t>(id), (c.stickers >> id) & 1u, cx, cy);
+    }
+    for (int p = 0; p < c.pages; ++p) {
+        if (p == c.page) Disk(f, 400 + (2 * p - (c.pages - 1)) * 22, 440, 11);
+        else Ring(f, 400 + (2 * p - (c.pages - 1)) * 22, 440, 9, 9, 3);
+    }
+}
+
+void DiaryScene(MonoFrame& f, const CareView& c) {
+    CatHead(f, 150, 190, 60, Emotion::Happy, Eyes::Laugh);
+    Accessories(f, c.worn, 0, 150, 190, 60);
+    // The page: one row per thing that happened today.
+    RoundRectRing(f, 300, 40, 460, 400, 24, 6);
+    Stroke(f, 330, 40, 330, 440, 3);
+    int y = 92;
+    auto row = [&]() { const int at = y; y += 76; return at; };
+    if (c.food) FoodIcon(f, c.food, 420, row(), 34);
+    if (c.book) RailIcon(f, 1, 420, row(), true);
+    if (c.game) RailIcon(f, 2, 420, row(), true);
+    if (c.cares) {
+        const int at = row();
+        for (int k = 0; k < c.cares && k < 4; ++k) Heart(f, 390 + k * 64, at - 12, 18);
+    }
+    if (c.habit_done) {
+        const int at = row();
+        CheckMark(f, 420, at, 28, 10, true);
+    }
+    if (y == 92) {  // a quiet day: a calm moon
+        Moon(f, 530, 220, 60, true);
+        Sparkle(f, 640, 140, 16);
+    }
+}
+
+void CareScene(MonoFrame& f, const CareView& c) {
+    if (c.kind == CareKind::Album) {
+        AlbumScene(f, c);
+        return;
+    }
+    if (c.kind == CareKind::Diary) {
+        DiaryScene(f, c);
+        return;
+    }
+    const bool resting = c.kind == CareKind::Lull && c.goal && c.progress * 2 >= c.goal;
+    const bool happy = c.hearts > 0;
+    const Emotion emotion = happy ? Emotion::Happy : resting ? Emotion::Sleepy : Emotion::Neutral;
+    const Eyes eyes = happy ? Eyes::Laugh : resting ? Eyes::Closed : Eyes::ByEmotion;
+    const bool dress = c.kind == CareKind::Dress;
+    const int hx = dress ? 400 : 200, hy = dress ? 160 : 160, scale = 80;
+    CatHead(f, hx, hy, scale, emotion, eyes);
+    Accessories(f, c.worn, 0, hx, hy, scale);
+    // Hearts after a care, top right (clear of the corner boxes).
+    if (happy && !dress && c.kind != CareKind::Feed) Hearts(f, c.hearts, 580, 64);
+    if (dress) {
+        if (happy) Heart(f, 560, 70, 20);
+    } else {
+        const int px = 580;
+        switch (c.kind) {
+            case CareKind::Feed:  // the bowl
+                FillEllipse(f, px, 210, 110, 34);
+                FillEllipse(f, px, 196, 96, 18, false);
+                Ring(f, px, 196, 96, 18, 5);
+                if (c.hearts) Hearts(f, c.hearts, px, 100);
+                break;
+            case CareKind::Bath:
+                Ring(f, px, 230, 140, 46, 7);
+                ShadeRect(f, px - 120, 232, 240, 30, 4);
+                for (uint8_t i = 0; i < c.progress && i < 3; ++i)
+                    Ring(f, px - 80 + i * 80, 170 - (i % 2) * 40, 26 + i * 4, 26 + i * 4, 5);
+                if (c.phase == 1 && !happy) {  // rinse: turn the board over
+                    Arc(f, px, 90, 60, 40, 200, 340, 7);
+                    FillTriangle(f, px + 56, 76, px + 76, 100, px + 40, 104);
+                    for (int k = -2; k <= 2; ++k) FillEllipse(f, px + k * 26, 140 + (k & 1) * 10, 5, 9);
+                }
+                break;
+            case CareKind::Brush:
+                CareArtIcon(f, static_cast<uint16_t>(CareArt::Comb), px, 130, 70);
+                ProgressDots(f, c.progress, c.goal, px, 250);
+                break;
+            case CareKind::Tickle:
+                CareArtIcon(f, static_cast<uint16_t>(CareArt::Feather), px, 130, 70);
+                ProgressDots(f, c.progress, c.goal, px, 250);
+                break;
+            case CareKind::Lull:
+                Moon(f, px - 20, 110, 50, true);
+                LetterZ(f, px + 60, 80, 26, 6);
+                ProgressDots(f, static_cast<uint8_t>(c.progress / 2), static_cast<uint8_t>(c.goal / 2), px,
+                             250);
+                break;
+            case CareKind::Habit:
+                if (c.option_count) {
+                    CareArtIcon(f, c.options[0], px, 150, 80);
+                    if (c.phase) {  // ticked today: a big check in a ring
+                        Disk(f, px + 90, 230, 44, false);
+                        Ring(f, px + 90, 230, 44, 44, 7);
+                        CheckMark(f, px + 90, 230, 26, 9, true);
+                    }
+                }
+                break;
+            case CareKind::Tidy: {  // toys go into the box one by one
+                const uint16_t toys[3] = {static_cast<uint16_t>(CareArt::ToyBlock),
+                                          static_cast<uint16_t>(CareArt::ToyBall),
+                                          static_cast<uint16_t>(CareArt::ToyBear)};
+                for (uint8_t i = 0; i < 3; ++i) {  // in the box: peeking over the edge
+                    if (i < c.progress) CareArtIcon(f, toys[i], 520 + i * 80, 160, 34);
+                }
+                FillRoundRect(f, 460, 178, 260, 100, 16);
+                FillRoundRect(f, 476, 194, 228, 20, 8, false);
+                for (uint8_t i = 0; i < 3; ++i) {  // still on the floor
+                    if (i >= c.progress) CareArtIcon(f, toys[i], 380 + (i % 2) * 40, 80 + i * 90, 38);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    // Cards, exactly like the game answer rail.
+    const uint8_t n = std::min<uint8_t>(c.option_count, 3);
+    for (uint8_t i = 0; i < n; ++i) {
+        const int x = GameCardX(i, n);
+        RoundRectRing(f, x, kGameCardY, kGameCardW, kGameCardH, 24, 5);
+        GameArtIcon(f, c.options[i], x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
+        if (i == c.highlight)
+            RoundRectRing(f, x - kGameFrame, kGameCardY - kGameFrame, kGameCardW + 2 * kGameFrame,
+                          kGameCardH + 2 * kGameFrame, 24 + kGameFrame, 10);
+    }
+}
+
 // ---- Scenes --------------------------------------------------------------------
 
 void HomeScene(MonoFrame& f, const SceneModel& model) {
-    // Background twinkles and a dithered cushion under the pet.
-    Sparkle(f, 110, 90, 18);
-    Sparkle(f, 160, 150, 9);
+    const HomeLook& look = model.look;
+    const bool bed = look.worn[kSlotBed] != 0, lamp = look.worn[kSlotLamp] != 0;
+    const bool prop = look.festival >= 2, bubble = look.need && look.need_level >= 2;
+    // Background twinkles and a dithered cushion under the pet (V8: none
+    // under the room items, the festival prop or the need bubble).
+    if (!bubble) Sparkle(f, 110, 90, 18);
+    if (!prop && !bubble) Sparkle(f, 160, 150, 9);
     // Not under the thought cloud or the low-battery bubble.
     if (model.emotion != Emotion::Thinking && model.pose != ScenePose::Yawn &&
         model.pose != ScenePose::TipHot && model.pose != ScenePose::TipCold)
         Sparkle(f, 690, 80, 14);
-    Sparkle(f, 640, 220, 10);
-    Sparkle(f, 96, 280, 8);
-    Disk(f, 720, 300, 4);
-    Disk(f, 70, 190, 4);
+    if (!lamp) Sparkle(f, 640, 220, 10);
+    if (!bed) Sparkle(f, 96, 280, 8);
+    if (!lamp) Disk(f, 720, 300, 4);
+    if (!prop) Disk(f, 70, 190, 4);
     Shade(f, 400, 356, 200, 20, 6);
     Ring(f, 400, 356, 200, 20, 3);
+    if (bed) RoomBed(f);
+    if (lamp) RoomLamp(f, look.worn[kSlotLamp]);
+    if (prop) FestivalProp(f, look.festival);
     if (model.pose == ScenePose::Sunrise || model.pose == ScenePose::Morning)
         MorningSun(f, model.pose == ScenePose::Morning);
-    SittingCat(f, 400, 158, model.emotion, model.pose);
+    // V8: a resting, neutral TuanTuan shows how she feels; voice faces,
+    // animations and battery / tip pictures keep their own face.
+    Emotion emotion = model.emotion;
+    const bool resting = model.pose == ScenePose::Still && emotion == Emotion::Neutral;
+    if (resting && bubble && look.need == 2) emotion = Emotion::Sleepy;   // Need::Sleepy
+    if (resting && bubble && look.need == 4) emotion = Emotion::Curious;  // Need::Bored
+    SittingCat(f, 400, 158, emotion, model.pose);
+    Accessories(f, look.worn, look.festival, 400, 158, 100);
+    if (bubble && model.pose == ScenePose::Still) NeedBubble(f, look.need, look.need_level);
     ActionRail(f, model.home_selection);
     StatusBand(f, model.status);
 }
@@ -1839,6 +2559,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
         ParentScene(output, model.parent);
     } else if (model.kind == SceneKind::Game) {
         GameScene(output, model.game);
+    } else if (model.kind == SceneKind::Care) {
+        CareScene(output, model.care);  // V8
     } else {
         HomeScene(output, model);
     }

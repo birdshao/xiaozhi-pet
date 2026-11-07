@@ -137,7 +137,8 @@ class GameMenu {
 public:
     static constexpr uint32_t kIdleExitMs = 60000;
 
-    // start: the card highlighted first (0-based index in the group).
+    // start: the card highlighted first (0-based index in the group). A
+    // group without rows does not open: finished (end Home), not Active().
     GameMenuOutput Start(uint32_t now_ms, uint8_t start = 0,
                          ActivityGroup group = ActivityGroup::Play);
     GameMenuOutput Input(GameInput input, uint32_t now_ms);

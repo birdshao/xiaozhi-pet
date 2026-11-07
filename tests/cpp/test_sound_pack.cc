@@ -3,6 +3,7 @@
 // `python3 -m tools.sound_pack demo` (cross-language check, scripts/p2_test.sh).
 #include "kid_app/home_menu.h"
 #include "kid_app/pet_phrases.h"
+#include "kid_app/care_phrases.h"
 #include "kid_app/sound_bank.h"
 #include "kid_app/sound_pack_reader.h"
 
@@ -408,10 +409,17 @@ void TestToolPack(const std::string& dir) {
         assert(in_pack == (played && p.slot == PhraseSlot::None));
         phrases += in_pack;
     }
-    assert(pack.ClipCount() == HomeMenu::kItemCount + phrases);
+    // V8: every reviewed care line is in the demo pack too.
+    for (size_t i = 0; i < CarePhraseCount(); ++i)
+        assert(pack.Find(CarePhraseAt(i).id, &info));
+    assert(pack.ClipCount() == HomeMenu::kItemCount + phrases + CarePhraseCount());
     SoundBank bank;
     bank.UsePack(&pack);
     SoundClip clip;
+    assert(bank.LoadCareLine(1151, &clip) && clip.source == SoundClip::Source::Pack);
+    SoundBank builtin_only;
+    assert(builtin_only.LoadCareLine(1151, &clip) && clip.source == SoundClip::Source::Chime);
+    assert(!builtin_only.LoadCareLine(999, &clip) && !builtin_only.LoadCareLine(1999, &clip));
     assert(bank.LoadPhrase(271, &clip) && clip.source == SoundClip::Source::Pack);
     std::vector<int16_t> pcm(clip.samples);
     assert(clip.Copy(0, pcm.data(), pcm.size()) == pcm.size());

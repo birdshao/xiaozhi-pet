@@ -461,9 +461,15 @@ int main() {
         SceneComposer::Render(with_status, f);
         assert(f.Data() == base.Data());
 
-        // Every value lives in its own row.
+        // Every value lives in its own row (V8 rows on page 2, where the
+        // cursor shows them; row band = row % rows per page).
         for (uint8_t row = 0; row < kid_app::kParentItemCount; ++row) {
-            ParentView changed = view;
+            const bool page2 = row >= kid_app::kParentRowsPerPage;
+            ParentView paged = view;
+            if (page2) paged.cursor = kid_app::kParentRowsPerPage;
+            MonoFrame page_base;
+            render(paged, page_base);
+            ParentView changed = paged;
             auto& s = changed.settings;
             switch (static_cast<ParentItem>(row)) {
                 case ParentItem::Wake: s.schedule.wake_min = 6 * 60 + 45; break;
@@ -475,9 +481,13 @@ int main() {
                 case ParentItem::QuietVolume: s.quiet_volume_pct = 0; break;
                 case ParentItem::Motion: s.motion_enabled = false; break;
                 case ParentItem::Server: changed.link.state = kid_app::LinkState::Paired; break;
+                case ParentItem::Habit: changed.care.habit = 6; break;
+                case ParentItem::BirthMonth: changed.care.birth_month = 12; break;
+                case ParentItem::BirthDay: changed.care.birth_day = 25; break;
             }
             render(changed, f);
-            assert(only_rows(base, f, top + row * row_h, top + (row + 1) * row_h));
+            const int slot = row % kid_app::kParentRowsPerPage;
+            assert(only_rows(page_base, f, top + slot * row_h, top + (slot + 1) * row_h));
         }
         // Moving the highlight redraws the two rows involved.
         ParentView moved = view;

@@ -167,6 +167,7 @@ void FreertosAtomicPetService::PublishView() {
     xSemaphoreTake(view_mutex_,portMAX_DELAY);
     parent_view_=ledger_.Parent();
     memory_view_=ledger_.Memory();
+    care_view_=ledger_.Care();
     pet_view_=ledger_.Snapshot();
     generation_view_=ledger_.Generation();
     xSemaphoreGive(view_mutex_);
@@ -184,6 +185,14 @@ MemoryStore FreertosAtomicPetService::MemoryNow() const {
     if (!view_mutex_) return MemoryStore{};
     xSemaphoreTake(view_mutex_,portMAX_DELAY);
     const MemoryStore copy=memory_view_;
+    xSemaphoreGive(view_mutex_);
+    return copy;
+}
+
+CareStore FreertosAtomicPetService::CareNow() const {
+    if (!view_mutex_) return CareStore{};
+    xSemaphoreTake(view_mutex_,portMAX_DELAY);
+    const CareStore copy=care_view_;
     xSemaphoreGive(view_mutex_);
     return copy;
 }
@@ -211,6 +220,7 @@ bool FreertosAtomicPetService::SyncViewNow(PetSyncView* out) const {
     out->pet=pet_view_;
     out->memory=memory_view_;
     out->parent=parent_view_;
+    out->stickers=care_view_.Stickers();
     xSemaphoreGive(view_mutex_);
     return true;
 }
@@ -245,6 +255,14 @@ bool FreertosAtomicPetService::PostMemory(const MemoryEvent& event) {
     Message msg{};
     msg.kind=Kind::Memory;
     msg.memory=event;
+    return Enqueue(msg);
+}
+
+bool FreertosAtomicPetService::PostCare(const CareEvent& event) {
+    if (!ready_.load()) return false;
+    Message msg{};
+    msg.kind=Kind::Care;
+    msg.care=event;
     return Enqueue(msg);
 }
 
@@ -451,7 +469,7 @@ bool FreertosAtomicPetService::Process(const Message& pending, bool last_attempt
         MemoryEvent memory=pending.memory;
         if (!memory.id) memory.id=NextLocalEventId(ledger_.Generation());
         if (!memory.day) memory.day=Day();
-        const CommitResult result=memory.id ? ledger_.RecordMemory(memory)
+        const CommitResult result=memory.id ? ledger_.RecordMemory(memory,Minute())
                                             : CommitResult::Rejected;
         // Same id on a retry: the generation did not move.
         if (result==CommitResult::StorageError && !last_attempt) return true;
@@ -459,6 +477,24 @@ bool FreertosAtomicPetService::Process(const Message& pending, bool last_attempt
         ESP_LOGI(kTag,"PET_MEMORY_COMMIT kind=%u src=%u result=%s",
                  static_cast<unsigned>(memory.kind),static_cast<unsigned>(memory.source),
                  ResultName(result));
+        return result==CommitResult::StorageError;
+    }
+
+    if (pending.kind==Kind::Care) {
+        CareEvent care=pending.care;
+        if (!care.id) care.id=NextLocalEventId(ledger_.Generation());
+        if (!care.minute) care.minute=Minute();
+        uint32_t earned=0;
+        const CommitResult result=care.id ? ledger_.RecordCare(care,&earned)
+                                          : CommitResult::Rejected;
+        // Same id on a retry: the generation did not move.
+        if (result==CommitResult::StorageError && !last_attempt) return true;
+        if (result==CommitResult::Committed) PublishView();
+        ESP_LOGI(kTag,"PET_CARE_COMMIT kind=%u src=%u result=%s stickers=%u new=%u",
+                 static_cast<unsigned>(care.kind),static_cast<unsigned>(care.source),
+                 ResultName(result),static_cast<unsigned>(ledger_.Care().Stickers()),
+                 static_cast<unsigned>(earned));
+        if (care_cb_) care_cb_(care,result,earned,care_context_);
         return result==CommitResult::StorageError;
     }
 

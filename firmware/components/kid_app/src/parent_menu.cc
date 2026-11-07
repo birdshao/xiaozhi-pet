@@ -5,11 +5,26 @@ namespace kid_app {
 
 namespace {
 constexpr int kMinutesPerDay = 24 * 60;
+constexpr uint8_t kHabits = 8;  // Habit presets (care_store.h)
+// Days per month; February allows the 29th (a leap-year birthday).
+uint8_t DaysIn(uint8_t month) {
+    static const uint8_t kDays[12] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    return month >= 1 && month <= 12 ? kDays[month - 1] : 0;
+}
+ParentCare Sanitize(const ParentCare& c) {
+    ParentCare out = c;
+    if (out.habit > kHabits) out.habit = 0;
+    if (!DaysIn(out.birth_month) || out.birth_day < 1 || out.birth_day > DaysIn(out.birth_month))
+        out.birth_month = out.birth_day = 0;
+    return out;
+}
 }  // namespace
 
-void ParentMenu::Open(const ParentSettings& current, uint32_t now_ms) {
+void ParentMenu::Open(const ParentSettings& current, uint32_t now_ms, const ParentCare& care) {
     settings_ = ValidParentSettings(current) ? current : ParentSettings{};
     draft_ = settings_;
+    care_ = Sanitize(care);
+    care_draft_ = care_;
     open_ = true;
     editing_ = false;
     cursor_ = 0;
@@ -21,7 +36,14 @@ ParentView ParentMenu::View() const {
     view.cursor = cursor_;
     view.editing = editing_;
     view.settings = editing_ ? draft_ : settings_;
+    view.care = editing_ ? care_draft_ : care_;
     return view;
+}
+
+void ParentMenu::RevertCare(const ParentCare& previous) {
+    care_ = Sanitize(previous);
+    care_draft_ = care_;
+    editing_ = false;
 }
 
 void ParentMenu::Revert(const ParentSettings& previous) {
@@ -47,6 +69,29 @@ bool ParentMenu::Step(int direction) {
         case ParentItem::Nap:
         case ParentItem::Motion:
         case ParentItem::Server: return false;  // switches flip on a press; Server opens a page
+        case ParentItem::Habit: {  // none, then the presets; the ends stay put
+            const int next = care_draft_.habit + direction;
+            if (next < 0 || next > kHabits) return false;
+            care_draft_.habit = static_cast<uint8_t>(next);
+            return true;
+        }
+        case ParentItem::BirthMonth: {  // 0 = not set; a day is kept valid
+            const int next = care_draft_.birth_month + direction;
+            if (next < 0 || next > 12) return false;
+            care_draft_.birth_month = static_cast<uint8_t>(next);
+            if (!next) care_draft_.birth_day = 0;
+            else if (!care_draft_.birth_day) care_draft_.birth_day = 1;
+            else if (care_draft_.birth_day > DaysIn(care_draft_.birth_month))
+                care_draft_.birth_day = DaysIn(care_draft_.birth_month);
+            return true;
+        }
+        case ParentItem::BirthDay: {  // needs a month first
+            if (!care_draft_.birth_month) return false;
+            const int next = care_draft_.birth_day + direction;
+            if (next < 1 || next > DaysIn(care_draft_.birth_month)) return false;
+            care_draft_.birth_day = static_cast<uint8_t>(next);
+            return true;
+        }
     }
     if (volume) {
         const int next = *volume + direction * ParentSettings::kVolumeStepPct;
@@ -84,12 +129,18 @@ ParentMenuAction ParentMenu::OnInput(InputKind kind, uint32_t now_ms) {
         case InputKind::DialPress:
             if (editing_) {
                 editing_ = false;
+                if (care_draft_ != care_) {  // V8 page 2
+                    care_ = care_draft_;
+                    return ParentMenuAction::SavedCare;
+                }
+                care_draft_ = care_;
                 if (draft_ == settings_) return ParentMenuAction::Redraw;
                 settings_ = draft_;
                 return ParentMenuAction::Saved;
             }
             if (Selected() == ParentItem::Server) return ParentMenuAction::OpenLink;
             draft_ = settings_;
+            care_draft_ = care_;
             if (Selected() == ParentItem::Nap || Selected() == ParentItem::Motion) {
                 if (Selected() == ParentItem::Nap)
                     draft_.schedule.nap_enabled = !draft_.schedule.nap_enabled;
@@ -131,6 +182,9 @@ const char* ParentItemName(ParentItem item) {
         case ParentItem::QuietVolume: return "quiet_volume";
         case ParentItem::Motion: return "motion";
         case ParentItem::Server: return "server";
+        case ParentItem::Habit: return "habit";
+        case ParentItem::BirthMonth: return "birth_month";
+        case ParentItem::BirthDay: return "birth_day";
     }
     return "unknown";
 }

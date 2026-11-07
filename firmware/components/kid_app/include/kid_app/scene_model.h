@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "kid_app/care_view.h"
 #include "kid_app/game_view.h"
 #include "kid_app/parent_menu.h"
 #include "kid_app/status_bar.h"
@@ -15,7 +16,9 @@ class StoryPackReader;
 // Sleep: shown before PMIC power-off and kept by the ePaper while off.
 // Parent: the V3-06 on-device parent menu (draws SceneModel::parent).
 // Game: a V4-06 mini game round (draws SceneModel::game).
-enum class SceneKind : uint8_t { Home, Reader, Sleep, Parent, Game };
+// Care: a V8 care activity, the bedtime diary or the sticker album (draws
+// SceneModel::care). Owned by V8 session 1: other features use Game / Reader.
+enum class SceneKind : uint8_t { Home, Reader, Sleep, Parent, Game, Care };
 // Listening / Thinking / Speaking: voice-session faces (V6-01, see
 // voice_face.h); like every expression they stay above the action rail.
 // Packed in 4 bits (PackScene): at most 16 emotions.
@@ -58,6 +61,12 @@ struct SceneModel {
     // Mini game round (SceneKind::Game only). Not packed either: the board
     // keeps the game in its own session, like the parent menu.
     GameView game{};
+    // V8 care activity (SceneKind::Care only), not packed either.
+    CareView care{};
+    // V8 clothes, room, need bubble and festival prop on the home picture.
+    // Not packed: the board keeps it in its own word (PackLook) and fills
+    // it in when it draws a Home scene, like the status band.
+    HomeLook look{};
 };
 
 // Why the reader has no book to show: no card mounted, the book file is not

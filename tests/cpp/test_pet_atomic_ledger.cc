@@ -210,7 +210,8 @@ void TestChildQuietAndTransientRebootNormalization() {
 int main() {
     static_assert(Ledger::kV1Bytes==1480, "Atomic journal v1 format is frozen");
     static_assert(Ledger::kV2Bytes==1768, "v2 appends the 288 byte memory block");
-    static_assert(Ledger::kBytes==1796, "v3 appends the 28 byte parent settings");
+    static_assert(Ledger::kV3Bytes==1796, "v3 appends the 28 byte parent settings");
+    static_assert(Ledger::kBytes==1892, "v4 appends the 96 byte care store");
     TestAtomicFeedCommitCrashAndAck();
     TestCapacityAndNoLostUpdates();
     TestStrictMigrationAndCorruption();

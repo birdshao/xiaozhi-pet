@@ -80,7 +80,8 @@ bool SoundPackReader::Open(StoryPackFile& file) {
         total != file.Size() || total < data_offset)
         return false;
 
-    std::array<SoundClipInfo, kMaxClips> candidate{};
+    auto& candidate = candidate_;  // member: see sound_pack_reader.h
+    candidate.fill(SoundClipInfo{});
     uint32_t table_crc = 0, previous_end = data_offset;
     for (uint32_t i = 0; i < count; ++i) {
         std::array<uint8_t, kRecordBytes> r{};
@@ -92,8 +93,9 @@ bool SoundPackReader::Open(StoryPackFile& file) {
         c.bytes = U32(r.data() + 8);
         c.crc = U32(r.data() + 12);
         // Ids ascend (unique, binary-searchable); clips follow each other
-        // 4-byte aligned with nothing hidden in between or after.
-        if (c.id == 0 || c.id > 999 || (i > 0 && c.id <= candidate[i - 1].id) ||
+        // 4-byte aligned with nothing hidden in between or after. Ids up
+        // to 1999: V8 care lines use 1000..1999.
+        if (c.id == 0 || c.id > 1999 || (i > 0 && c.id <= candidate[i - 1].id) ||
             U16(r.data() + 2) != 0 || c.bytes < 2 || c.bytes > kMaxClipBytes ||
             (c.bytes & 1u) || c.offset != Align4(previous_end) ||
             uint64_t(c.offset) + c.bytes > total)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/care_store.h"
 #include "kid_app/json_lite.h"
 #include "kid_app/link_view.h"
 #include "kid_app/memory_store.h"
@@ -80,6 +81,9 @@ struct StateSnapshotInput {
     MemoryStore memory{};
     ParentSettings parent{};
     uint32_t parent_settings_rev = 0;  // ParentSettingsCodec v1 has no rev
+    // V8 (ledger schema v4): earned sticker bits (CareStore::Stickers), sent
+    // as the ascending list of sticker ids for the parent panel.
+    uint32_t stickers = 0;
     uint8_t battery_pct = 0;
     bool charging = false;
     uint64_t awaiting[kMaxAwaitingConfirm]{};
@@ -91,7 +95,9 @@ struct StateSnapshotInput {
 // Compact JSON exactly as the server's StateSnapshot model wants it (no
 // extra keys, integers only, empty inventory, no sd_free_kib until the TF
 // downloader exists). Returns the length, or 0 for invalid input (bad
-// generation, settings that do not encode, too many ids) or a short buffer.
+// generation, settings that do not encode, too many ids, unknown sticker
+// bits) or a short buffer. V8: "ledger_schema" is 4 and "stickers" (the
+// earned sticker ids) is appended last; every earlier field is unchanged.
 size_t EncodeStateSnapshot(const StateSnapshotInput& in, char* out, size_t capacity);
 
 // ---- Downstream commands (S2 §5.3) -----------------------------------------

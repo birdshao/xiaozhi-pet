@@ -114,6 +114,13 @@ class SelfTestReportTests(unittest.TestCase):
                                            "# expect full_refreshes 1\n"), log)
         self.assertTrue(report["passed"], report)
         self.assertEqual(report["observed"]["partial_ms"], [640, 1800])
+        # V8: a home-look refresh (needs drift with the clock) is counted the same way.
+        look_log = log.replace("src=status", "src=look")
+        look_report = evaluate(SCENARIO.replace("# expect commits 2\n",
+                                                "# expect commits 2\n# expect partial_refreshes 1\n"),
+                               look_log)
+        self.assertTrue(look_report["passed"], look_report)
+        self.assertEqual(look_report["observed"]["status_refreshes"], 1)
         too_slow = log.replace("ms=1800", "ms=2600")
         self.assertIn("max_partial_ms", evaluate(SCENARIO, too_slow)["failed"])
 

@@ -292,7 +292,10 @@ BOARD_WORKER = r'''
         std::atomic<bool> game_only{false};
         bool Publish(const kid_app::SceneModel& scene) {
             if (parent_only.load() && scene.kind != kid_app::SceneKind::Parent) return false;
-            if (game_only.load() && scene.kind != kid_app::SceneKind::Game) return false;
+            // V8: care activities, the diary and the album run in the game frame.
+            if (game_only.load() && scene.kind != kid_app::SceneKind::Game &&
+                scene.kind != kid_app::SceneKind::Care)
+                return false;
             return kid_app::FreertosPetSceneMailbox::Publish(scene);
         }
     };
@@ -396,6 +399,11 @@ BOARD_WORKER = r'''
         scene.status = scene.kind != kid_app::SceneKind::Home ? kid_app::StatusBar{}
                        : status                              ? *status
                                                              : status_shown_;
+        // V8: clothes, room, need bubble and festival prop (home only, never
+        // packed): always the newest look.
+        scene.look = scene.kind == kid_app::SceneKind::Home
+                         ? kid_app::UnpackLook(home_look_.load())
+                         : kid_app::HomeLook{};
         bool okay = false;
         const uint32_t epd_started_ms = NowMs();
         kid_app::RefreshMode mode = kid_app::RefreshMode::Full;
@@ -427,7 +435,10 @@ BOARD_WORKER = r'''
                        : display_->ShowPetScene(scene);
         }
         refresh_planner_.Completed(scene, mode, okay);
-        if (okay && scene.kind == kid_app::SceneKind::Home) status_shown_ = scene.status;
+        if (okay && scene.kind == kid_app::SceneKind::Home) {
+            status_shown_ = scene.status;
+            look_shown_ = scene.look;  // V8
+        }
         // The sleep cancel window starts once the final picture (all three
         // Z letters, ScenePose::Still) is on the panel.
         if (okay && scene.kind == kid_app::SceneKind::Sleep &&
@@ -485,6 +496,7 @@ BOARD_WORKER = r'''
         }
         if (step.kind == kid_app::DirectorStep::Kind::None) {
             if (ambient) self->MaybeRefreshStatus(displayed);
+            if (ambient) self->MaybeRefreshLook(displayed);  // V8
             return;
         }
         if (xSemaphoreTake(self->pet_screen_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) return;
@@ -553,7 +565,12 @@ BOARD_WORKER = r'''
         }
         // V5-04: only committed events speak. Feeding and saying hi get a
         // short reviewed line, played by the pet_prompt task (never here).
-        if (event.action == kid_app::PetAction::Feed)
+        if (event.action == kid_app::PetAction::Feed && self->feed_sticker_.exchange(false)) {
+            // V8: a sticker earned by this meal is announced after the line.
+            const uint16_t news = kid_app::CarePhraseId(kid_app::CareLine::StickerNew, 0,
+                                                        self->pet_service_.TemperamentNow());
+            self->PostPhrase(kid_app::PhraseContext::Feed, &news, 1);
+        } else if (event.action == kid_app::PetAction::Feed)
             self->PostPhrase(kid_app::PhraseContext::Feed);
         else if (event.action == kid_app::PetAction::Pickup)
             self->PostPhrase(kid_app::PhraseContext::Greeting);
@@ -579,11 +596,37 @@ BOARD_WORKER = r'''
     static uint32_t LocalDay(void* context) {
         return static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->local_day_.load();
     }
+    // Pet worker: the local minute for V8 care needs (0 = clock unknown).
+    static uint32_t LocalMinute(void* context) {
+        return static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->local_minute_.load();
+    }
+    // Pet worker, after a V8 care commit: copy and return. The home look is
+    // recomputed by pet_boot_diag; a new sticker is announced by pet_input
+    // once the care picture is gone.
+    static void CareCommitted(const kid_app::CareEvent& event, kid_app::CommitResult result,
+                              uint32_t new_stickers, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self) return;
+        if (result == kid_app::CommitResult::Committed) self->rhythm_refresh_.store(true);
+        if (event.kind == kid_app::CareEventKind::HabitDone)  // the session waits for it
+            self->habit_answer_.store(result == kid_app::CommitResult::Committed ? 1 : 2);
+        if (new_stickers && event.kind != kid_app::CareEventKind::FestivalSeen)
+            self->sticker_news_.store(true);
+        if ((event.kind == kid_app::CareEventKind::HabitSet ||
+             event.kind == kid_app::CareEventKind::BirthdaySet) &&
+            result != kid_app::CommitResult::Committed && result != kid_app::CommitResult::Duplicate)
+            self->parent_care_failed_.store(true);
+        ESP_LOGI(TAG, "PET_CARE_RESULT kind=%u result=%d new_stickers=0x%x",
+                 static_cast<unsigned>(event.kind), static_cast<int>(result),
+                 static_cast<unsigned>(new_stickers));
+    }
 
     bool StartPetLedger(kid_app::PetSnapshot* restored = nullptr) {
         std::lock_guard<std::mutex> lock(pet_ledger_mutex_);
         if (!pet_ledger_ready_) {
             pet_service_.SetDayProvider(&LocalDay, this);
+            pet_service_.SetMinuteProvider(&LocalMinute, this);  // V8 care needs
+            pet_service_.SetCareCallback(&CareCommitted, this);
             server_sync_.Attach();  // command outcomes -> network task
             pet_ledger_ready_ = pet_service_.Start(
                 kid_app::FreertosAtomicPetService::StartMode::MigrateLegacyLocal,
@@ -905,12 +948,20 @@ BOARD_WORKER = r'''
                            : kid_app::PetInputRouter::DecideDial(pet_mode, event.kind);
         }
         if (begin_sleep) {
-            HandleSleepAction(sleep_flow_.Request(NowMs()));
+            // V8 bedtime ritual from the rail in the evening: tidy up, diary,
+            // then the same sleep flow. PWR keeps its direct sleep (unchanged).
+            if (BedtimeRitualAllowed()) StartCare(kid_app::CareKind::Tidy);
+            else HandleSleepAction(sleep_flow_.Request(NowMs()));
             return;
         }
         if (game_requested_) {
             game_requested_ = false;
             StartGame();
+            return;
+        }
+        if (care_requested_) {
+            care_requested_ = false;
+            OpenCareMenu(0);
             return;
         }
         // The durable action is queued outside the lock; the pet task
@@ -943,6 +994,12 @@ BOARD_WORKER = r'''
         StopPrompt();
         if (home_menu_.Selected() == kid_app::HomeItem::Sleep) {
             *begin_sleep = true;  // started after the lock is released
+            return {};
+        }
+        // V8: Feed opens the care menu (food, bath, brush, tickle, clothes,
+        // habit); refused like a game, where it stays the old direct feed.
+        if (home_menu_.Selected() == kid_app::HomeItem::Feed && GameStartAllowed()) {
+            care_requested_ = true;  // started after the lock is released
             return {};
         }
         // V4-06: a mini game (UI only); refused in quiet hours or on a low
@@ -1589,14 +1646,31 @@ BOARD_WORKER = r'''
     // Any task. Never asleep (good night only while falling asleep) or
     // napping; the player re-checks voice / Pet mode before and while it
     // plays. Overwrites a waiting option prompt, like a newer prompt would.
-    void PostPhrase(kid_app::PhraseContext context) {
+    // V8: `care` (count ids, care_phrases.h) are read after the line.
+    void PostPhrase(kid_app::PhraseContext context, const uint16_t* care = nullptr,
+                    size_t count = 0) {
         if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() || GameActive() ||
             (sleep_active_.load() && context != kid_app::PhraseContext::Bedtime))
             return;
         kid_app::PromptRequest request{};
         request.phrase = static_cast<uint8_t>(1 + static_cast<uint8_t>(context));
         request.token = phrase_tokens_.fetch_add(1) + 1;
+        for (size_t i = 0; care && i < count && i < kid_app::PromptRequest::kCareLines; ++i)
+            request.care[request.care_count++] = care[i];
         PostPrompt(request);
+    }
+
+    // V8 reviewed care lines, in order (a session reaction, the diary). Like
+    // PostPhrase, but also inside the care frame of the game.
+    void PostCareLines(const uint16_t* ids, size_t count) {
+        if (!ids || !count || !pet_mode_.load() || napping_.load() || ParentMenuOpen() ||
+            sleep_active_.load())
+            return;
+        kid_app::PromptRequest request{};
+        request.token = care_tokens_.fetch_add(1) + 1;
+        for (size_t i = 0; i < count && i < kid_app::PromptRequest::kCareLines; ++i)
+            if (ids[i]) request.care[request.care_count++] = ids[i];
+        if (request.care_count) PostPrompt(request);
     }
 
     void PostPrompt(const kid_app::PromptRequest& request) {
@@ -1627,6 +1701,8 @@ BOARD_WORKER = r'''
             // is dropped without cutting what is playing.
             const bool phrase = request.phrase != 0;
             const bool game = request.game != 0;  // V4-06 mini-game clip
+            // V8: a request with only care lines plays care[0] now.
+            const bool care = !phrase && !game && request.care_count != 0;
             const auto context =
                 static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
             const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
@@ -1641,6 +1717,13 @@ BOARD_WORKER = r'''
             if (phrase && !phrase_id) {
                 ESP_LOGI(TAG, "PET_PHRASE_SKIPPED ctx=%s reason=gap",
                          kid_app::PhraseContextName(context));
+                if (request.care_count && !uxQueueMessagesWaiting(prompt_queue_)) {
+                    kid_app::PromptRequest rest{};  // V8: the care lines still play
+                    rest.token = request.token;
+                    rest.care_count = request.care_count;
+                    rest.care = request.care;
+                    xQueueSend(prompt_queue_, &rest, 0);
+                }
                 continue;
             }
             // V5-04: a memory line (yesterday's book at good morning, a chosen
@@ -1671,8 +1754,9 @@ BOARD_WORKER = r'''
                 }
             }
             auto& audio = Application::GetInstance().GetAudioService();
-            // Newest request wins: invalidate audio queued for an older prompt.
-            audio.CancelLocalStoryPcm();
+            // Newest request wins: invalidate audio queued for an older prompt
+            // (not the tail of the line a V8 continuation follows).
+            if (!request.care_next) audio.CancelLocalStoryPcm();
             if (request.index == kPromptStop) continue;
             // Logs: PET_PROMPT_* index=<rail item>, PET_PHRASE_* id=<phrase id>.
             const char* kind = phrase ? "PHRASE" : "PROMPT";
@@ -1683,9 +1767,15 @@ BOARD_WORKER = r'''
                 key = "clip";
                 what = request.game;
             }
+            if (care) {  // V8: PET_CARE_* id=<care line id>
+                kind = "CARE";
+                key = "id";
+                what = request.care[0];
+            }
             kid_app::SoundClip clip;
             kid_app::GameClip game_clip;
             if (game     ? !kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)
+                : care   ? !sound_bank_.LoadCareLine(request.care[0], &clip)
                 : phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
                          : !sound_bank_.LoadOption(request.index, &clip)) {
                 ESP_LOGW(TAG, "PET_%s_FAILED %s=%u reason=clip", kind, key, what);
@@ -1693,7 +1783,8 @@ BOARD_WORKER = r'''
             }
             if (game) clip.samples = game_clip.samples;  // streamed by game_clip below
             const uint64_t session =
-                (uint64_t{game ? 0x47414D45u : phrase ? 0x50485253u : 0x50524F4Du} << 32) |
+                (uint64_t{game ? 0x47414D45u : care ? 0x43415245u : phrase ? 0x50485253u
+                                                                          : 0x50524F4Du} << 32) |
                 request.token;
             if (game)
                 ESP_LOGI(TAG, "PET_GAME_PLAY clip=%u src=%s token=%u samples=%u", what,
@@ -1761,6 +1852,17 @@ BOARD_WORKER = r'''
             else
                 ESP_LOGI(TAG, "PET_%s_QUEUED %s=%u ms=%u", kind, key, what,
                          static_cast<unsigned>(NowMs() - started_ms));
+            // V8: the next care line follows, unless something newer is waiting.
+            const bool done = !state_lost && !interrupted && offset >= clip.samples;
+            const uint8_t used = care ? 1 : 0;
+            if (done && request.care_count > used && !uxQueueMessagesWaiting(prompt_queue_)) {
+                kid_app::PromptRequest next{};
+                next.token = request.token;
+                next.care_next = true;
+                for (uint8_t i = used; i < request.care_count; ++i)
+                    next.care[next.care_count++] = request.care[i];
+                xQueueSend(prompt_queue_, &next, 0);  // full = a newer request won
+            }
         }
     }
 
@@ -1882,7 +1984,10 @@ BOARD_WORKER = r'''
             pet_mailbox_.Publish(scene);
             RequestAnimation(kid_app::Animation::Morning, scene);
         }
-        PostPhrase(kid_app::PhraseContext::MorningRecap);  // V5-04 good morning
+        // V5-04 good morning, then the V8 lines (room, festival, habit).
+        uint16_t morning[kid_app::kMaxDiaryLines] = {};
+        const size_t lines = MorningCareLines(morning);
+        PostPhrase(kid_app::PhraseContext::MorningRecap, morning, lines);
         ESP_LOGI(TAG, "PET_MORNING_BEGIN awake_s=%u phase=%s",
                  static_cast<unsigned>(
                      kid_app::SelfTestClock::Scaled(kid_app::PowerManager::kMorningAwakeMs) / 1000),
@@ -2309,6 +2414,15 @@ BOARD_WORKER = r'''
     // from PetCommitted); shakes and peekaboo are reactions only.
     void HandleGesture(kid_app::Gesture gesture, const char* source) {
         if (gesture == kid_app::Gesture::None) return;
+        // V8: a bath, tickle or lullaby takes every gesture (the session
+        // ignores hard shakes as rewards and never counts a resting board).
+        if (care_motion_.load()) {
+            care_gesture_.store(static_cast<uint8_t>(gesture));
+            if (power_save_timer_) power_save_timer_->WakeUp();
+            power_poke_.store(true);
+            ESP_LOGI(TAG, "PET_GESTURE kind=%s src=%s acted=1 care=1", GestureName(gesture), source);
+            return;
+        }
         // V4-07: a running motion game takes tilt and face down/up (the
         // latest one; pet_input applies it). Everything else, shaking
         // included, is no part of the game: never a reward.
@@ -2383,6 +2497,8 @@ BOARD_WORKER = r'''
         const bool quiet = ok && rhythm.QuietAt(rtc);
         // V5-02: today's memory counters roll over on the local civil day.
         local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc) / 86400) : 0);
+        local_minute_.store(kid_app::CareMinute(rtc, ok));  // V8, 0 = unknown
+        UpdateHomeLook(rtc, ok, phase);
         const bool phase_changed = day_phase_.exchange(phase) != phase;
         const bool quiet_changed = quiet_hours_.exchange(quiet) != quiet;
         if (phase_changed || quiet_changed)
@@ -2849,7 +2965,8 @@ BOARD_WORKER = r'''
         if (story_pcm_.Ready()) story_pcm_.Stop();
         Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
         EndGame("parent", false);  // V4-06
-        parent_menu_.Open(ParentSettingsNow(), NowMs());
+        parent_care_ = ParentCareNow();  // V8 page 2: habit and birthday
+        parent_menu_.Open(ParentSettingsNow(), NowMs(), parent_care_);
         // D5: a request from the parent panel is shown first.
         parent_page_ = kid_app::ParentPage::Menu;
         link_input_ms_ = NowMs();
@@ -2899,6 +3016,9 @@ BOARD_WORKER = r'''
             case kid_app::ParentMenuAction::OpenLink:
                 OpenLinkPage();
                 return;
+            case kid_app::ParentMenuAction::SavedCare:
+                SaveParentCare(parent_menu_.Care());
+                break;
             case kid_app::ParentMenuAction::Saved: {
                 const auto next = parent_menu_.Settings();
                 const auto saved = pet_service_.SaveParentSettings(next, pdMS_TO_TICKS(3000));
@@ -2927,6 +3047,16 @@ BOARD_WORKER = r'''
     // auto-repeat while a value is being edited.
     void UpdateParentMenu() {
         if (!parent_menu_.IsOpen()) return;
+        // V8 page 2: a habit / birthday the ledger refused shows what it holds.
+        if (parent_care_failed_.exchange(false)) {
+            parent_care_ = ParentCareNow();
+            parent_menu_.RevertCare(parent_care_);
+            ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=care");
+            if (parent_page_ == kid_app::ParentPage::Menu) {
+                SceneStateLock lock(scene_state_mutex_);
+                PublishParentSceneLocked();
+            }
+        }
         if (!pet_mode_.load()) {
             CloseParentMenu("pet_off");
             return;
@@ -2972,7 +3102,7 @@ BOARD_WORKER = r'''
     // V4-07: the Game rail item first opens game_menu_ (quiz / tilt ball /
     // peekaboo); the quiz is game_, the other two are motion_. game_mode_
     // says which one owns the dial and the screen.
-    enum class GameMode : uint8_t { None, Menu, Quiz, Motion, Play, Sound };
+    enum class GameMode : uint8_t { None, Menu, Quiz, Motion, Play, Care, Sound };
     kid_app::GameMenu game_menu_;              // pet_input only
     kid_app::MotionGameSession motion_;        // pet_input only
     GameMode game_mode_ = GameMode::None;      // pet_input only
@@ -3068,11 +3198,17 @@ BOARD_WORKER = r'''
     // Caller holds scene_state_mutex_.
     void PublishGameSceneLocked() {
         kid_app::SceneModel scene{};
+        if (game_mode_ == GameMode::Care) {  // V8 care activity / diary / album
+            scene.kind = kid_app::SceneKind::Care;
+            scene.care = care_.View();
+            pet_mailbox_.Publish(scene);
+            return;
+        }
         scene.kind = kid_app::SceneKind::Game;
         scene.game = game_mode_ == GameMode::Menu     ? game_menu_.View()
                      : game_mode_ == GameMode::Motion ? motion_.View()
                      : game_mode_ == GameMode::Play   ? play_.View()  // V8
-                     : game_mode_ == GameMode::Sound  ? PublishableSoundView()  // V8
+                     : game_mode_ == GameMode::Sound  ? PublishableSoundView()  // V8 sound
                      : mic_session_                   ? mic_game_.View()  // V4-08
                                                       : game_.View();
         pet_mailbox_.Publish(scene);
@@ -3101,6 +3237,11 @@ BOARD_WORKER = r'''
 
     void OpenGameMenu(uint8_t start) {
         const auto out = game_menu_.Start(NowMs(), start);
+        if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return;
+        }
         {
             SceneStateLock lock(scene_state_mutex_);
             game_active_.store(true);
@@ -3160,6 +3301,17 @@ BOARD_WORKER = r'''
                 StartSound(SoundKind::Wash);
             // V8 activity list (activity_list.h): sessions that append a row
             // add their dispatch branch here, before this fallback.
+            } else if (CareKindOf(out.chosen) != kid_app::CareKind::None) {  // V8 session 1
+                const auto* row = kid_app::FindActivity(out.chosen);
+                if (row && row->needs == kid_app::ActivityNeeds::Motion && !motion_enabled_.load()) {
+                    ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
+                    if (row->group == kid_app::ActivityGroup::Care)
+                        OpenCareMenu(kid_app::ActivityIndexOf(out.chosen));
+                    else
+                        OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                } else {
+                    StartCare(CareKindOf(out.chosen));
+                }
             } else {
                 // A row without a handler in this build: stay in the menu.
                 ESP_LOGW(TAG, "PET_GAME_REFUSED reason=no_handler game=%s",
@@ -3422,7 +3574,8 @@ BOARD_WORKER = r'''
         if (game_mode_ == GameMode::Menu) HandleMenuOutput(game_menu_.Input(input, NowMs()));
         else if (game_mode_ == GameMode::Motion) ApplyMotionOutput(motion_.Input(input, NowMs()));
         else if (game_mode_ == GameMode::Play) ApplyPlayOutput(play_.Input(input, NowMs()));
-        else if (game_mode_ == GameMode::Sound) HandleSoundInput(input);  // V8
+        else if (game_mode_ == GameMode::Care) ApplyCareOutput(care_.Input(input, NowMs()));
+        else if (game_mode_ == GameMode::Sound) HandleSoundInput(input);  // V8 sound
     }
 
     void HandleQuizInput(kid_app::InputKind kind) {
@@ -3491,6 +3644,19 @@ BOARD_WORKER = r'''
                 if (game_active_.load()) ApplyPlayOutput(play_.Tick(NowMs()));
                 break;
             }
+            case GameMode::Care: {  // V8: gestures and resting windows, then the clock
+                const uint8_t pending = care_gesture_.exchange(0);
+                if (pending)
+                    ApplyCareOutput(care_.OnGesture(static_cast<kid_app::Gesture>(pending), NowMs()));
+                const uint8_t answer = habit_answer_.exchange(0);  // the habit tick's result
+                if (answer) ApplyCareOutput(care_.Confirm(answer == 1, NowMs()));
+                const uint8_t window = care_window_.exchange(0);
+                if (window && game_active_.load() && game_mode_ == GameMode::Care)
+                    ApplyCareOutput(care_.OnWindow(window == 1, NowMs()));
+                if (game_active_.load() && game_mode_ == GameMode::Care)
+                    ApplyCareOutput(care_.Tick(NowMs()));
+                break;
+            }
             case GameMode::Sound:
                 UpdateSound();  // V8
                 break;
@@ -3524,6 +3690,10 @@ BOARD_WORKER = r'''
                 result = play_.Result();
                 mode = "play";
                 break;
+            case GameMode::Care:  // V8: care records its own events (PostCare)
+                care_.Interrupt();
+                mode = kid_app::CareKindName(care_.Kind());
+                break;
             case GameMode::Sound:
                 StopSound();  // V8: wipes the parrot recording, stops songs
                 mode = "sound";
@@ -3550,10 +3720,12 @@ BOARD_WORKER = r'''
             play_tilt_.store(false);
             play_shake_.store(false);
             play_window_.store(false);
+            care_motion_.store(false);  // V8
             pet_mailbox_.game_only.store(false);
             if (publish_home && pet_mode_.load() && !sleep_active_.load())
                 pet_mailbox_.Publish(WithVoiceFace(UnpackPetScene(last_pet_scene_.load())));
         }
+        FinishCareFeed();  // V8: the meal the child chose, also if interrupted
         // ADR-012: only a finished game with a correct dial answer counts for
         // growth (GAME_COMPLETED, source Device, option = game id), through
         // the ledger like every other memory (RecordMemory). Id and day go
@@ -3572,6 +3744,309 @@ BOARD_WORKER = r'''
                  mode, kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
                  static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
                  static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
+    }
+
+    // ---- V8 care and growth (docs/V8_CARE_AND_GROWTH.md) ----
+    // The home rail's Feed item opens the care menu (GameMenu on the Care
+    // group of the activity list); its cards and the Play group's sticker
+    // album run CareSession in the game frame (GameMode::Care, same guards,
+    // same game_only gate). Sessions never write: a finished care hands one
+    // CareEvent to the ledger (PostCare: source checked by CareStore).
+    kid_app::CareSession care_;                   // pet_input only
+    std::atomic<uint8_t> care_gesture_{0};        // latest gesture for care_, 0 = none
+    std::atomic<uint8_t> care_window_{0};         // latest IMU window: 1 resting, 2 moving
+    std::atomic<bool> care_motion_{false};        // care_ wants gestures and windows
+    std::atomic<uint32_t> local_minute_{0};       // RTC care minute, 0 = unknown
+    std::atomic<uint32_t> home_look_{0};          // PackLook for home pictures
+    std::atomic<uint8_t> festival_{0};            // today's kid_app::Festival
+    std::atomic<bool> sticker_news_{false};       // a care commit earned a sticker
+    std::atomic<bool> feed_sticker_{false};       // announce it after the next yummy line
+    std::atomic<uint8_t> habit_answer_{0};        // Pet worker: 1 tick committed, 2 refused
+    std::atomic<bool> parent_care_failed_{false}; // Pet worker: page 2 save refused
+    uint32_t look_failed_ms_ = 0;                 // kid_epd: last failed look refresh
+    std::atomic<uint32_t> care_tokens_{0};
+    kid_app::HomeLook look_shown_{};              // kid_epd only
+    kid_app::ParentCare parent_care_{};           // pet_input: values the menu opened with
+    bool care_requested_ = false;                 // pet_input: Feed rail press seen
+    bool care_feed_pending_ = false;              // pet_input: a meal chosen, Feed not posted yet
+    uint8_t festival_posted_ = 0;                 // pet_boot_diag: FestivalSeen sent
+
+    static kid_app::CareKind CareKindOf(kid_app::GameChoice choice) {
+        switch (choice) {
+            case kid_app::GameChoice::Feed: return kid_app::CareKind::Feed;
+            case kid_app::GameChoice::Bath: return kid_app::CareKind::Bath;
+            case kid_app::GameChoice::Brush: return kid_app::CareKind::Brush;
+            case kid_app::GameChoice::Tickle: return kid_app::CareKind::Tickle;
+            case kid_app::GameChoice::Dress: return kid_app::CareKind::Dress;
+            case kid_app::GameChoice::Habit: return kid_app::CareKind::Habit;
+            case kid_app::GameChoice::Stickers: return kid_app::CareKind::Album;
+            default: return kid_app::CareKind::None;
+        }
+    }
+
+    kid_app::ParentCare ParentCareNow() const {
+        const auto care = pet_service_.CareNow();
+        kid_app::ParentCare out{};
+        out.habit = static_cast<uint8_t>(care.GetHabit().habit);
+        out.birth_month = care.BirthMonth();
+        out.birth_day = care.BirthDay();
+        return out;
+    }
+
+    // pet_input: the parent changed the habit or the birthday (page 2).
+    void SaveParentCare(const kid_app::ParentCare& next) {
+        bool posted = true;
+        if (next.habit != parent_care_.habit) {
+            kid_app::CareEvent e{};
+            e.kind = kid_app::CareEventKind::HabitSet;
+            e.source = kid_app::MemorySource::Parent;
+            e.option = next.habit;
+            posted = pet_service_.PostCare(e) && posted;
+        }
+        if (next.birth_month != parent_care_.birth_month || next.birth_day != parent_care_.birth_day) {
+            kid_app::CareEvent e{};
+            e.kind = kid_app::CareEventKind::BirthdaySet;
+            e.source = kid_app::MemorySource::Parent;
+            e.slot = next.birth_month;
+            e.option = next.birth_day;
+            posted = pet_service_.PostCare(e) && posted;
+        }
+        if (!posted) {
+            parent_menu_.RevertCare(parent_care_);
+            ESP_LOGW(TAG, "PET_PARENT_SAVE_FAILED item=care");
+            return;
+        }
+        parent_care_ = next;
+        ESP_LOGI(TAG, "PET_PARENT_SAVED item=care habit=%u birthday=%u-%u",
+                 static_cast<unsigned>(next.habit), static_cast<unsigned>(next.birth_month),
+                 static_cast<unsigned>(next.birth_day));
+    }
+
+    // pet_boot_diag (UpdateRhythm): needs from the RTC minute, today's
+    // festival, the worn clothes. Clock unknown: a content pet, no festival.
+    void UpdateHomeLook(const kid_app::CivilTime& rtc, bool clock_ok, int phase) {
+        const auto care = pet_service_.CareNow();
+        const uint32_t minute = kid_app::CareMinute(rtc, clock_ok);
+        const auto day_phase = phase >= 0 ? static_cast<kid_app::DayPhase>(phase)
+                                          : kid_app::DayPhase::Day;
+        uint8_t level = 0;
+        const auto need = kid_app::CareStore::TopNeed(care.Needs(minute, day_phase), &level);
+        const auto festival = kid_app::FestivalOn(rtc, clock_ok, care.BirthMonth(), care.BirthDay());
+        kid_app::HomeLook look{};
+        for (uint8_t i = 0; i < kid_app::kWearSlots; ++i)
+            look.worn[i] = care.Worn(static_cast<kid_app::WearSlot>(i));
+        look.need = static_cast<uint8_t>(need);
+        look.need_level = level;
+        look.festival = static_cast<uint8_t>(festival);
+        festival_.store(static_cast<uint8_t>(festival));
+        const uint32_t bits = kid_app::PackLook(look);
+        if (home_look_.exchange(bits) != bits)
+            ESP_LOGI(TAG, "PET_CARE_LOOK worn=%u,%u,%u,%u,%u need=%u level=%u festival=%s",
+                     static_cast<unsigned>(look.worn[0]), static_cast<unsigned>(look.worn[1]),
+                     static_cast<unsigned>(look.worn[2]), static_cast<unsigned>(look.worn[3]),
+                     static_cast<unsigned>(look.worn[4]),
+                     static_cast<unsigned>(look.need), static_cast<unsigned>(level),
+                     kid_app::FestivalName(festival));
+        // The festival sticker, once: the device saw the day (source Device).
+        // PostCare is refused until the ledger runs; then the next tick retries.
+        const uint32_t bit = festival == kid_app::Festival::Birthday
+                                 ? kid_app::StickerBit(kid_app::Sticker::Birthday)
+                                 : kid_app::StickerBit(kid_app::Sticker::Festival);
+        if (festival != kid_app::Festival::None && !(care.Stickers() & bit) &&
+            festival_posted_ != static_cast<uint8_t>(festival)) {
+            kid_app::CareEvent e{};
+            e.kind = kid_app::CareEventKind::FestivalSeen;
+            e.source = kid_app::MemorySource::Device;
+            e.option = static_cast<uint16_t>(festival);
+            if (pet_service_.PostCare(e)) festival_posted_ = static_cast<uint8_t>(festival);
+        }
+    }
+
+    // kid_epd, idle on the home picture: draw a changed look (needs move
+    // slowly, clothes on a commit) as one small pet-area refresh.
+    void MaybeRefreshLook(const kid_app::SceneModel& displayed) {
+        if (displayed.kind != kid_app::SceneKind::Home) return;
+        if (kid_app::UnpackLook(home_look_.load()) == look_shown_) return;
+        if (look_failed_ms_ && NowMs() - look_failed_ms_ < 60000) return;
+        {
+            SceneStateLock lock(anim_mutex_);
+            if (anim_director_.Active()) return;  // never between two frames
+        }
+        if (xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+        bool okay = false;
+        if (pet_mode_.load() && !sleep_active_.load()) okay = DrawPetFrameLocked(displayed, "look");
+        xSemaphoreGive(pet_screen_mutex_);
+        look_failed_ms_ = okay ? 0 : (NowMs() ? NowMs() : 1);
+        ESP_LOGI(TAG, "PET_CARE_LOOK_REFRESH ok=%d", okay ? 1 : 0);
+    }
+
+    // pet_input, after the care frame closed: the durable V2 Feed for a meal
+    // chosen in the food menu (PetCommitted plays the hearts and the line).
+    void FinishCareFeed() {
+        if (!care_feed_pending_) return;
+        care_feed_pending_ = false;
+        if (sticker_news_.exchange(false)) feed_sticker_.store(true);
+        if (!pet_service_.PostLocal(kid_app::PetAction::Feed)) ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+    }
+
+    // Rail Sleep in the evening (or at night) with nothing else going on.
+    // Self-test scripts keep the V2 sleep path (no clock-dependent steps).
+    bool BedtimeRitualAllowed() {
+        if (selftest_seen_.load()) return false;
+        const int phase = day_phase_.load();
+        return (phase == static_cast<int>(kid_app::DayPhase::Evening) ||
+                phase == static_cast<int>(kid_app::DayPhase::Night)) &&
+               !battery_.LowPower() &&
+               Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+    }
+
+    // Good morning after the V5-04 line: hello-less V8 lines (how the room
+    // feels, today's festival, the habit reminder) into out[kMaxDiaryLines].
+    // Temperature only: the board reads no humidity yet (comfy / hot / cold).
+    size_t MorningCareLines(uint16_t* out) {
+        const auto care = pet_service_.CareNow();
+        const auto status = NewestStatus(kid_app::SceneKind::Home);
+        const bool temp_ok = status.temp_c != kid_app::StatusBar::kNoTemp;
+        const auto feel = kid_app::FeelOf(static_cast<int16_t>(status.temp_c * 10), 50, temp_ok);
+        kid_app::CivilTime rtc{};
+        bool stopped = true;
+        const bool clock_ok = RtcRead(&rtc, &stopped) && !stopped;
+        const auto festival = kid_app::FestivalOn(rtc, clock_ok, care.BirthMonth(), care.BirthDay());
+        festival_.store(static_cast<uint8_t>(festival));
+        uint16_t ids[kid_app::kMaxDiaryLines] = {};
+        const size_t n = kid_app::ComposeMorning(pet_service_.TemperamentNow(), feel, festival,
+                                                 care.GetHabit().habit, ids,
+                                                 kid_app::kMaxDiaryLines);
+        // ids[0] is the V8 hello: the V5-04 good-morning line says it already.
+        size_t count = 0;
+        for (size_t i = 1; i < n; ++i) out[count++] = ids[i];
+        ESP_LOGI(TAG, "PET_CARE_MORNING lines=%u feel=%u festival=%s", static_cast<unsigned>(count),
+                 static_cast<unsigned>(feel),
+                 kid_app::FestivalName(static_cast<kid_app::Festival>(festival_.load())));
+        return count;
+    }
+
+    void OpenCareMenu(uint8_t start) {
+        const auto out = game_menu_.Start(NowMs(), start, kid_app::ActivityGroup::Care);
+        if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            game_mode_ = GameMode::Menu;
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_CARE_MENU highlight=%u", static_cast<unsigned>(start));
+        PostGameClip(out.clip);
+    }
+
+    // pet_input: from the care / play menu or the bedtime ritual.
+    void StartCare(kid_app::CareKind kind) {
+        const auto care = pet_service_.CareNow();
+        const auto memory = pet_service_.MemoryNow();
+        const uint32_t day = local_day_.load();
+        kid_app::CareContext ctx{};
+        ctx.temperament = pet_service_.TemperamentNow();
+        ctx.stickers = care.Stickers();
+        for (uint8_t i = 0; i < kid_app::kWearSlots; ++i)
+            ctx.worn[i] = care.Worn(static_cast<kid_app::WearSlot>(i));
+        ctx.habit = care.GetHabit().habit;
+        ctx.habit_done_today = day && care.GetHabit().last_day == day;
+        ctx.clock_known = local_minute_.load() != 0;
+        ctx.diary = kid_app::MakeDiaryPage(care, memory, day);
+        kid_app::CareOutput out{};
+        if (!care_.Start(kind, ctx, NowMs(), &out)) {
+            ESP_LOGW(TAG, "PET_CARE_START_FAILED kind=%s", kid_app::CareKindName(kind));
+            EndGame("start_failed");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            game_mode_ = GameMode::Care;
+            pet_mailbox_.game_only.store(true);
+            care_gesture_.store(0);
+            care_window_.store(0);
+            habit_answer_.store(0);
+            care_motion_.store(care_.WantsMotion());
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_CARE_START kind=%s stickers=0x%x habit=%s", kid_app::CareKindName(kind),
+                 static_cast<unsigned>(ctx.stickers), kid_app::HabitName(ctx.habit));
+        if (kind == kid_app::CareKind::Diary) {  // TuanTuan reads today's page
+            uint16_t ids[kid_app::kMaxDiaryLines] = {};
+            const size_t n = kid_app::ComposeDiary(ctx.diary, ctx.temperament, ids,
+                                                   kid_app::kMaxDiaryLines);
+            PostCareLines(ids, n);
+            ESP_LOGI(TAG, "PET_CARE_DIARY lines=%u food=%u books=%u games=%u cares=%u habit=%d",
+                     static_cast<unsigned>(n), static_cast<unsigned>(ctx.diary.last_food),
+                     static_cast<unsigned>(ctx.diary.books), static_cast<unsigned>(ctx.diary.games),
+                     static_cast<unsigned>(ctx.diary.cares), ctx.diary.habit_done ? 1 : 0);
+        } else {
+            PostCareClip(out.clip);
+        }
+    }
+
+    void PostCareClip(uint16_t clip) {
+        if (!clip) return;
+        if (clip >= kid_app::kGameToneBase) {  // a built-in tone
+            PostGameClip(clip);
+            return;
+        }
+        PostCareLines(&clip, 1);
+    }
+
+    void ApplyCareOutput(const kid_app::CareOutput& out) {
+        PostCareClip(out.clip);
+        if (out.record) {
+            kid_app::CareEvent e = out.event;
+            e.id = 0;       // the Pet worker assigns the next local id
+            e.minute = 0;   // and the RTC minute
+            const bool posted = pet_service_.PostCare(e);
+            // Feeding is also the V2 durable Feed (interaction count, today's
+            // feeds, hearts and the yummy line): posted once the care picture
+            // is gone (FinishCareFeed), so they play on the home screen.
+            if (e.kind == kid_app::CareEventKind::Fed) care_feed_pending_ = true;
+            ESP_LOGI(TAG, "PET_CARE_RECORD kind=%u src=%u slot=%u option=%u posted=%d",
+                     static_cast<unsigned>(e.kind), static_cast<unsigned>(e.source),
+                     static_cast<unsigned>(e.slot), static_cast<unsigned>(e.option), posted ? 1 : 0);
+        }
+        if (out.finished) {
+            const auto kind = care_.Kind();
+            ESP_LOGI(TAG, "PET_CARE_END kind=%s next=%s sleep=%d", kid_app::CareKindName(kind),
+                     kid_app::CareKindName(out.next), out.sleep ? 1 : 0);
+            if (out.next != kid_app::CareKind::None) {  // bedtime: tidy -> diary -> lullaby
+                StartCare(out.next);
+                return;
+            }
+            const bool bedtime = out.sleep && BedtimeRitualAllowed();
+            EndGame("care", !bedtime);  // also posts a chosen meal (FinishCareFeed)
+            if (bedtime) {
+                HandleSleepAction(sleep_flow_.Request(NowMs()));
+                return;
+            }
+            if (sticker_news_.exchange(false)) {
+                const uint16_t news = kid_app::CarePhraseId(kid_app::CareLine::StickerNew, 0,
+                                                            pet_service_.TemperamentNow());
+                PostCareLines(&news, 1);
+            }
+            return;
+        }
+        if (!out.redraw) return;
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load() && game_mode_ == GameMode::Care) PublishGameSceneLocked();
     }
 
     // ---- V8 sound activities: parrot, songs, tooth brushing, hand washing ----
@@ -3927,8 +4402,7 @@ BOARD_WORKER = r'''
                 failed = offset < total;
                 break;
             }
-            const uint8_t volume = PromptVolumePct();
-            kid_app::ScalePcm(chunk, n, volume);
+            kid_app::ScalePcm(chunk, n, PromptVolumePct());
             int stalls = 0;
             while (!audio.TryQueueLocalStoryPcm(session, chunk, n)) {
                 if (parrot_play_gen_.load() != gen || !PromptAllowed(false) || ++stalls > 50) {
@@ -4502,6 +4976,9 @@ BOARD_WORKER = r'''
                     gestures_on = want;
                 }
                 HandleGesture(gesture_detector_.OnWindow(s, now), "imu");
+                // V8 lullaby: resting windows (same noise floor as the detector).
+                if (care_motion_.load())
+                    care_window_.store(s.max_dev_mg < kid_app::GestureConfig{}.still_dev_mg ? 1 : 2);
                 // V4-07: the ball game rolls with the board's tilt.
                 if (motion_tilt_.load() && motion_enabled_.load()) {
                     const auto tilt = tilt_tracker_.OnWindow(s);
@@ -4598,6 +5075,10 @@ def patch_board(text: str) -> str:
         '#include "kid_app/motion_game.h"\n'
         '#include "kid_app/play_game.h"\n'
         '#include "kid_app/play_content.h"\n'
+        '#include "kid_app/activity_list.h"\n'
+        '#include "kid_app/care_session.h"\n'
+        '#include "kid_app/care_calendar.h"\n'
+        '#include "kid_app/care_phrases.h"\n'
         '#include "kid_app/memory_store.h"\n'
         '#include "esp_random.h"\n'
         '#include <mutex>\n'
