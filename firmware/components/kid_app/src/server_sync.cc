@@ -240,23 +240,6 @@ RotateVerdict ClassifyRotate(int http_status, bool parsed) {
 
 bool ConfirmRefusesToken(int http_status) { return http_status == 401; }
 
-bool OriginOfUrl(const char* url, char* out, size_t capacity) {
-    if (!url || !out || !capacity) return false;
-    size_t skip = 0;
-    if (std::strncmp(url, "https://", 8) == 0) skip = 8;
-    else if (std::strncmp(url, "http://", 7) == 0) skip = 7;
-    else return false;
-    size_t end = skip;
-    while (url[end] && url[end] != '/' && url[end] != '?' && url[end] != '#') {
-        if (url[end] == '@') return false;  // no URL credentials
-        ++end;
-    }
-    if (end == skip || end + 1 > capacity) return false;
-    std::memcpy(out, url, end);
-    out[end] = '\0';
-    return true;
-}
-
 void SanitizeFwVersion(const char* in, char* out, size_t capacity) {
     if (!out || !capacity) return;
     size_t n = 0;
@@ -493,7 +476,19 @@ bool ParseTokenRotate(const char* body, size_t size, JsonDoc* doc,
 bool CommandTracker::AddReceipt(uint64_t id, ReceiptResult result) {
     if (!ValidCommandId(id)) return false;
     if (HasReceipt(id)) return true;
-    if (receipt_count_ >= kMaxReceipts) return false;
+    if (receipt_count_ >= kMaxReceipts) {
+        // Full: an "applied" answer must never be lost (the server would ask
+        // the parent again). Make room by dropping the oldest refusal or
+        // expiry: those are re-derived when the command is delivered again
+        // (refusals are persisted, expiry follows from the clock).
+        uint8_t victim = receipt_count_;
+        for (uint8_t i = 0; i < receipt_count_ && victim == receipt_count_; ++i) {
+            if (receipts_[i].result != ReceiptResult::Applied) victim = i;
+        }
+        if (victim == receipt_count_) return false;
+        for (uint8_t j = victim; j + 1 < receipt_count_; ++j) receipts_[j] = receipts_[j + 1];
+        receipts_[--receipt_count_] = CommandReceipt{};
+    }
     receipts_[receipt_count_++] = CommandReceipt{id, result};
     ++revision_;
     return true;
@@ -666,7 +661,7 @@ void PairingFlow::Begin(uint32_t now_ms) {
 }
 
 void PairingFlow::Fail(LinkState state) {
-    discard_stored_ = phase_ == Phase::Confirm;
+    discard_stored_ = false;
     phase_ = Phase::Idle;
     waiting_ = false;
     view_ = LinkView{state, 0};
@@ -771,8 +766,15 @@ void PairingFlow::OnConfirm(int http_status, uint32_t now_ms) {
         view_ = LinkView{LinkState::Paired, 0};
         return;
     }
-    if (http_status == 0 || http_status >= 500 || http_status == 429) Retry(now_ms, kClaimIntervalMs);
-    else Fail(LinkState::Failed);
+    if (ConfirmRefusesToken(http_status)) {
+        Fail(LinkState::Failed);  // the server does not know this token
+        discard_stored_ = true;
+        return;
+    }
+    // Anything else (network, 5xx, 429, other 4xx) proves nothing about the
+    // token: keep it and try again; when the tries run out the owner keeps
+    // the pending pairing and confirms it later (boot or retry).
+    Retry(now_ms, kClaimIntervalMs);
 }
 
 // ---- UploadSchedule -------------------------------------------------------------

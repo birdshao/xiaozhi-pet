@@ -22,9 +22,12 @@ const char* CommandOutcomeName(CommandOutcome outcome);
 // Pet task only. parent_confirmed: the parent pressed "confirm" on the
 // request page (the commit then has MemorySource::Parent, which MemoryStore
 // requires for a wipe or a temperament). day: local civil day for the
-// memory event (0 = unknown). Expiry is the caller's check.
+// memory event (0 = unknown). Expiry is the caller's check. min_seq: the
+// highest seq already applied for this command's ordered class; a command
+// below it is rejected here too (defence in depth: a stale request that was
+// already waiting on the Pet task must not put an old value back).
 CommandOutcome ApplyServerCommand(PetAtomicLedger& ledger, const DeviceCommand& command,
-                                  bool parent_confirmed, uint32_t day);
+                                  bool parent_confirmed, uint32_t day, uint64_t min_seq = 0);
 
 // Receipt for a final outcome; false for NeedsConfirm / StorageError
 // (nothing to report yet).

@@ -36,9 +36,6 @@ bool ValidDeviceToken(const char* token);
 // Server origin "https://host[:port]" without a path. HTTPS only (ADR:
 // certificate-checked TLS, no plain http, not even on the LAN).
 bool AllowedServerOrigin(const char* origin);
-// Origin of a URL (the board's XiaoZhi OTA URL points at the same gateway):
-// "http://192.168.1.110:8780/xiaozhi/ota/" -> "http://192.168.1.110:8780".
-bool OriginOfUrl(const char* url, char* out, size_t capacity);
 // fw_version for the snapshot: 1..40 of [A-Za-z0-9._+-]; anything else
 // becomes '_', empty becomes "unknown".
 void SanitizeFwVersion(const char* in, char* out, size_t capacity);

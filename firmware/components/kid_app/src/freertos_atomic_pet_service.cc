@@ -248,6 +248,10 @@ bool FreertosAtomicPetService::PostMemory(const MemoryEvent& event) {
     return Enqueue(msg);
 }
 
+void FreertosAtomicPetService::SeedAppliedSeq(CommandKind kind, uint64_t seq) {
+    if (kind==CommandKind::SetTemperament) temperament_seq_.store(seq);
+}
+
 bool FreertosAtomicPetService::PostCommand(const DeviceCommand& command,
                                            bool parent_confirmed) {
     if (!ready_.load() || !IsExternalEventId(command.id)) return false;
@@ -424,8 +428,15 @@ bool FreertosAtomicPetService::Process(const Message& pending, bool last_attempt
     }
 
     if (pending.kind==Kind::Command) {
-        const CommandOutcome outcome=
-            ApplyServerCommand(ledger_,pending.command,pending.confirmed,Day());
+        const bool ordered=pending.command.kind==CommandKind::SetTemperament;
+        const CommandOutcome outcome=ApplyServerCommand(
+            ledger_,pending.command,pending.confirmed,Day(),
+            ordered ? temperament_seq_.load() : 0);
+        if (ordered && outcome==CommandOutcome::Applied) {
+            uint64_t current=temperament_seq_.load();
+            while (current<pending.command.seq &&
+                   !temperament_seq_.compare_exchange_weak(current,pending.command.seq)) {}
+        }
         // Same id on a retry: nothing was committed.
         if (outcome==CommandOutcome::StorageError && !last_attempt) return true;
         if (outcome==CommandOutcome::Applied) PublishView();

@@ -256,13 +256,18 @@ void FreertosServerSyncWorker::LoadNvs() {
         uint64_t seq = 0;
         if (nvs_get_u64(handle, "seq_temp", &seq) == ESP_OK)
             tracker_.SetAppliedSeq(CommandKind::SetTemperament, seq);
+        ReadStr(handle, "pend_org", pending_origin_, sizeof(pending_origin_));
         nvs_close(handle);
+        pet_.SeedAppliedSeq(CommandKind::SetTemperament,
+                            tracker_.AppliedSeq(CommandKind::SetTemperament));
     }
     have_credentials_ = ValidDeviceId(device_id_) && ValidDeviceToken(token_);
     if (!have_credentials_) std::memset(token_, 0, sizeof(token_));
     pending_loaded_ = ValidDeviceId(pending_id_) && ValidDeviceToken(pending_token_);
+    pending_saved_ = pending_loaded_;
     if (!pending_loaded_) {
         pending_id_[0] = '\0';
+        pending_origin_[0] = '\0';
         std::memset(pending_token_, 0, sizeof(pending_token_));
     }
     origin_ok_ = ResolveOrigin();
@@ -299,22 +304,29 @@ bool FreertosServerSyncWorker::SavePending() {
     if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
     const bool ok = nvs_set_str(handle, "pend_id", pending_id_) == ESP_OK &&
                     nvs_set_str(handle, "pend_tok", pending_token_) == ESP_OK &&
+                    nvs_set_str(handle, "pend_org", origin_) == ESP_OK &&
                     nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
     if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=pending");
+    if (ok) {
+        std::snprintf(pending_origin_, sizeof(pending_origin_), "%s", origin_);
+        pending_saved_ = true;
+    }
     return ok;
 }
 
 void FreertosServerSyncWorker::ErasePending() {
     nvs_handle_t handle = 0;
     if (nvs_open(kNamespace, NVS_READWRITE, &handle) == ESP_OK) {
-        for (const char* key : {"pend_id", "pend_tok"}) nvs_erase_key(handle, key);
+        for (const char* key : {"pend_id", "pend_tok", "pend_org"}) nvs_erase_key(handle, key);
         nvs_commit(handle);
         nvs_close(handle);
     }
     pending_id_[0] = '\0';
+    pending_origin_[0] = '\0';
     std::memset(pending_token_, 0, sizeof(pending_token_));
     pending_loaded_ = false;
+    pending_saved_ = false;
 }
 
 // Confirm answered 200: the pending pairing becomes the working credentials.
@@ -348,15 +360,27 @@ bool FreertosServerSyncWorker::PromotePending() {
 }
 
 // A rotated token that must reach NVS (retried until it does).
-bool FreertosServerSyncWorker::SaveToken() {
+bool FreertosServerSyncWorker::StoreToken(const char* token, int64_t rot_at) {
     nvs_handle_t handle = 0;
     if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
-    const bool ok = nvs_set_str(handle, "token", token_) == ESP_OK &&
-                    nvs_set_i64(handle, "rot_at", rotated_at_) == ESP_OK &&
+    const bool ok = nvs_set_str(handle, "token", token) == ESP_OK &&
+                    nvs_set_i64(handle, "rot_at", rot_at) == ESP_OK &&
                     nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
     if (!ok) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=token");
     return ok;
+}
+
+bool FreertosServerSyncWorker::SaveToken() { return StoreToken(token_, rotated_at_); }
+
+// S1: the previous token only stops working once the new one is confirmed,
+// and the new one is only confirmed after it is safely stored.
+void FreertosServerSyncWorker::ConfirmRotation() {
+    char path[112];
+    std::snprintf(path, sizeof(path), "/v1/devices/%s/token/confirm", device_id_);
+    Http http{};
+    Request("POST", path, nullptr, 0, token_, &http);
+    ESP_LOGI(kTag, "PET_TOKEN_ROTATED confirm=%d", http.status);
 }
 
 // 0 = fine, 1 = pair again within 24 h (still working), 2 = pair again now.
@@ -465,6 +489,10 @@ int FreertosServerSyncWorker::Request(const char* method, const char* path, cons
         out->status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     std::memset(auth, 0, sizeof(auth));
+    if (!stack_logged_ && out->status) {  // after the first TLS handshake: the peak
+        stack_logged_ = true;
+        ESP_LOGI(kTag, "PET_SYNC_STACK free=%u", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    }
     out->length = sink.length;
     out->overflow = sink.overflow;
     out->retry_after_s = sink.retry_after_s;
@@ -490,10 +518,6 @@ void FreertosServerSyncWorker::Run() {
     next_rotate_check_ms_ = NowMs();
     next_confirm_ms_ = NowMs();
     LoadNvs();
-    if (!stack_logged_) {
-        stack_logged_ = true;
-        ESP_LOGI(kTag, "PET_SYNC_STACK free=%u", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-    }
     applied_saved_rev_ = tracker_.Revision();
     PublishLink();
     Event event{};
@@ -513,6 +537,7 @@ void FreertosServerSyncWorker::Run() {
                               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                               static_cast<unsigned>(esp_random() & 0xFFFF));
                 pending_loaded_ = false;  // a fresh pairing replaces one found at boot
+                pending_saved_ = false;
                 pairing_.Begin(now);
                 ESP_LOGI(kTag, "PET_PAIR_BEGIN device=%s", pending_id_);
             } else {
@@ -558,6 +583,13 @@ void FreertosServerSyncWorker::Run() {
         }
         if (!have_credentials_ || needs_repair_) continue;
         if (token_dirty_ && SaveToken()) token_dirty_ = false;
+        if (next_dirty_ && StoreToken(next_token_, next_rot_at_)) {
+            std::memcpy(token_, next_token_, sizeof(token_));
+            std::memset(next_token_, 0, sizeof(next_token_));
+            rotated_at_ = next_rot_at_;
+            next_dirty_ = false;
+            ConfirmRotation();
+        }
         SweepStale(now);
         int64_t utc = 0;
         const bool clock = UtcNow(&utc);
@@ -591,7 +623,11 @@ void FreertosServerSyncWorker::Run() {
             Upload(now);
             next_poll_ms_ = NowMs() + kPollMs;
         }
-        if (flush_pending_ && (due || !schedule_.Due(NowMs(), new_generation))) {
+        // Done once an upload ran, or when everything is already on the server.
+        // A snapshot held back by the 10 s generation gap keeps the flush waiting
+        // (bounded by the caller's timeout): a commit after the last upload is
+        // never skipped.
+        if (flush_pending_ && (due || generation == accepted_generation_)) {
             flush_pending_ = false;
             flush_done_.store(true);
         }
@@ -619,6 +655,7 @@ void FreertosServerSyncWorker::HandleEvent(const Event& event, uint32_t now_ms) 
     ReceiptResult receipt = ReceiptResult::Rejected;
     uint64_t dropped[ParentRequestQueue::kCapacity + 1]{};
     size_t dropped_count = 0;
+    bool save_seq = false;
     xSemaphoreTake(requests_mutex_, portMAX_DELAY);
     if (ReceiptForOutcome(event.outcome, &receipt)) {
         requests_.Remove(id);
@@ -628,7 +665,7 @@ void FreertosServerSyncWorker::HandleEvent(const Event& event, uint32_t now_ms) 
             tracker_.NoteApplied(event.command.kind, event.command.seq)) {
             dropped_count = requests_.DropStale(event.command.kind, event.command.seq, dropped,
                                                 ParentRequestQueue::kCapacity);
-            SaveAppliedSeq(event.command.seq);
+            save_seq = true;
         }
     } else if (event.outcome == CommandOutcome::NeedsConfirm) {
         uint64_t replaced = 0;
@@ -662,6 +699,14 @@ void FreertosServerSyncWorker::HandleEvent(const Event& event, uint32_t now_ms) 
         ESP_LOGI(kTag, "PET_SYNC_REQUEST_SUPERSEDED id=%" PRIu64, dropped[i]);
     }
     if (dropped_count && !SaveRejected()) ESP_LOGW(kTag, "PET_SYNC_NVS_WRITE_FAILED what=rejected");
+    // Persisted the moment the outcome is known, online or not, and outside
+    // the requests lock: an "applied" that only lived in RAM would let a
+    // reboot plus later events ask the parent to confirm a wipe a second time.
+    if (save_seq) SaveAppliedSeq(event.command.seq);
+    if (tracker_.Revision() != applied_saved_rev_) {
+        applied_saved_rev_ = tracker_.Revision();
+        SaveApplied();
+    }
     ESP_LOGI(kTag, "PET_SYNC_COMMAND id=%" PRIu64 " kind=%u outcome=%s", id,
              static_cast<unsigned>(event.command.kind), CommandOutcomeName(event.outcome));
     (void)now_ms;
@@ -883,7 +928,8 @@ void FreertosServerSyncWorker::RunPairing(uint32_t now_ms) {
     }
     if (!pairing_.Active()) {
         if (pairing_.DiscardStored()) ErasePending();
-        else if (!pending_loaded_) std::memset(pending_token_, 0, sizeof(pending_token_));
+        else if (pending_saved_) pending_loaded_ = true;  // confirm again later, like at boot
+        else std::memset(pending_token_, 0, sizeof(pending_token_));
         ESP_LOGI(kTag, "PET_PAIR_DONE state=%u", static_cast<unsigned>(pairing_.View().state));
     }
     PublishLink();
@@ -894,6 +940,14 @@ void FreertosServerSyncWorker::RunPairing(uint32_t now_ms) {
 void FreertosServerSyncWorker::ConfirmPending(uint32_t now_ms) {
     if (!Reached(now_ms, next_confirm_ms_)) return;
     next_confirm_ms_ = now_ms + kConfirmRetryMs;
+    // The pending token belongs to the origin it was claimed from: after an
+    // address change it is never sent to the new one.
+    if (!OriginBound(pending_origin_, origin_)) {
+        ESP_LOGW(kTag, "PET_PAIR_PENDING_ORIGIN_CHANGED");
+        ErasePending();
+        PublishLink();
+        return;
+    }
     char body[96];
     const int n = std::snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", pending_id_);
     Http http{};
@@ -931,15 +985,18 @@ void FreertosServerSyncWorker::MaybeRotate(uint32_t now_ms) {
     std::memset(buf_->reply, 0, sizeof(buf_->reply));
     switch (ClassifyRotate(http.status, parsed)) {
         case RotateVerdict::Done: {
-            // Use the new token from now on, even before it is stored: the old
-            // one stops working once the new one is confirmed.
-            std::memcpy(token_, fresh, sizeof(token_));
-            rotated_at_ = utc;
-            token_dirty_ = !SaveToken();
-            if (token_dirty_) ESP_LOGW(kTag, "PET_TOKEN_ROTATE_STORE_RETRY");
-            std::snprintf(path, sizeof(path), "/v1/devices/%s/token/confirm", device_id_);
-            Request("POST", path, nullptr, 0, token_, &http);
-            ESP_LOGI(kTag, "PET_TOKEN_ROTATED confirm=%d", http.status);
+            rotated_at_ = utc;  // no second rotation this boot, whatever happens below
+            if (StoreToken(fresh, utc)) {
+                std::memcpy(token_, fresh, sizeof(token_));
+                ConfirmRotation();
+            } else {
+                // Not stored: no confirm. The old token keeps working (S1: 24 h
+                // overlap); the new one is stored later, then confirmed.
+                std::memcpy(next_token_, fresh, sizeof(next_token_));
+                next_rot_at_ = utc;
+                next_dirty_ = true;
+                ESP_LOGW(kTag, "PET_TOKEN_ROTATE_STORE_RETRY");
+            }
             break;
         }
         case RotateVerdict::RepairSoon:

@@ -96,6 +96,9 @@ public:
     // is a replay duplicate) and reports through the command callback.
     // parent_confirmed: the parent confirmed it on the request page (D5).
     bool PostCommand(const DeviceCommand& command, bool parent_confirmed);
+    // Highest SET_TEMPERAMENT seq already applied (the network task seeds it
+    // from NVS at boot; the Pet worker raises it after each applied one).
+    void SeedAppliedSeq(CommandKind kind, uint64_t seq);
 
     // Called by networking on its own task after receiving a parsed HTTP ACK.
     // Copies the message_id and queues the receipt; the Pet task itself
@@ -171,6 +174,7 @@ private:
     void* context_ = nullptr;
     AtomicPetDayProvider day_provider_ = nullptr;
     void* day_context_ = nullptr;
+    std::atomic<uint64_t> temperament_seq_{0};
     AtomicPetCommandCallback command_cb_ = nullptr;
     void* command_context_ = nullptr;
     std::atomic<uint32_t> in_flight_{0};    // queued or being processed

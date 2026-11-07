@@ -149,7 +149,8 @@ class ReplyFixtureTests(ServerBase):
         with patch.object(commands.secrets, "randbits", lambda bits: next(ids)):
             with connect(self.path) as db:
                 commands.enqueue(db, "pet-001", "MEMORY_CLEAR", {"clear_epoch": 3}, self.now)
-                commands.enqueue(db, "pet-001", "SET_TEMPERAMENT", {"temperament": "lively"}, self.now)
+                commands.enqueue(db, "pet-001", "SET_TEMPERAMENT",
+                                 {"temperament": "lively", "seq": 1}, self.now)
                 commands.enqueue(db, "pet-001", "SYNC_CONTENT", {}, self.now)
         case = dict(CASES["rich"], generation=1, awaiting=[4098], receipts=[(4099, "rejected")])
         result = self.put(reference_snapshot(case))

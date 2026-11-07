@@ -2541,6 +2541,8 @@ BOARD_WORKER = r'''
                                                                : kid_app::NetworkState::Offline;
         // D5: "a parent has a request" envelope on the home band.
         in.parent_request = server_sync_.WaitingRequests() > 0;
+        // The server link needs pairing again (revoked / lost rotation / new address).
+        in.link_repair = server_sync_.Link().state == kid_app::LinkState::NeedsRepair;
         if (in.battery_pct >= 0) {  // no PMIC reading: keep the last one
             sync_battery_pct_.store(static_cast<uint8_t>(in.battery_pct > 100 ? 100 : in.battery_pct));
             sync_charging_.store(in.charging);

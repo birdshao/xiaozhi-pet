@@ -75,6 +75,15 @@ int main() {
         asked.parent_request = true;
         assert(MakeStatusBar(asked, StatusBar{}).parent_request);
         assert(!MakeStatusBar(StatusReadings{}, request).parent_request);
+        // The "pair the server again" hint has its own bit too.
+        StatusBar repair;
+        repair.link_repair = true;
+        assert(PackStatus(repair) == (PackStatus(StatusBar{}) | (1u << 27)));
+        assert(UnpackStatus(PackStatus(repair)) == repair && repair != StatusBar{} && repair != request);
+        StatusReadings broken;
+        broken.link_repair = true;
+        assert(MakeStatusBar(broken, StatusBar{}).link_repair);
+        assert(!MakeStatusBar(StatusReadings{}, repair).link_repair);
     }
 
     // Readings -> shown values: rounding, quantizing, hiding.

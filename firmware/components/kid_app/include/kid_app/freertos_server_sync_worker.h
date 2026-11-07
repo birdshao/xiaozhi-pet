@@ -104,6 +104,8 @@ private:
     void ErasePending();
     bool PromotePending();
     bool SaveToken();
+    bool StoreToken(const char* token, int64_t rot_at);
+    void ConfirmRotation();
     void SetRepairFlag(uint8_t value);
     void EnterRepair();
     bool CanSync() const;
@@ -149,7 +151,12 @@ private:
     char bound_origin_[160]{};            // origin the stored token was issued for
     bool repair_notice_ = false;          // 24 h left on the previous token: pair again
     bool pending_loaded_ = false;         // boot found an unconfirmed pairing in NVS
-    bool token_dirty_ = false;            // a rotated token not yet stored
+    bool token_dirty_ = false;            // rotation timestamp not yet stored
+    char next_token_[kTokenMax + 1]{};    // rotated token that could not be stored yet
+    int64_t next_rot_at_ = 0;
+    bool next_dirty_ = false;
+    char pending_origin_[160]{};          // origin the pending pairing belongs to
+    bool pending_saved_ = false;          // the pending pairing is in NVS
     bool flush_pending_ = false;
     bool stack_logged_ = false;
     std::atomic<bool> flush_requested_{false};

@@ -831,6 +831,10 @@ void StatusLeft(MonoFrame& f, const StatusBar& s) {
         RoundRectRing(f, 216, 11, 28, 20, 3, 3);
         Stroke(f, 218, 13, 230, 23, 3);
         Stroke(f, 242, 13, 230, 23, 3);
+    } else if (s.link_repair) {  // the home server link needs pairing again
+        Ring(f, 230, 21, 13, 13, 3);
+        Stroke(f, 224, 15, 236, 27, 3);
+        Stroke(f, 236, 15, 224, 27, 3);
     }
 }
 

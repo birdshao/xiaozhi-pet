@@ -16,7 +16,7 @@ const char* CommandOutcomeName(CommandOutcome outcome) {
 }
 
 CommandOutcome ApplyServerCommand(PetAtomicLedger& ledger, const DeviceCommand& command,
-                                  bool parent_confirmed, uint32_t day) {
+                                  bool parent_confirmed, uint32_t day, uint64_t min_seq) {
     // Server ids live in the external id space (bit 63 clear, below 2^53).
     if (!IsExternalEventId(command.id) || command.id > kMaxCommandId)
         return CommandOutcome::Rejected;
@@ -24,6 +24,7 @@ CommandOutcome ApplyServerCommand(PetAtomicLedger& ledger, const DeviceCommand& 
     // is reported applied, without asking the parent a second time.
     if (ledger.Seen(command.id)) return CommandOutcome::AlreadyApplied;
     if (!SupportedCommand(command.kind) || !command.payload_ok) return CommandOutcome::Rejected;
+    if (OrderClass(command.kind) >= 0 && command.seq < min_seq) return CommandOutcome::Rejected;
     // D5 by kind, never by what the server says.
     if (NeedsParentConfirm(command.kind) && !parent_confirmed) return CommandOutcome::NeedsConfirm;
 

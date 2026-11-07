@@ -139,16 +139,6 @@ void TestBase64AndHelpers() {
     assert(!AllowedServerOrigin("http://192.168.1.110:8780"));
     assert(!AllowedServerOrigin("http://pet.example.cn"));
 
-    char origin[64];
-    assert(OriginOfUrl("http://192.168.1.110:8780/xiaozhi/ota/", origin, sizeof(origin)) &&
-           std::strcmp(origin, "http://192.168.1.110:8780") == 0);
-    assert(OriginOfUrl("https://pet.example.cn", origin, sizeof(origin)) &&
-           std::strcmp(origin, "https://pet.example.cn") == 0);
-    assert(!OriginOfUrl("https://u:p@pet.example.cn/x", origin, sizeof(origin)));
-    assert(!OriginOfUrl("pet.example.cn/x", origin, sizeof(origin)));
-    assert(!OriginOfUrl("https:///x", origin, sizeof(origin)));
-    assert(!OriginOfUrl("https://pet.example.cn/x", origin, 10));
-
     char fw[48];
     SanitizeFwVersion("2.5.2 (kid) build#7", fw, sizeof(fw));
     assert(std::strcmp(fw, "2.5.2__kid__build_7") == 0);
@@ -316,7 +306,7 @@ void TestReplies() {
            clear.clear_epoch == 3 && clear.expires_at > 1700000000);
     const DeviceCommand& temper = reply.commands[1];
     assert(temper.id == 4098 && temper.kind == CommandKind::SetTemperament && temper.payload_ok &&
-           temper.temperament == Temperament::Lively);
+           temper.temperament == Temperament::Lively && temper.seq == 1);  // S3 payload seq
 
     DeviceCommand polled[kMaxCommandsPerReply];
     uint8_t count = 0;
@@ -614,6 +604,27 @@ void TestPairingFlow() {
     f.Step(6000);
     f.OnConfirm(401, 6100);
     assert(!f.Active() && f.View().state == LinkState::Failed && f.DiscardStored());
+    // Confirm answered 404/409/500 proves nothing about the token: keep trying;
+    // when the tries run out the pending pairing is kept (confirmed later).
+    for (int status : {404, 409, 500}) {
+        f.Begin(0);
+        f.Step(0);
+        f.OnStart(200, &reply, 0);
+        f.Step(PairingFlow::kClaimIntervalMs);
+        f.OnClaim(200, true, ClaimStatus::Claimed, 6000);
+        f.Step(6000);
+        f.OnSaved(true, 6000);
+        uint32_t t = 6000;
+        for (int k = 0; k < PairingFlow::kMaxNetworkFailures - 1; ++k) {
+            assert(f.Step(t) == A::Confirm);
+            f.OnConfirm(status, t);
+            assert(f.Active() && !f.DiscardStored());
+            t += PairingFlow::kClaimIntervalMs;
+        }
+        assert(f.Step(t) == A::Confirm);
+        f.OnConfirm(status, t);
+        assert(!f.Active() && f.View().state == LinkState::Failed && !f.DiscardStored());
+    }
     // Network failures give up after kMaxNetworkFailures.
     f.Begin(0);
     uint32_t now = 0;
@@ -777,6 +788,38 @@ void TestOrdering() {
     // seq 0 (an old server) is stale once something ordered has applied.
     assert(rebooted.Stale(Temper(47, 0)));
 
+    // A full receipt table never loses an "applied" answer: the oldest refusal
+    // or expiry makes room; with nothing to drop the new one is refused.
+    CommandTracker full;
+    assert(full.AddReceipt(1000, ReceiptResult::Rejected));
+    for (uint64_t id = 1001; id < 1000 + kMaxReceipts; ++id)
+        assert(full.AddReceipt(id, ReceiptResult::Applied));
+    assert(full.ReceiptCount() == kMaxReceipts && !full.HasReceipt(2000));
+    assert(full.AddReceipt(2000, ReceiptResult::Applied));  // evicts the rejected one
+    assert(!full.HasReceipt(1000) && full.HasReceipt(2000) && full.ReceiptCount() == kMaxReceipts);
+    assert(!full.AddReceipt(2001, ReceiptResult::Applied));  // all applied: nothing to drop
+    assert(full.HasReceipt(2000));
+    CommandTracker mixed;
+    for (uint64_t id = 1; id <= kMaxReceipts; ++id)
+        assert(mixed.AddReceipt(id, id % 2 ? ReceiptResult::Applied : ReceiptResult::Expired));
+    assert(mixed.AddReceipt(99, ReceiptResult::Applied) && mixed.HasReceipt(99) && !mixed.HasReceipt(2) &&
+           mixed.HasReceipt(1) && mixed.HasReceipt(4));
+
+    // Offline: applied while no network, persisted at once, reboot, the server
+    // delivers the same command again: answered from the stored receipt, the
+    // parent is not asked again and nothing runs a second time.
+    CommandTracker before_power_cut;
+    before_power_cut.AddReceipt(70, ReceiptResult::Applied);
+    uint8_t stored[CommandTracker::kAppliedBlobBytes];
+    before_power_cut.EncodeApplied(stored);
+    CommandTracker after_reboot;  // fresh RAM, 128+ events later (replay window long gone)
+    assert(after_reboot.DecodeApplied(stored, sizeof(stored)));
+    assert(RouteCommand(Command(70, CommandKind::MemoryClear), after_reboot, false, true, 100).route ==
+           CommandRoute::Skip);
+    CommandReceipt owed[kMaxReceipts];
+    assert(after_reboot.Receipts(owed, kMaxReceipts) == 1 && owed[0].command_id == 70 &&
+           owed[0].result == ReceiptResult::Applied);  // reported with the next snapshot
+
     // Applied receipts survive a reboot until acknowledged.
     CommandTracker applied;
     applied.AddReceipt(51, ReceiptResult::Applied);
@@ -935,6 +978,21 @@ void TestApplyCommand() {
     bad_temper.temperament = static_cast<Temperament>(9);
     assert(ApplyServerCommand(ledger, bad_temper, true, 0) == CommandOutcome::Rejected);
     assert(ledger.Generation() == generation + 2);
+    // Defence in depth on the Pet task: below the applied seq nothing is
+    // committed or even shown to the parent; at or above it the normal rules apply.
+    DeviceCommand older = Command(4102, CommandKind::SetTemperament);
+    older.seq = 4;
+    older.temperament = Temperament::Gentle;
+    assert(ApplyServerCommand(ledger, older, true, 0, 5) == CommandOutcome::Rejected);
+    assert(ApplyServerCommand(ledger, older, false, 0, 5) == CommandOutcome::Rejected);
+    assert(!ledger.Seen(4102) && ledger.Memory().GetTemperament() == Temperament::Curious);
+    older.seq = 5;
+    assert(ApplyServerCommand(ledger, older, false, 0, 5) == CommandOutcome::NeedsConfirm);
+    assert(ApplyServerCommand(ledger, older, true, 0, 5) == CommandOutcome::Applied);
+    assert(ledger.Memory().GetTemperament() == Temperament::Gentle);
+    // A memory clear has no order: min_seq does not touch it.
+    assert(ApplyServerCommand(ledger, Command(4103, CommandKind::MemoryClear), true, 0, 99) ==
+           CommandOutcome::Applied);
 
     ReceiptResult receipt = ReceiptResult::Expired;
     assert(ReceiptForOutcome(CommandOutcome::Applied, &receipt) && receipt == ReceiptResult::Applied);
