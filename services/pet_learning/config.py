@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 
 def read_env(path):
@@ -34,6 +34,8 @@ class Settings:
     public_origin: str = ""
     trusted_proxy: str = ""
     totp_key: str = field(default="", repr=False)
+    # Parent notes encryption key (D9, S3): separate from the TOTP and backup keys.
+    notes_key: str = field(default="", repr=False)
     playground: bool = False
     # Voice-service identity (S5): a bearer token separate from every device token.
     voice_token: str = field(default="", repr=False)
@@ -54,6 +56,7 @@ class Settings:
             public_origin=env.get("KID_PET_PUBLIC_ORIGIN", ""),
             trusted_proxy=env.get("KID_PET_TRUSTED_PROXY", ""),
             totp_key=env.get("KID_PET_TOTP_KEY", ""),
+            notes_key=env.get("KID_PET_NOTES_KEY", ""),
             playground=env.get("KID_PET_ENABLE_PLAYGROUND") == "1",
             voice_token=env.get("KID_PET_VOICE_TOKEN", ""),
             voice_allowed_peers=env.get("KID_PET_VOICE_ALLOWED_PEERS", cls.voice_allowed_peers),
@@ -68,6 +71,17 @@ class Settings:
                 Fernet(self.totp_key.encode("ascii"))
             except (ValueError, UnicodeError):
                 raise ValueError("KID_PET_TOTP_KEY must be a Fernet key") from None
+        if self.notes_key:
+            keys = self.notes_keys()
+            if not keys:
+                raise ValueError("KID_PET_NOTES_KEY must contain at least one Fernet key")
+            try:
+                for key in keys:
+                    Fernet(key.encode("ascii"))
+            except (ValueError, UnicodeError):
+                raise ValueError("KID_PET_NOTES_KEY must be Fernet keys (comma separated; the first encrypts)") from None
+            if len(set(keys)) != len(keys) or self.totp_key in keys:
+                raise ValueError("KID_PET_NOTES_KEY must be distinct keys and differ from KID_PET_TOTP_KEY")
         if self.voice_token and not 32 <= len(self.voice_token) <= 256:
             raise ValueError("KID_PET_VOICE_TOKEN must contain 32-256 characters")
         self.voice_peer_networks()
@@ -87,6 +101,8 @@ class Settings:
                 raise ValueError("Production KID_PET_PUBLIC_ORIGIN must not be a loopback name")
             if not self.totp_key or not self.trusted_proxy:
                 raise ValueError("Production requires TOTP key and trusted proxy")
+            if not self.notes_key:
+                raise ValueError("Production requires KID_PET_NOTES_KEY (parent notes are encrypted at rest)")
         # Deployment/provider checks live in ops.check_deployment (admin check-config).
 
     def voice_peer_networks(self):
@@ -103,3 +119,14 @@ class Settings:
         if not self.totp_key:
             raise ValueError("KID_PET_TOTP_KEY is required for parent authentication")
         return Fernet(self.totp_key.encode("ascii"))
+
+    def notes_keys(self):
+        return [k.strip() for k in self.notes_key.split(",") if k.strip()]
+
+    def notes_cipher(self):
+        """Fail closed: without the key notes are unreadable and unwritable, never stored plain.
+
+        Comma separated keys rotate: the first encrypts, every key can decrypt."""
+        if not self.notes_key:
+            raise ValueError("KID_PET_NOTES_KEY is required for parent notes")
+        return MultiFernet([Fernet(k.encode("ascii")) for k in self.notes_keys()])

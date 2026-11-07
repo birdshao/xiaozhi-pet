@@ -34,7 +34,7 @@ class DeployFilesTests(unittest.TestCase):
         required = set(re.findall(r"\$\{([A-Z_]+):\?", text("compose.yaml")))
         keys = {line.split("=", 1)[0] for line in example.splitlines() if "=" in line and not line.startswith("#")}
         self.assertLessEqual(required, keys)
-        for secret in ("KID_PET_TOTP_KEY", "KID_PET_BACKUP_KEY", "XZ_AUTH_KEY", "KID_PET_VOICE_TOKEN"):
+        for secret in ("KID_PET_TOTP_KEY", "KID_PET_BACKUP_KEY", "KID_PET_NOTES_KEY", "XZ_AUTH_KEY", "KID_PET_VOICE_TOKEN"):
             self.assertRegex(example, rf"(?m)^{secret}=$", secret)
 
     def test_gateway_routes_only_allow_listed_paths(self):
@@ -120,7 +120,7 @@ class DeployFilesTests(unittest.TestCase):
             env = Path(tmp) / "env"
             env.write_text("\n".join([
                 "KID_PET_PUBLIC_ORIGIN=https://pet.example.com", "KID_PET_TRUSTED_PROXY=192.168.1.1",
-                "KID_PET_TOTP_KEY=x", "KID_PET_BACKUP_KEY=x", "XZ_AUTH_KEY=x", "KID_PET_UPSTREAM_DEVICE_ID=a",
+                "KID_PET_TOTP_KEY=x", "KID_PET_BACKUP_KEY=x", "KID_PET_NOTES_KEY=x", "XZ_AUTH_KEY=x", "KID_PET_UPSTREAM_DEVICE_ID=a",
                 "KID_PET_BUSINESS_DEVICE_ID=b", "KID_PET_VOICE_TOKEN=x"]), encoding="utf-8")
             run = subprocess.run(["docker", "compose", "--env-file", str(env), "-f", str(DEPLOY / "compose.yaml"),
                                   "config", "-q"], capture_output=True, text=True)

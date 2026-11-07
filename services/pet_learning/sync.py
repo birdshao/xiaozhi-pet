@@ -185,6 +185,11 @@ class StateSync:
         self.clock = clock
         self.names = names or CatalogNames()
         self.tz_name = tz_name
+        # S3 conservative-merge hook: fn(db, device_id, ParentSettings, rev, now), run inside
+        # the snapshot transaction after the device row is stored.
+        self.hooks: list[Callable[..., None]] = []
+        # fn(db, device_id, changed_command_rows, now) after receipts are applied (S3 temperament).
+        self.command_hooks: list[Callable[..., None]] = []
         migrate(filename)
 
     # -- device ---------------------------------------------------------
@@ -299,7 +304,10 @@ class StateSync:
                 state_sha: str, now: int, *, upload_sha: str,
                 project: bool = True) -> list[int]:
         receipts = [(r.command_id, r.result) for r in snap.applied_commands]
-        self._clear_results(db, commands.apply_receipts(db, device_id, receipts, now), snap.generation)
+        changed = commands.apply_receipts(db, device_id, receipts, now)
+        self._clear_results(db, changed, snap.generation)
+        for hook in self.command_hooks:
+            hook(db, device_id, changed, now)
         db.execute(
             "INSERT INTO device_state(device_id,generation,state_sha,received_at,ledger_schema,fw_version,"
             "rtc_day,pet_json,battery_pct,charging,inventory_json,sd_free_kib,parent_settings_json,"
@@ -318,6 +326,8 @@ class StateSync:
              int(snap.battery.charging), json.dumps([i.model_dump() for i in snap.inventory]),
              snap.sd_free_kib, json.dumps(settings.as_dict(), sort_keys=True),
              snap.parent_settings_rev, json.dumps(snap.awaiting_confirm), memory.trait, upload_sha))
+        for hook in self.hooks:
+            hook(db, device_id, settings, snap.parent_settings_rev, now)
         if project and not self._tombstoned(db, device_id, snap.generation):
             self._project(db, device_id, snap.generation, memory)
         return [r.command_id for r in snap.applied_commands]
