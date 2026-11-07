@@ -28,7 +28,7 @@ def opened(path):
 
 GOOD_XZ = {
     "server": {"auth": {"enabled": True, "allowed_devices": []}, "auth_key": "k" * 40,
-               "websocket": "wss://pet.example:8443/xiaozhi/v1/", "mqtt_gateway": None},
+               "websocket": "wss://pet.family-home.net:8443/xiaozhi/v1/", "mqtt_gateway": None},
     "delete_audio": True,
     "selected_module": {"Memory": "nomem", "Intent": "nointent"},
 }
@@ -36,7 +36,7 @@ GOOD_XZ = {
 
 def good_env():
     return {
-        "KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.example:8443",
+        "KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.family-home.net:8443",
         "KID_PET_TRUSTED_PROXY": "192.168.1.1", "KID_PET_TOTP_KEY": Fernet.generate_key().decode(),
         "KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "XZ_AUTH_KEY": "a" * 40,
         "KID_PET_NOTES_KEY": Fernet.generate_key().decode(),
@@ -182,6 +182,17 @@ class ConfigCheckTests(unittest.TestCase):
             env["KID_PET_NOTES_KEY"] = env[other]
             self.assertTrue(any("NOTES_KEY" in p for p in ops.check_deployment(env)), other)
 
+    def test_placeholder_websocket_host_fails_and_lan_override_passes(self):
+        env = {**good_env(), "KID_PET_PUBLIC_ORIGIN": "https://pet.example.com:8443"}
+        self.assertTrue(any("placeholder" in p for p in ops.check_deployment(env)))
+        self.assertTrue(ops.deployment_warnings(env))
+        lan = {**env, "XZ_WEBSOCKET_URL": "ws://192.168.1.110:8780/xiaozhi/v1/"}
+        self.assertEqual(ops.check_deployment(lan), [])
+        self.assertTrue(ops.deployment_warnings(lan))  # origin is still a placeholder: warn only
+        for bad in ("ws://pet.family-home.net/x", "ws://pet.example.com/x", "ws://1.2.3.4/x", "https://192.168.1.110/x"):
+            self.assertTrue(ops.check_deployment({**lan, "XZ_WEBSOCKET_URL": bad}), bad)
+        self.assertEqual(ops.deployment_warnings(good_env()), [])
+
     def test_env_without_kid_pet_env_is_checked_as_production(self):
         env = good_env()
         del env["KID_PET_ENV"]
@@ -199,7 +210,7 @@ class ConfigCheckTests(unittest.TestCase):
             self.assertEqual(ops.permission_warnings(path), [])
 
     def test_xiaozhi_checklist(self):
-        self.assertEqual(ops.check_xiaozhi_config(GOOD_XZ, "https://pet.example:8443"), [])
+        self.assertEqual(ops.check_xiaozhi_config(GOOD_XZ, "https://pet.family-home.net:8443"), [])
         bad = [("server", {**GOOD_XZ["server"], "auth": {"enabled": False}}),
                ("server", {**GOOD_XZ["server"], "auth": {"enabled": True, "allowed_devices": ["x"]}}),
                ("server", {**GOOD_XZ["server"], "websocket": "ws://pet.example/x"}),

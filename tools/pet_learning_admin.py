@@ -48,6 +48,8 @@ def run_ops(args) -> None:
         elif args.command == "check-config":
             for warning in ops.permission_warnings(args.env_file, Path(args.env_file).with_name("providers.env")):
                 print("WARN: " + warning)
+            for warning in ops.deployment_warnings({**ops.read_env(args.env_file), **os.environ}):
+                print("WARN: " + warning)
             report(ops.check_env_file(args.env_file))
         else:
             text = args.config.read_text(encoding="utf-8")

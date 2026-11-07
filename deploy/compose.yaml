@@ -67,6 +67,7 @@ services:
       - ./models/sherpa-onnx-paraformer-zh-small-2024-03-09:/opt/xiaozhi-esp32-server/models/sherpa-onnx-paraformer-zh-small-2024-03-09:ro
     environment:
       KID_PET_PUBLIC_ORIGIN: ${KID_PET_PUBLIC_ORIGIN}
+      XZ_WEBSOCKET_URL: ${XZ_WEBSOCKET_URL:-}
       XZ_AUTH_KEY: ${XZ_AUTH_KEY:?set XZ_AUTH_KEY}
       KID_PET_CHILD_MODE: ${KID_PET_CHILD_MODE:-1}
       KID_PET_API_URL: http://172.28.0.10:8765
