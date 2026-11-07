@@ -75,8 +75,151 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stage-dir", type=Path, required=True)
     p.add_argument("--review-file", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True, help="SD games/default.kpg")
+    p = sub.add_parser("build-course-index", help="Verify KPB2/KPG1 packages and map skills")
+    p.add_argument("--course", type=Path, required=True)
+    p.add_argument("--skills", type=Path, required=True)
+    p.add_argument("--package", type=Path, action="append", required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--test-only", action="store_true",
+                   help="Explicitly label the entire index test-only; allow tone fixtures")
+    p = sub.add_parser("fetch-bookdash-images",
+                       help="Download referenced JPEG pages from exact upstream Git SHA")
+    p.add_argument("--input", type=Path, required=True, help="Imported Book Dash LCIR1")
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true",
+                   help="Explicitly replace images/manifest already in this research folder")
+    p = sub.add_parser("tts-book", help="Use optional Edge TTS + ffmpeg for page narration")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--voice", required=True, help="Locale-matched neural voice, e.g. zh-CN-XiaoxiaoNeural")
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("tts-game", help="Deduplicate and synthesize Chinese math prompts")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--voice", default="zh-CN-XiaoxiaoNeural")
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("prepare-book-assets",
+                       help="Verify downloaded images and recorded WAVs before stage-book")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--assets-dir", type=Path, required=True)
+    p.add_argument("--output", type=Path,
+                   help="Must be placed inside --assets-dir (default assets.json)")
+    p = sub.add_parser("localize-bookdash",
+                       help="Convert page-aligned Chinese draft into a pinned LCIR1 translation")
+    p.add_argument("--input", type=Path, required=True, help="Original English LCIR1")
+    p.add_argument("--translations", type=Path, required=True, help="Page-aligned zh-Hans JSON")
+    p.add_argument("--content-id", type=int, required=True)
+    p.add_argument("--revision", type=int, default=1)
+    p.add_argument("--registry", type=Path)
+    p.add_argument("--output", type=Path, required=True)
+    p = sub.add_parser("fetch-bookdash-source",
+                       help="Fetch pinned upstream Markdown and import real wordless pages")
+    p.add_argument("--source-path", required=True)
+    p.add_argument("--ref", required=True, help="Full 40-char upstream Git SHA")
+    p.add_argument("--content-id", type=int, required=True)
+    p.add_argument("--license-id", default="unknown")
+    p.add_argument("--skill", action="append", default=[])
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("prepare-cat-pilot",
+                       help="Apply verified Book Dash author credits and Chinese draft")
+    p.add_argument("--input", type=Path, required=True, help="Original English LCIR1")
+    p.add_argument("--translations", type=Path, required=True)
+    p.add_argument("--credits", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--replace", action="store_true")
+    p = sub.add_parser("make-review-packet",
+                       help="Create read-only EPD contact sheets and local WAV review HTML")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p = sub.add_parser("make-game-review-packet",
+                       help="Review 15 math game rounds and play staged local WAVs")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p = sub.add_parser("make-review-template",
+                       help="Generate unsigned, all-false parent review checklist")
+    p.add_argument("--stage-dir", type=Path, required=True)
+    p.add_argument("--kind", choices=("book", "game"), required=True)
+    p.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "make-review-template":
+            from content_pipeline.review_templates import make_review_template
+            result = make_review_template(args.stage_dir, kind=args.kind,
+                                          output=args.output)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "make-game-review-packet":
+            from content_pipeline.game_review import make_game_review_packet
+            result = make_game_review_packet(args.stage_dir)
+            print(json.dumps({"status": result["status"],
+                              "rounds": len(result["rounds"]),
+                              "unique_audio_clips": result["unique_audio_clips"],
+                              "checked_hash": result["checked_hash"]},
+                             ensure_ascii=False))
+            return 0
+        if args.command == "make-review-packet":
+            from content_pipeline.review_packet import make_review_packet
+            result = make_review_packet(args.stage_dir)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "fetch-bookdash-source":
+            from content_pipeline.source_snapshots import fetch_bookdash_source
+            result = fetch_bookdash_source(
+                source_item_id=args.source_path, source_ref=args.ref,
+                content_id=args.content_id, output_dir=args.output_dir,
+                license_id=args.license_id, skills=args.skill, replace=args.replace)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "prepare-cat-pilot":
+            from content_pipeline.pilot import prepare_cat_pilot
+            result = prepare_cat_pilot(
+                args.input, args.translations, args.credits, args.output_dir,
+                replace=args.replace)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "localize-bookdash":
+            from content_pipeline.localize import localize_bookdash
+            document = localize_bookdash(args.input, args.translations,
+                                         args.output, content_id=args.content_id,
+                                         revision=args.revision)
+            if args.registry:
+                register_document(args.registry, document)
+            print(json.dumps({"status": "draft", "item_uid": document["item_uid"],
+                              "pages": len(document["pages"]),
+                              "sha256": content_digest(document)}, ensure_ascii=False))
+            return 0
+        if args.command == "fetch-bookdash-images":
+            from content_pipeline.assets import fetch_bookdash_images
+            result = fetch_bookdash_images(args.input, args.output_dir, replace=args.replace)
+            print(json.dumps({"status": result["status"],
+                              "images": len(result["images"]),
+                              "source_git_sha": result["source_git_sha"]}, ensure_ascii=False))
+            return 0
+        if args.command in ("tts-book", "tts-game"):
+            from content_pipeline.speech import narrate_book, narrate_game
+            if args.command == "tts-book":
+                result = narrate_book(args.input, args.output_dir, voice=args.voice,
+                                      replace=args.replace)
+            else:
+                result = narrate_game(args.input, args.output_dir, voice=args.voice,
+                                      replace=args.replace)
+            print(json.dumps({"status": result["status"], "provider": result["provider"],
+                              "clips": len(result["audio"])}, ensure_ascii=False))
+            return 0
+        if args.command == "prepare-book-assets":
+            from content_pipeline.assets import combine_book_assets
+            result = combine_book_assets(args.input, args.assets_dir, args.output)
+            print(json.dumps({"pages": len(result["pages"]), "status": "draft"},
+                             ensure_ascii=False))
+            return 0
+        if args.command == "build-course-index":
+            from content_pipeline.catalog import build_index
+            result = build_index(args.course, args.skills, args.package,
+                                 args.output, allow_test_artifacts=args.test_only)
+            print(json.dumps({"course": result["course_id"],
+                              "status": result["status"],
+                              "packages": len(result["packages"]),
+                              "units": len(result["units"])}, ensure_ascii=False))
+            return 0
         if args.command == "make-math-game":
             from content_pipeline.game_lessons import (
                 original_math_lesson, audio_script, audio_map)

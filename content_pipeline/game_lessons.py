@@ -16,10 +16,21 @@ from tools import game_pack
 SCHEMA = "GAMELESSON1"
 LESSON_UID = "preschool.shapes_and_numbers.v1"
 LESSON_ID = 20001
+
+# Three individually approvable SD lessons for boot-time course selection.
+# Short pack basenames are intentionally FAT-compatible and never reused.
+UNIT_COURSES = {
+    "shapes": ("preschool.math.shapes.v1", "preschool_shapes", 20011,
+               "认识形状", "match_shape"),
+    "counts": ("preschool.math.counts.v1", "preschool_counts", 20012,
+               "数一数", "count"),
+    "sizes": ("preschool.math.sizes.v1", "preschool_sizes", 20013,
+              "比较大小", "big_small"),
+}
 SHAPES = ("circle", "square", "triangle", "star", "heart")
 SHAPE_NAMES = {
     "circle": "圆形", "square": "正方形", "triangle": "三角形",
-    "star": "星形", "heart": "爱心形"
+    "star": "星星", "heart": "爱心"
 }
 NUMBERS = {1: "一个", 2: "两个", 3: "三个", 4: "四个", 5: "五个"}
 BALL_NAMES = {"ball_big": "大球", "ball_small": "小球"}
@@ -76,9 +87,9 @@ def original_math_lesson() -> dict[str, Any]:
         ("big", "听一听，哪一个是大球？"),
     ]
     for i, (target, prompt) in enumerate(comparisons):
-        arts = ["ball_big", "ball_small"]
-        if i % 2:
-            arts.reverse()
+        # Answer is first for rounds 1 and 4 only, so position is not a cue.
+        other = "ball_small" if target == "big" else "ball_big"
+        arts = [f"ball_{target}", other] if i in (0, 3) else [other, f"ball_{target}"]
         rounds.append({
             "kind": "big_small", "skill": "math.size_compare",
             "target": target, "question_art": "listen",
@@ -106,6 +117,26 @@ def original_math_lesson() -> dict[str, Any]:
     return validate_lesson(lesson)
 
 
+def original_math_unit_lessons() -> dict[str, dict[str, Any]]:
+    """Split the original 15 questions into three *separately reviewed* units.
+
+    This only prepares draft GAMELESSON1 input; all three packs must go
+    through real audio, adult approval, and the existing KPG1 build gate.
+    """
+    import copy
+    base = original_math_lesson()
+    results = {}
+    for basename, (uid, game_id, content_id, title, kind) in UNIT_COURSES.items():
+        unit = copy.deepcopy(base)
+        unit.update({
+            "lesson_uid": uid, "game_id": game_id,
+            "content_id": content_id, "title": title,
+            "rounds": [r for r in unit["rounds"] if r["kind"] == kind],
+        })
+        results[basename] = validate_lesson(unit)
+    return results
+
+
 def _text(value: Any, where: str, limit: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit or any(
             ord(ch) < 32 for ch in value):
@@ -122,7 +153,16 @@ def validate_lesson(raw: Any) -> dict:
     if raw["schema_version"] != SCHEMA or raw["age_band"] != "3-5" or \
             raw["locale"] != "zh-Hans":
         raise ContentError("lesson: invalid schema/locale/age")
-    if raw["lesson_uid"] != LESSON_UID or raw["game_id"] != "preschool_math":
+    identity = (raw["lesson_uid"], raw["game_id"],
+                raw["content_id"], raw["title"])
+    standard = (LESSON_UID, "preschool_math", LESSON_ID, "形状与数量")
+    unit_identity = None
+    for name, (uid, game_id, number, title, kind) in UNIT_COURSES.items():
+        if raw["lesson_uid"] == uid:
+            unit_identity = (uid, game_id, number, title, kind)
+            break
+    if identity != standard and (
+            unit_identity is None or identity != unit_identity[:4]):
         raise ContentError("lesson: unexpected identity")
     if type(raw["content_id"]) is not int or not 20000 <= raw["content_id"] < 40000:
         raise ContentError("lesson: content_id must be in 20000..39999")
@@ -143,6 +183,10 @@ def validate_lesson(raw: Any) -> dict:
     rounds = raw["rounds"]
     if not isinstance(rounds, list) or not 1 <= len(rounds) <= MAX_LESSON_ROUNDS:
         raise ContentError("lesson: 1..64 rounds required")
+    if unit_identity and (len(rounds) != 5 or
+                          any(r.get("kind") != unit_identity[4] for r in rounds
+                              if isinstance(r, dict))):
+        raise ContentError("lesson: unit course requires five rounds of its own skill")
     for n, item in enumerate(rounds, 1):
         where = f"round {n}"
         if not isinstance(item, dict) or set(item) != {

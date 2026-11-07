@@ -114,8 +114,15 @@ class ParserTests(unittest.TestCase):
         with self.assertRaisesRegex(ContentError, "only local"):
             dash(text=DASH.replace("{{ site.image-set }}/01.jpg",
                                    "https://example.com/image.png"))
-        with self.assertRaisesRegex(ContentError, "no text"):
-            dash(text=DASH.replace("A cat sees the sun.", ""))
+        # Book Dash has intentional picture-only pages. Keep the exact
+        # wordless source instead of inventing text for the author.
+        blank = dash(text=DASH.replace("A cat sees the sun.", ""))
+        self.assertEqual(blank["pages"][0]["text"], "")
+        self.assertEqual(blank["pages"][0]["image_ref"], "images/01.jpg")
+        # An empty page is forbidden in a non-original/translated LCIR1.
+        blank["locale"] = "zh-Hans"
+        with self.assertRaisesRegex(ContentError, "empty text"):
+            validate_document(blank)
 
     def test_deterministic_sha_and_revision_contract(self):
         a, b = asp(), asp()

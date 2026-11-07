@@ -8,11 +8,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 
+from content_pipeline.audio_qc import analyze_wav
 from content_pipeline.game_lessons import audio_key, audio_script, validate_lesson
-from content_pipeline.packaging import _asset, _hash, _sha_file
+from content_pipeline.packaging import VOICE_PROVENANCE_OPEN, _asset, _hash, _sha_file
 from content_pipeline.schema import ContentError, canonical_json, write_json
 from tools import game_pack
 
@@ -36,9 +38,34 @@ def _manifest(stage_dir: Path) -> dict:
     lesson = validate_lesson(json.loads(lesson_file.read_text(encoding="utf-8")))
     game = json.loads(game_file.read_text(encoding="utf-8"))
     attr = json.loads(attr_file.read_text(encoding="utf-8"))
+    if not isinstance(game, dict) or game.get("approved") is not False or \
+            game.get("schema_version") != 1 or \
+            game.get("package_type") != "game" or \
+            game.get("content_id") != lesson["content_id"] or \
+            game.get("revision") != lesson["revision"] or \
+            game.get("game_id") != lesson["game_id"]:
+        raise ContentError("game: staged header or review status conflicts with lesson")
     expected = set(audio_script(lesson)["clips"])
     used = set()
-    for item in game["rounds"]:
+    if len(game.get("rounds", [])) != len(lesson["rounds"]):
+        raise ContentError("game: staged round count mismatch")
+    for index, (item, source) in enumerate(zip(game["rounds"], lesson["rounds"]), 1):
+        options = source["options"]
+        expected_round = {
+            "kind": source["kind"],
+            "prompt": source["prompt"],
+            "prompt_audio": f"clips/{audio_key(source['prompt'])}.wav",
+            "question_art": source["question_art"],
+            "answer": source["answer"],
+            "approved": False,
+            "options": [{
+                "art": option["art"],
+                "label": option["label"],
+                "audio": f"clips/{audio_key(option['label'])}.wav",
+            } for option in options],
+        }
+        if item != expected_round:
+            raise ContentError(f"game: staged round {index} differs from validated lesson")
         used.add(item["prompt_audio"])
         for option in item["options"]:
             used.add(option["audio"])
@@ -50,6 +77,7 @@ def _manifest(stage_dir: Path) -> dict:
         f = _asset(stage_dir, rel, max_size=MAX_GAME_WAV)
         files[rel] = _sha_file(f, MAX_GAME_WAV)
         game_pack.read_wav(f, rel)
+        analyze_wav(f, max_seconds=10)
     return {
         "schema_version": 1,
         "lesson_sha256": _hash(lesson_file.read_bytes()),
@@ -81,12 +109,38 @@ def stage_game(lesson_file: Path, audio_map_file: Path, stage_dir: Path) -> dict
             raise ContentError("source audio cannot be inside stage directory")
         # Existing KPG1 reader is the single authority for audio duration.
         game_pack.read_wav(source, text)
+        analyze_wav(source, max_seconds=10)
         target = stage_dir / "clips" / f"{key}.wav"
         shutil.copyfile(source, target)
         provenance.append({
             "clip_key": key, "spoken_text": text, "source_path": ref,
             "source_sha256": _sha_file(source, MAX_GAME_WAV),
         })
+    audio_test_only = False
+    audio_provider = None
+    spoken_manifest_file = audio_map_file.parent / "audio.manifest.json"
+    if spoken_manifest_file.exists():
+        spoken = json.loads(spoken_manifest_file.read_text(encoding="utf-8"))
+        if spoken.get("schema_version") != "GAMEAUDIO1" or \
+                spoken.get("status") not in ("draft", "test_only") or \
+                spoken.get("lesson_uid") != lesson["lesson_uid"] or \
+                spoken.get("lesson_sha256") != _hash(lesson_file.read_bytes()):
+            raise ContentError("game: generated audio manifest stale or invalid")
+        entries = spoken.get("audio")
+        if not isinstance(entries, list) or len(entries) != len(provenance):
+            raise ContentError("game: audio manifest incomplete")
+        by_key = {entry.get("clip_key"): entry for entry in entries if isinstance(entry, dict)}
+        if len(by_key) != len(provenance):
+            raise ContentError("game: audio manifest duplicate clips")
+        for record in provenance:
+            manifest_record = by_key.get(record["clip_key"])
+            if manifest_record is None or \
+                    manifest_record.get("path") != record["source_path"] or \
+                    manifest_record.get("sha256") != record["source_sha256"] or \
+                    manifest_record.get("spoken_text") != record["spoken_text"]:
+                raise ContentError("game: TTS clip mismatched or tampered")
+        audio_test_only = spoken["status"] == "test_only"
+        audio_provider = spoken.get("provider")
     rounds = []
     for r in lesson["rounds"]:
         rounds.append({
@@ -109,7 +163,9 @@ def stage_game(lesson_file: Path, audio_map_file: Path, stage_dir: Path) -> dict
     write_json(stage_dir / "game.json", game)
     write_json(stage_dir / "attribution.json", {
         "lesson_uid": lesson["lesson_uid"], "source": lesson["source"],
-        "audio_sources": provenance, "notice": (
+        "audio_sources": provenance, "audio_test_only": audio_test_only,
+        "audio_provider": audio_provider,
+        "notice": (
             "Original game prompts and builtin artwork. WAV recordings and "
             "educational content must be reviewed by an adult."),
     })
@@ -123,8 +179,12 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
                         *, smoke_only: bool = False) -> dict:
     """Use the existing KPG1 encoder only after review bound to staged bytes."""
     stage_dir, review_file, output = map(Path, (stage_dir, review_file, output))
-    if output.name != "default.kpg":
-        raise ContentError("current firmware only loads /games/default.kpg")
+    # LCP-10: the boot selector accepts short pack basenames from active.txt.
+    # Keep precisely the same ASCII limit here so an approved pack can
+    # always be found by the real firmware (and cannot escape /games).
+    if output.suffix != ".kpg" or not re.fullmatch(
+            r"[a-z0-9][a-z0-9_-]{2,14}", output.stem):
+        raise ContentError("game: unsafe /games KPG1 basename (3..15 ASCII characters)")
     candidate = json.loads((stage_dir / "candidate.json").read_text(encoding="utf-8"))
     current = _manifest(stage_dir)
     current["checked_hash"] = _hash(canonical_json(current))
@@ -142,9 +202,20 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
     attests = review["attestations"]
     required = {"educational_accuracy", "answer_uniqueness", "audio",
                 "age_safety", "source"}
-    if not isinstance(attests, dict) or set(attests) != required or any(
-            attests[item] is not True for item in required):
+    # voice_terms_cleared is optional, but mandatory unless the narration's
+    # provenance is a known non-service source (see VOICE_PROVENANCE_OPEN).
+    allowed = required | {"voice_terms_cleared"}
+    if not isinstance(attests, dict) or not required <= set(attests) <= allowed or any(
+            attests[item] is not True for item in attests):
         raise ContentError("review: five explicit checks required")
+    attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
+    if not smoke_only and attribution.get("audio_provider") in VOICE_PROVENANCE_OPEN and \
+            attests.get("voice_terms_cleared") is not True:
+        raise ContentError(
+            "review: narration provider is edge-tts or unrecorded (no audio.manifest.json); "
+            "attestations.voice_terms_cleared is required")
+    if attribution.get("audio_test_only") is True and not smoke_only:
+        raise ContentError("game: synthetic test-only TTS requires smoke_only packaging")
     game = copy.deepcopy(json.loads((stage_dir / "game.json").read_text(encoding="utf-8")))
     game["approved"] = True
     game["reviewer"] = reviewer.strip()
@@ -156,7 +227,8 @@ def build_reviewed_game(stage_dir: Path, review_file: Path, output: Path,
     try:
         write_json(temporary, game)
         result = game_pack.make_pack(temporary, output,
-                                     reviewed=True, placeholder=smoke_only)
+                                     reviewed=True, placeholder=smoke_only,
+                                checked_hash=current["checked_hash"])
     finally:
         temporary.unlink(missing_ok=True)
     return {
