@@ -1,0 +1,120 @@
+#pragma once
+
+#include "kid_app/game_view.h"
+
+#include <cstddef>
+#include <cstdint>
+
+namespace kid_app {
+
+// V8 shared entry point (docs/V8_CARE_AND_GROWTH.md §"活动列表"): the cards
+// the "play" menu (home rail Game item) and the "care" menu (home rail Feed
+// item) offer, as ONE data table. A new activity is one appended row plus
+// one dispatch branch in the board (HandleMenuOutput); nothing else in the
+// menu changes. Header-only on purpose: adding a row never adds a source
+// file to a build line.
+//
+// Rules for other sessions:
+//  - Ids are stable: append a GameChoice value, never renumber or reuse.
+//  - Append the row at the end of its group: the order is the card order.
+//  - `art` is a picture SceneComposer already draws (GameArt / MicArt /
+//    CareArt ids); a new picture is appended to its own enum first.
+//  - `needs` lets the board refuse a card the parents switched off
+//    (motion) without knowing the game.
+
+enum class GameChoice : uint8_t {
+    None = 0,
+    // V4-06/07/08 play menu.
+    Quiz = 1, Ball = 2, Peekaboo = 3, Candle = 4, Clap = 5,
+    // V8 care menu (session ①).
+    Feed = 6, Bath = 7, Brush = 8, Tickle = 9, Dress = 10, Habit = 11,
+    // V8 play menu additions (session ①).
+    Stickers = 12,
+    // Other sessions: append here (13, 14, ...).
+};
+
+enum class ActivityGroup : uint8_t { Play, Care };
+enum class ActivityNeeds : uint8_t { None, Motion, Mic };
+
+// V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
+enum class CareArt : uint16_t {
+    Bubbles = 201, Comb = 202, Feather = 203, Hanger = 204, Check = 205, Sticker = 206,
+    // Foods (FoodId 1..6 -> 211..216).
+    Fish = 211, Milk = 212, Apple = 213, Carrot = 214, Cookie = 215, RiceBall = 216,
+    // Toys for the bedtime tidy-up.
+    ToyBlock = 221, ToyBall = 222, ToyBear = 223,
+};
+constexpr bool CareArtValid(uint16_t id) {
+    return (id >= 201 && id <= 206) || (id >= 211 && id <= 216) || (id >= 221 && id <= 223);
+}
+
+struct Activity {
+    GameChoice id;
+    ActivityGroup group;
+    uint16_t art;
+    ActivityNeeds needs;
+    const char* name;  // log / doc name, lower case ASCII
+};
+
+constexpr Activity kActivities[] = {
+    {GameChoice::Quiz, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Star),
+     ActivityNeeds::None, "quiz"},
+    {GameChoice::Ball, ActivityGroup::Play, static_cast<uint16_t>(GameArt::BallBig),
+     ActivityNeeds::Motion, "ball"},
+    {GameChoice::Peekaboo, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Cat),
+     ActivityNeeds::Motion, "peekaboo"},
+    {GameChoice::Candle, ActivityGroup::Play, static_cast<uint16_t>(MicArt::CandleLit),
+     ActivityNeeds::Mic, "candle"},
+    {GameChoice::Clap, ActivityGroup::Play, static_cast<uint16_t>(MicArt::Hand),
+     ActivityNeeds::Mic, "clap"},
+    // ---- other sessions: append Play rows above this line ----
+};
+constexpr size_t kActivityRows = sizeof(kActivities) / sizeof(kActivities[0]);
+
+constexpr size_t ActivityCount(ActivityGroup group) {
+    size_t n = 0;
+    for (const Activity& a : kActivities)
+        if (a.group == group) ++n;
+    return n;
+}
+// index-th card of the group (0-based), nullptr past the end.
+constexpr const Activity* ActivityAt(ActivityGroup group, size_t index) {
+    for (const Activity& a : kActivities) {
+        if (a.group != group) continue;
+        if (index == 0) return &a;
+        --index;
+    }
+    return nullptr;
+}
+constexpr const Activity* FindActivity(GameChoice id) {
+    for (const Activity& a : kActivities)
+        if (a.id == id) return &a;
+    return nullptr;
+}
+// Card index of `id` inside its group (to reopen a menu on that card), or 0.
+constexpr uint8_t ActivityIndexOf(GameChoice id) {
+    const Activity* found = FindActivity(id);
+    if (!found) return 0;
+    uint8_t i = 0;
+    for (const Activity& a : kActivities) {
+        if (a.group != found->group) continue;
+        if (a.id == id) return i;
+        ++i;
+    }
+    return 0;
+}
+
+// Table sanity, checked at compile time: unique ids, known pictures.
+constexpr bool ActivityTableValid() {
+    for (size_t i = 0; i < kActivityRows; ++i) {
+        const Activity& a = kActivities[i];
+        if (a.id == GameChoice::None || !a.name || !a.art) return false;
+        if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art)) return false;
+        for (size_t j = 0; j < i; ++j)
+            if (kActivities[j].id == a.id) return false;
+    }
+    return ActivityCount(ActivityGroup::Play) >= 3;
+}
+static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 play cards");
+
+}  // namespace kid_app

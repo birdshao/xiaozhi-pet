@@ -3029,13 +3029,23 @@ BOARD_WORKER = r'''
                 StartMicGame(out.chosen == kid_app::GameChoice::Candle
                                  ? kid_app::MicGameKind::Candle
                                  : kid_app::MicGameKind::ClapRhythm);
-            } else if (!motion_enabled_.load()) {  // parents switched motion off
-                ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
-                OpenGameMenu(static_cast<uint8_t>(static_cast<uint8_t>(out.chosen) - 1));
+            } else if (out.chosen == kid_app::GameChoice::Ball ||
+                       out.chosen == kid_app::GameChoice::Peekaboo) {
+                if (!motion_enabled_.load()) {  // parents switched motion off
+                    ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
+                    OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                } else {
+                    StartMotion(out.chosen == kid_app::GameChoice::Ball
+                                    ? kid_app::MotionKind::Ball
+                                    : kid_app::MotionKind::Peekaboo);
+                }
+            // V8 activity list (activity_list.h): sessions that append a row
+            // add their dispatch branch here, before this fallback.
             } else {
-                StartMotion(out.chosen == kid_app::GameChoice::Ball
-                                ? kid_app::MotionKind::Ball
-                                : kid_app::MotionKind::Peekaboo);
+                // A row without a handler in this build: stay in the menu.
+                ESP_LOGW(TAG, "PET_GAME_REFUSED reason=no_handler game=%s",
+                         kid_app::GameChoiceName(out.chosen));
+                OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
             }
             return;
         }

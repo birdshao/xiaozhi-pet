@@ -15,6 +15,7 @@ constexpr uint8_t kHoles[] = {0, 1, 5, 6};
 // A short tone for a menu card: the picture's own tone, or (the V4-08 cards,
 // which have no tone of their own) a neighbour's from mini_game.cc.
 uint16_t ChoiceTone(uint16_t art) {
+    if (CareArtValid(art)) return GameArtTone(A(GameArt::Heart));
     if (MicArtValid(art)) return art == static_cast<uint16_t>(MicArt::Hand) ? GameArtTone(A(GameArt::Square))
                                                                               : GameArtTone(A(GameArt::Star));
     return GameArtTone(art);
@@ -26,15 +27,9 @@ const char* MotionKindName(MotionKind kind) {
 }
 
 const char* GameChoiceName(GameChoice choice) {
-    switch (choice) {
-        case GameChoice::None: return "none";
-        case GameChoice::Quiz: return "quiz";
-        case GameChoice::Ball: return "ball";
-        case GameChoice::Peekaboo: return "peekaboo";
-        case GameChoice::Candle: return "candle";
-        case GameChoice::Clap: return "clap";
-    }
-    return "unknown";
+    if (choice == GameChoice::None) return "none";
+    const Activity* a = FindActivity(choice);
+    return a ? a->name : "unknown";
 }
 
 // ---- TiltTracker ----
@@ -208,11 +203,17 @@ GameView MotionGameSession::View() const {
 
 // ---- GameMenu ----
 
-GameMenuOutput GameMenu::Start(uint32_t now_ms, uint8_t start) {
+uint8_t GameMenu::Count() const {
+    return static_cast<uint8_t>(ActivityCount(group_));
+}
+
+GameMenuOutput GameMenu::Start(uint32_t now_ms, uint8_t start, ActivityGroup group) {
     GameMenuOutput out{};
-    active_ = true;
+    group_ = group;
+    active_ = Count() > 0;
     end_ = GameEnd::None;
-    index_ = std::min<uint8_t>(start, kGameChoiceCount - 1);
+    if (!active_) return out;
+    index_ = std::min<uint8_t>(start, static_cast<uint8_t>(Count() - 1));
     last_input_ms_ = now_ms;
     out.redraw = true;
     out.clip = kClipPrompt;
@@ -226,7 +227,7 @@ GameMenuOutput GameMenu::Input(GameInput input, uint32_t now_ms) {
     switch (input) {
         case GameInput::Up:
         case GameInput::Down:
-            if (input == GameInput::Up ? index_ > 0 : index_ + 1 < kGameChoiceCount) {
+            if (input == GameInput::Up ? index_ > 0 : index_ + 1 < Count()) {
                 index_ = static_cast<uint8_t>(index_ + (input == GameInput::Up ? -1 : 1));
                 out.redraw = true;
                 const GameView v = View();
@@ -235,7 +236,7 @@ GameMenuOutput GameMenu::Input(GameInput input, uint32_t now_ms) {
             break;
         case GameInput::Press:
             active_ = false;
-            out.chosen = static_cast<GameChoice>(index_ + 1);
+            out.chosen = ActivityAt(group_, index_)->id;
             break;
         case GameInput::Long:
             active_ = false;
@@ -266,15 +267,15 @@ void GameMenu::Interrupt() {
 GameView GameMenu::View() const {
     GameView v{};
     if (!active_) return v;
-    v.option_count = 3;
+    // Three cards at a time (fewer if the group is shorter), the window
+    // follows the highlight.
+    const uint8_t n = Count();
+    const uint8_t shown = std::min<uint8_t>(n, 3);
+    v.option_count = shown;
     v.question_art = A(GameArt::Heart);
-    // Three cards at a time, the window follows the highlight.
-    const uint16_t art[kGameChoiceCount] = {A(GameArt::Star), A(GameArt::BallBig),
-                                            A(GameArt::Cat), static_cast<uint16_t>(MicArt::CandleLit),
-                                            static_cast<uint16_t>(MicArt::Hand)};
-    const uint8_t first = index_ == 0 ? 0 : std::min<uint8_t>(index_ - 1, kGameChoiceCount - 3);
+    const uint8_t first = index_ == 0 ? 0 : std::min<uint8_t>(index_ - 1, n - shown);
     v.highlight = static_cast<uint8_t>(index_ - first);
-    for (uint8_t i = 0; i < 3; ++i) v.options[i] = art[first + i];
+    for (uint8_t i = 0; i < shown; ++i) v.options[i] = ActivityAt(group_, first + i)->art;
     return v;
 }
 
