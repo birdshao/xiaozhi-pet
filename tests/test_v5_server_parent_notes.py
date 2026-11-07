@@ -211,7 +211,7 @@ class KeyRotationTests(NotesBase):
         for bad in (f"{a},{a}", f"{a},weak", f"{a},{self.settings.totp_key}"):
             with self.assertRaises(ValueError):
                 Settings(notes_key=bad, totp_key=self.settings.totp_key).validate()
-        env = {"KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.example:8443",
+        env = {"KID_PET_ENV": "production", "KID_PET_PUBLIC_ORIGIN": "https://pet.family-home.net:8443",
                "KID_PET_TRUSTED_PROXY": "192.168.1.1", "KID_PET_TOTP_KEY": Fernet.generate_key().decode(),
                "KID_PET_BACKUP_KEY": Fernet.generate_key().decode(), "XZ_AUTH_KEY": "a" * 40,
                "KID_PET_VOICE_TOKEN": "t" * 40, "KID_PET_CHILD_MODE": "1",
