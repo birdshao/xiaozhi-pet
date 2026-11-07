@@ -989,11 +989,11 @@ void ParentIcon(MonoFrame& f, ParentItem item, int cx, int cy, bool ink) {
     switch (item) {
         case ParentItem::Wake:  // sun
             Disk(f, cx, cy, 11, ink);
-            for (int a = 0; a < 360; a += 45) Ray(f, cx, cy, a, 15, 21, ink);
+            for (int a = 0; a < 360; a += 45) Ray(f, cx, cy, a, 14, 19, ink);
             break;
         case ParentItem::Evening:  // sun going down behind the horizon
             Disk(f, cx, cy + 8, 13, ink);
-            FillRect(f, cx - 22, cy + 9, 44, 14, !ink);
+            FillRect(f, cx - 22, cy + 9, 44, 12, !ink);
             Stroke(f, cx - 24, cy + 12, cx + 24, cy + 12, 4, ink);
             for (int a : {210, 250, 290, 330}) Ray(f, cx, cy + 8, a, 17, 23, ink);
             break;
