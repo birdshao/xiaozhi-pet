@@ -15,8 +15,11 @@ import shutil
 import wave
 from typing import Any
 
-from content_pipeline.schema import (ContentError, canonical_json, content_digest,
-                                     safe_relpath, validate_document, write_json)
+from content_pipeline.audio_qc import analyze_wav
+from content_pipeline.schema import (ContentError, adaptation_terms, canonical_json,
+                                     content_digest, safe_relpath, validate_document,
+                                     write_json)
+from tools import kpb2
 
 WIDTH, HEIGHT = 800, 480
 SAMPLE_RATE = 24000
@@ -69,8 +72,13 @@ def _render(image_path: Path, target: Path) -> None:
             if source.width * source.height > 20_000_000:
                 raise ContentError("image too large")
             source.load()
+            # Transparent pixels are white, as in tools/kpb2.py luminance();
+            # a plain RGB convert would turn them black on the e-paper.
+            rgba = source.convert("RGBA")
+            backdrop = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            backdrop.alpha_composite(rgba)
             contained = ImageOps.contain(
-                source.convert("RGB"), (WIDTH, HEIGHT), method=Image.Resampling.LANCZOS)
+                backdrop.convert("RGB"), (WIDTH, HEIGHT), method=Image.Resampling.LANCZOS)
             canvas = Image.new("RGB", (WIDTH, HEIGHT), "white")
             canvas.paste(contained, ((WIDTH - contained.width) // 2,
                                     (HEIGHT - contained.height) // 2))
@@ -82,7 +90,6 @@ def _render(image_path: Path, target: Path) -> None:
 def _write_epaper_previews(stage_dir: Path, image_name: str, page: int) -> None:
     """Use the *same* KPB2 quantization/dither as the shipped reader pack."""
     from PIL import Image
-    from tools import kpb2
     mono, gray = kpb2.page_frames(stage_dir / image_name, "grey")
     if gray is None:
         raise ContentError("EPD preview: expected 4-level gray page")
@@ -111,6 +118,93 @@ def _asset_map(mapping: dict, page_count: int) -> dict:
         safe_relpath(assets["image"], "image")
         safe_relpath(assets["audio"], "audio")
     return mapping["pages"]
+
+
+def _license_name(license_id: str) -> str:
+    if not license_id.startswith("CC-BY"):
+        return license_id
+    name, version = license_id.rsplit("-", 1)
+    return f"{name.replace('CC-BY', 'CC BY', 1)} {version}"
+
+
+def credits_record(doc: dict) -> dict:
+    """Attribution carried into the shipped manifest (CC BY 4.0 s.3(a)(1))."""
+    source = doc["source"]
+    if source["license_id"] == "unknown":  # staging only; building refuses it
+        terms = {"license_id": "unknown", "license_url": None, "share_alike": False}
+    else:
+        terms = adaptation_terms(source["license_id"])
+    creators = source["creators"]
+    modified = [{"translation": "translated"}.get(t["kind"], t["kind"])
+                for t in doc["transformations"]] + ["resized", "narrated"]
+    return {
+        "title": doc["title"], "locale": doc["locale"],
+        "creators": {k: list(creators.get(k, [])) for k in
+                     ("text", "illustration", "design", "translation")},
+        "license_id": terms["license_id"], "license_url": terms["license_url"],
+        "share_alike": terms["share_alike"],
+        "source_provider": source["provider"],
+        "source_url": source["source_url"], "source_ref": source["source_ref"],
+        "modified": modified,
+    }
+
+
+def credits_text(record: dict) -> str:
+    """Single-line text for the generated final credits page (<=320 chars)."""
+    zh = record["locale"].lower().startswith("zh")
+    names = record["creators"]
+    labels = ({"text": "文", "illustration": "图", "design": "设计", "translation": "译"}
+              if zh else {"text": "Text", "illustration": "Illustrations",
+                          "design": "Design", "translation": "Translation"})
+    parts = [f"《{record['title']}》" if zh else record["title"]]
+    for key in ("text", "illustration", "design", "translation"):
+        if names[key]:
+            joined = ("、" if zh else ", ").join(names[key])
+            parts.append(f"{labels[key]}：{joined}" if zh else f"{labels[key]}: {joined}")
+    licence = _license_name(record["license_id"])
+    if record["license_url"]:
+        licence += " " + record["license_url"].removeprefix("https://")
+    modified_zh = {"translated": "翻译", "resized": "调整尺寸", "narrated": "配音"}
+    if zh:
+        parts.append(f"许可：{licence}")
+        parts.append(f"来源：{record['source_provider']}")
+        parts.append("本版经" + "、".join(modified_zh[m] for m in record["modified"]) + "改编。")
+    else:
+        parts.append(f"Licence: {licence}")
+        parts.append(f"Source: {record['source_provider']}")
+        parts.append("Modified: " + ", ".join(record["modified"]) + ".")
+    return " ".join(parts)
+
+
+def _credits_page_files(stage_dir: Path, number: int) -> tuple[str, str]:
+    """White framed picture and 0.4 s silent WAV; the text lives in the page text."""
+    from PIL import Image, ImageDraw
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), "white")
+    ImageDraw.Draw(canvas).rectangle((24, 24, WIDTH - 25, HEIGHT - 25),
+                                     outline="black", width=5)
+    image, audio = f"page_{number:02d}.png", f"page_{number:02d}.wav"
+    canvas.save(stage_dir / image, format="PNG")
+    with wave.open(str(stage_dir / audio), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(SAMPLE_RATE)
+        out.writeframes(b"\0\0" * (SAMPLE_RATE * 2 // 5))
+    return image, audio
+
+
+def _kpb2_preflight(doc: dict, book_id: str, record: dict) -> None:
+    """Run the exact checks tools/kpb2.py applies, so failures precede review."""
+    try:
+        if not kpb2.BOOK_RE.fullmatch(book_id):
+            raise ValueError("Invalid book ID")
+        kpb2.reviewed_text(doc["title"], 80, "title")
+        for page in doc["pages"]:
+            kpb2.reviewed_text(page["text"], 320, f"page {page['number']} text")
+        kpb2.reviewed_text(credits_text(record), 320, "credits page text")
+        if len(doc["pages"]) + 1 > kpb2.MAX_PAGES:
+            raise ValueError("too many pages to add the credits page")
+    except ValueError as exc:
+        raise ContentError(f"stage: would fail KPB2 build: {exc}") from exc
 
 
 def _core_manifest(stage: Path) -> dict[str, Any]:
@@ -154,6 +248,10 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
     book_id = re.sub(r"[^a-z0-9_-]+", "_", doc["item_uid"].replace(":", "_"))[:63]
     if not BOOK_ID.fullmatch(book_id):
         raise ContentError("stage: could not derive valid book_id")
+    if "-ND" in doc["source"]["license_id"]:
+        raise ContentError("stage: NoDerivatives licence forbids narrated/translated adaptation")
+    credits = credits_record(doc)
+    _kpb2_preflight(doc, book_id, credits)
     # Do not accidentally overwrite source assets if the stage path is an
     # ancestor of the asset directory or the asset directory itself.
     base = assets_file.parent
@@ -178,15 +276,15 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
         img = _asset(base, assets["image"], max_size=MAX_IMAGE_INPUT)
         wav = _asset(base, assets["audio"], max_size=MAX_WAV_INPUT)
         _verify_wav(wav)
+        quality = analyze_wav(wav, max_seconds=60)  # hard-fails near-silent narration
         if img.is_relative_to(output_root) or wav.is_relative_to(output_root):
             raise ContentError("source assets must not be inside stage directory")
         provenance_assets.append({
             "page": n, "image_ref": page["image_ref"],
             "image_source": assets["image"], "image_sha256": _sha_file(img, MAX_IMAGE_INPUT),
             "audio_source": assets["audio"], "audio_sha256": _sha_file(wav, MAX_WAV_INPUT),
+            "audio_quality": quality,
         })
-        if len(page["text"]) > 320:
-            raise ContentError(f"page {n}: >320 chars; manual editing/splitting required")
         image_target = f"page_{n:02d}.png"
         audio_target = f"page_{n:02d}.wav"
         _render(img, stage_dir / image_target)
@@ -197,6 +295,14 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
             "image": image_target, "image_mode": "grey", "audio": audio_target,
             "questions": [],
         })
+    credits_number = len(pages) + 1
+    credits_image, credits_audio = _credits_page_files(stage_dir, credits_number)
+    _write_epaper_previews(stage_dir, credits_image, credits_number)
+    pages.append({
+        "number": credits_number, "text": credits_text(credits), "approved": False,
+        "image": credits_image, "image_mode": "grey", "audio": credits_audio,
+        "questions": [],
+    })
     book = {
         "schema_version": 2, "package_type": "book",
         "book_id": book_id, "content_id": doc["content_id"],
@@ -211,12 +317,19 @@ def stage_book(lcir_file: Path, assets_file: Path, stage_dir: Path) -> dict:
         "assets": provenance_assets,
         "audio_test_only": audio_provenance is not None and
                            audio_provenance["status"] == "test_only",
+        "audio_provider": audio_provenance.get("provider") if audio_provenance else None,
+        "credits": credits,
         "notice": "Check source/license/illustration/audio before distributing.",
     })
     manifest = _core_manifest(stage_dir)
     manifest["checked_hash"] = _hash(canonical_json(manifest))
     write_json(stage_dir / "candidate.json", manifest)
     return manifest
+
+
+def book_pages_end_with_credits(stage_dir: Path, record: dict) -> bool:
+    book = json.loads((stage_dir / "book.json").read_text(encoding="utf-8"))
+    return bool(book["pages"]) and book["pages"][-1]["text"] == credits_text(record)
 
 
 def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dict:
@@ -237,15 +350,23 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
         raise ContentError("review: adult reviewer name required")
     attest = review["attestations"]
     required = {"source_license", "illustrations", "text", "audio", "age_safety"}
-    if not isinstance(attest, dict) or set(attest) != required or any(
-            attest[k] is not True for k in required):
+    # voice_terms_cleared is optional, but mandatory for edge-tts narration.
+    if not isinstance(attest, dict) or not required <= set(attest) <=             required | {"voice_terms_cleared"} or any(
+            attest[k] is not True for k in attest):
         raise ContentError("review: all five human checks required")
     doc = json.loads((stage_dir / "lcir.json").read_text(encoding="utf-8"))
     if doc["source"]["license_id"] == "unknown":
         raise ContentError("review: exact source license required")
+    adaptation_terms(doc["source"]["license_id"])  # refuses ND (derivative) licences
     attribution = json.loads((stage_dir / "attribution.json").read_text(encoding="utf-8"))
     if attribution.get("audio_test_only") is True:
         raise ContentError("review: synthetic test-only narration cannot be published")
+    if attribution.get("audio_provider") == "edge-tts" and             attest.get("voice_terms_cleared") is not True:
+        raise ContentError("review: edge-tts narration needs attestations.voice_terms_cleared "
+                           "(service terms checked for this distribution)")
+    credits = credits_record(doc)
+    if attribution.get("credits") != credits or             not book_pages_end_with_credits(stage_dir, credits):
+        raise ContentError("review: credits record or credits page does not match source")
     if not doc["source"]["creators"]["text"] or not doc["source"]["creators"]["illustration"]:
         raise ContentError("review: verified text and illustration credits required")
     # No approved manifest is saved to the stage. The trusted build is temporary
@@ -253,6 +374,8 @@ def build_reviewed_book(stage_dir: Path, review_file: Path, output: Path) -> dic
     from tools.story_pack import make_pack
     book = copy.deepcopy(json.loads((stage_dir / "book.json").read_text(encoding="utf-8")))
     book["reviewer"] = review["reviewer"].strip()
+    book["credits"] = credits
+    book["checked_hash"] = current["checked_hash"]
     book["approved"] = True
     for page in book["pages"]:
         page["approved"] = True

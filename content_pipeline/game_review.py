@@ -144,6 +144,13 @@ def make_game_review_packet(stage_dir: Path) -> dict:
         for path, quality in unique_quality.items()
         if quality["warnings"]
     }
+    spoken_by_path = {clip["path"]: clip["spoken_text"]
+                      for row in rows for clip in row["audio"]}
+    warning_list = ('<ul class="clipwarnings">' + ''.join(
+        '<li><code>' + escape(path) + '</code> “' + escape(spoken_by_path[path]) +
+        '”：' + escape('、'.join(flags)) + '</li>'
+        for path, flags in sorted(warning_clips.items())) + '</ul>'
+        if warning_clips else '')
     html = (
         '<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -164,6 +171,7 @@ def make_game_review_packet(stage_dir: Path) -> dict:
         '<p>声音技术警告片段：' + str(len(warning_clips)) +
         ' / ' + str(len(unique_quality)) +
         '（低音量、削波、长静音等指标只供参考，仍须逐句试听）。</p>'
+        + warning_list +
         '<p>候选哈希：<code>' + candidate["checked_hash"] + '</code></p></div>'
         + ''.join(pages) + '</body></html>')
     (output / "index.html").write_text(html, encoding="utf-8")

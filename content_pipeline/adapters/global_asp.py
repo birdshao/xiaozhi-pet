@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from content_pipeline.adapters.common import make_book_draft
+from content_pipeline.adapters.common import join_paragraphs, make_book_draft
 from content_pipeline.schema import ContentError, safe_relpath
 
 TITLE = re.compile(r"^# (.+)$", re.MULTILINE)
@@ -44,7 +44,7 @@ def import_global_asp(markdown: str, *, source_item_id: str, source_url: str,
             if key in metadata:
                 raise ContentError(f"Global ASP: duplicate {key} metadata")
             metadata[key] = value.strip().strip("[]")
-        body = FOOTER.sub("", raw).strip()
+        body = join_paragraphs(FOOTER.sub("", raw), locale)
         if body:
             pages.append((body, None))
     if not pages or any(k not in metadata for k in ("License", "Text", "Illustration", "Language")):
