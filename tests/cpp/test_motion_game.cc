@@ -353,7 +353,10 @@ void TestActivityList() {
     }
     assert(m.Group() == ActivityGroup::Play);
     // The V8 care menu is the same menu on the Care group.
-    assert(ActivityCount(ActivityGroup::Care) == 6);
+    // Six care cards of session 1, then the two routines of session 3 (tooth brushing, hand washing).
+    assert(ActivityCount(ActivityGroup::Care) == 8);
+    assert(ActivityAt(ActivityGroup::Care, 6)->id == GameChoice::ToothBrush &&
+           ActivityAt(ActivityGroup::Care, 7)->id == GameChoice::HandWash);
     const GameChoice care[] = {GameChoice::Feed, GameChoice::Bath, GameChoice::Brush,
                                GameChoice::Tickle, GameChoice::Dress, GameChoice::Habit};
     for (uint8_t i = 0; i < 6; ++i) {
