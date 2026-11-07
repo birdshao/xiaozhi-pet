@@ -23,8 +23,7 @@ class MigrationTests(unittest.TestCase):
         for constructor in (PetStore, QuizEngine, StoryReader):
             constructor(self.path)
         with connect(self.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],
-                             len(list(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], len(list(MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))))
             self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -43,6 +42,8 @@ class MigrationTests(unittest.TestCase):
         migrate(self.path)
         with connect(self.path) as db:
             after = {t: [tuple(r) for r in db.execute(f"SELECT * FROM {t}")] for t in tables}
+        # Later migrations append columns to devices; the S0 columns must be untouched.
+        after["devices"] = [row[:len(before["devices"][0])] for row in after["devices"]]
         self.assertEqual(before, after)
 
     def test_version_one_upgrade(self):

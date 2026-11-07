@@ -19,12 +19,13 @@ import sqlite3
 import time
 from typing import Annotated, Any, Callable, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import commands
+from .pairing import device_auth
 from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
 from .db import connect, migrate
 from .memory_codec import (CodecError, MILESTONES, Memory, decode_memory,
@@ -563,12 +564,6 @@ def create_router(app, store) -> APIRouter:
     app.state.state_sync = sync
     router = APIRouter()
 
-    def require_device(device_id: str, authorization: str | None) -> None:
-        # The token authenticates exactly one device id (the path's).
-        scheme, _, token = (authorization or "").partition(" ")
-        if scheme != "Bearer" or not store.authenticated(device_id, token):
-            raise HTTPException(401, "DEVICE_AUTH_REQUIRED")
-
     def require_parent(request: Request, *, write: bool) -> None:
         check_origin(request)
         try:
@@ -586,10 +581,11 @@ def create_router(app, store) -> APIRouter:
         except SyncError as error:
             raise HTTPException(error.status, error.code, headers=NO_STORE) from None
 
+    # Device routes share S1's dependency: the token authenticates exactly the
+    # path's device id; revoked and pending devices are refused. It is a sync
+    # def, so FastAPI runs it in the threadpool.
     @router.put("/v1/devices/{device_id}/state")
-    async def put_state(device_id: str, request: Request,
-                        authorization: str | None = Header(default=None)) -> dict:
-        await run_in_threadpool(require_device, device_id, authorization)
+    async def put_state(request: Request, device_id: str = Depends(device_auth)) -> dict:
         body = await _read_limited(request)
         try:
             return await run_in_threadpool(sync.ingest, device_id, body)
@@ -598,8 +594,7 @@ def create_router(app, store) -> APIRouter:
             raise HTTPException(error.status, error.code, headers=headers) from None
 
     @router.get("/v1/devices/{device_id}/commands")
-    def get_commands(device_id: str, authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
+    def get_commands(device_id: str = Depends(device_auth)) -> dict:
         return sync.device_commands(device_id)
 
     @router.get("/v1/parent/devices/{device_id}/memories")
@@ -623,6 +618,7 @@ def create_router(app, store) -> APIRouter:
                       authorization: str | None = Header(default=None)) -> dict:
         # Internal-only, as /v1/voice/*/turn (§3.3 N6, §9); checked before
         # the token so external callers learn nothing about token validity.
+        # TODO(S5 #91): switch to the KID_PET_VOICE_ALLOWED_PEERS allowlist once it is on main.
         peer = request.client.host if request.client else ""
         if (peer == request.app.state.settings.trusted_proxy
                 or "x-forwarded-for" in request.headers or "forwarded" in request.headers):

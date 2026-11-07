@@ -1,0 +1,58 @@
+name: Learning live Mandarin math game smoke
+
+# Live external TTS only: never a pull-request gate. The offline math tests
+# run in learning-content-pipeline.yml; keep `paths` in sync for manual use.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 3 * * 2'
+
+concurrency:
+  group: learning-math-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  math-live-voice:
+    name: 15 questions + de-duplicated real Chinese TTS (unreviewed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install optional online voice and portable FFmpeg
+        run: |
+          python -m pip install 'edge-tts==7.3.1' 'imageio-ffmpeg==0.6.0'
+      - name: Generate all Chinese clips and stage 15 questions
+        id: live
+        continue-on-error: true
+        run: |
+          python -m tools.learning_live_math_pilot \
+            --output-dir research_content/math_live_voice \
+            --narration edge
+      - name: Report exact real-voice result and child-safety status
+        if: always()
+        env:
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+        run: |
+          echo "Full Mandarin math voice outcome: ${LIVE_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "This job produces NO reviewed KPG1 and NO approved child content." >> "$GITHUB_STEP_SUMMARY"
+          echo "The game art in the HTML is schematic and must NOT be mistaken for firmware pixels." >> "$GITHUB_STEP_SUMMARY"
+          echo "Review audio locally with the generated staging directory; WAVs are NOT uploaded as public artifacts." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload unreviewed math report and adult review UI (no voice WAV)
+        if: steps.live.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: math-15-round-real-chinese-tts-review-metadata
+          path: |
+            research_content/math_live_voice/live-report.json
+            research_content/math_live_voice/README-RESEARCH-ONLY.txt
+            research_content/math_live_voice/staged/review/index.html
+            research_content/math_live_voice/staged/review/review-summary.json
+            research_content/math_live_voice/staged/attribution.json
+          if-no-files-found: error
+          retention-days: 7

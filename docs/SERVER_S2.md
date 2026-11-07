@@ -1,6 +1,6 @@
 # 服务端 S2：状态同步与记忆（V5-05）
 
-实现范围对应 `V5_V6_SERVER_PLAN.md` §5.2–§5.4、§7.1/§7.3、§8、§11.1 S2。代码：`services/pet_learning/sync.py`（快照、投影、墓碑、家长/语音接口、保留期）、`commands.py`（命令队列）、`memory_codec.py`（与 C++ 共用黄金向量的解码器）、`migrations/003_state_sync.sql`。`api.py` 只加一行挂载。设备端配套（§11.2）不在本阶段。
+实现范围对应 `V5_V6_SERVER_PLAN.md` §5.2–§5.4、§7.1/§7.3、§8、§11.1 S2。代码：`services/pet_learning/sync.py`（快照、投影、墓碑、家长/语音接口、保留期）、`commands.py`（命令队列）、`memory_codec.py`（与 C++ 共用黄金向量的解码器）、`migrations/004_state_sync.sql`。`api.py` 只加一行挂载。设备端配套（§11.2）不在本阶段。
 
 ## 接口
 
