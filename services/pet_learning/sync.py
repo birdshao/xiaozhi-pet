@@ -17,58 +17,73 @@ import hmac
 import json
 import sqlite3
 import time
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import commands
 from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
 from .db import connect, migrate
 from .memory_codec import (CodecError, MILESTONES, Memory, decode_memory,
                            decode_parent_settings)
-from .models import StrictModel
 from .routers.parent import check_origin, client_ip
 
 SCHEMA_VERSION = "2.0"
 LEDGER_SCHEMAS = frozenset({3})
-MAX_STATE_BYTES = 4096
+# Compact JSON at every schema maximum is 4440 bytes (test_worst_case_snapshot_fits_the_limit).
+MAX_STATE_BYTES = 5120
 MIN_INTERVAL = 10           # §9: state uploads at least 10 s apart per device
 REGRESSION_WARNING = 3      # consecutive STALE snapshots -> "re-enroll" hint
 CONFLICT_WARNING_SECONDS = 7 * 24 * 3600
 AUDIT_RETENTION = 365 * commands.DAY_SECONDS
 RETENTION_JOB = "s2_retention"
 DEFAULT_DAYS = 30
+AUDIT_COLLAPSE_SECONDS = 3600  # one row per repeated device rejection per hour
 TOMBSTONED = frozenset({"pending", "rejected", "expired"})
 NO_STORE = {"Cache-Control": "no-store"}
+MAX_INVENTORY = 32
+MAX_AWAITING = 8
+MAX_RECEIPTS = 16
 
 
-class PetView(StrictModel):
-    mode: str = Field(pattern=r"^[A-Z_]{1,16}$")
-    mood: str = Field(pattern=r"^[A-Z_]{1,16}$")
-    fed_total: int = Field(ge=0, le=0xFFFFFFFF)
+CommandId = Annotated[int, Field(ge=1, le=(1 << commands.ID_BITS) - 1)]
 
 
-class Battery(StrictModel):
+class DeviceModel(BaseModel):
+    # Strict: no bools or floats for ints, no numeric strings, no extra keys.
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class PetView(DeviceModel):
+    """kid_app::PetSnapshot (pet_controller.h), enum names in upper case."""
+    mode: Literal["IDLE", "INTERACT", "STORY", "LISTENING", "SPEAKING", "QUIET"]
+    mood: Literal["NEUTRAL", "HAPPY", "CURIOUS", "THINKING", "SLEEPY"]
+    interaction_count: int = Field(ge=0, le=0xFFFFFFFF)
+    active_page: int = Field(ge=1, le=0xFFFF)
+    quiet: bool
+
+
+class Battery(DeviceModel):
     pct: int = Field(ge=0, le=100)
     charging: bool
 
 
-class InventoryItem(StrictModel):
+class InventoryItem(DeviceModel):
     kind: Literal["book", "soundpack", "game"]
     content_id: int = Field(ge=0, le=0xFFFF)
     revision: int = Field(ge=0, le=0xFFFF)
     header_crc: str = Field(pattern=r"^[0-9a-f]{8}$")
 
 
-class Receipt(StrictModel):
-    command_id: int = Field(ge=1, le=(1 << commands.ID_BITS) - 1)
+class Receipt(DeviceModel):
+    command_id: CommandId
     result: Literal["applied", "rejected", "expired"]
 
 
-class StateSnapshot(StrictModel):
+class StateSnapshot(DeviceModel):
     schema_version: Literal["2.0"]
     generation: int = Field(ge=1, le=(1 << 63) - 1)
     ledger_schema: int = Field(ge=1, le=255)
@@ -79,10 +94,10 @@ class StateSnapshot(StrictModel):
     parent_settings_b64: str = Field(min_length=40, max_length=40)
     parent_settings_rev: int = Field(ge=0, le=0xFFFFFFFF)
     battery: Battery
-    inventory: list[InventoryItem] = Field(max_length=32)
+    inventory: list[InventoryItem] = Field(max_length=MAX_INVENTORY)
     sd_free_kib: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
-    awaiting_confirm: list[int] = Field(max_length=16)
-    applied_commands: list[Receipt] = Field(max_length=16)
+    awaiting_confirm: list[CommandId] = Field(max_length=MAX_AWAITING)
+    applied_commands: list[Receipt] = Field(max_length=MAX_RECEIPTS)
 
 
 class SyncError(Exception):
@@ -182,7 +197,10 @@ class StateSync:
             settings = decode_parent_settings(_b64(snap.parent_settings_b64))
         except CodecError as error:
             with connect(self.filename) as db:
-                commands.audit(db, now, "device", "state.reject", device_id, error.code)
+                db.execute("BEGIN IMMEDIATE")
+                commands.audit(db, now, "device", "state.reject", device_id, error.code,
+                               collapse=AUDIT_COLLAPSE_SECONDS)
+                db.commit()
             raise SyncError(422, error.code) from None
         # The idempotency hash covers only ledger-committed content. Battery,
         # inventory, clock, awaiting_confirm and receipts change between
@@ -193,7 +211,12 @@ class StateSync:
                   "parent_settings_rev": snap.parent_settings_rev}
         canonical = json.dumps(ledger, sort_keys=True, separators=(",", ":"))
         state_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        full = json.dumps(snap.model_dump(), sort_keys=True, separators=(",", ":"))
+        upload_sha = hashlib.sha256(full.encode("utf-8")).hexdigest()
 
+        quick = self._read_only(device_id, snap, upload_sha, now)
+        if quick is not None:
+            return quick
         with connect(self.filename) as db:
             db.execute("BEGIN IMMEDIATE")
             self._expire(db, now, device_id)
@@ -204,20 +227,23 @@ class StateSync:
                     db.commit()
                     raise SyncError(429, "STATE_RATE_LIMITED")
                 result = "accepted"
-                acked = self._accept(db, device_id, snap, memory, settings, state_sha, now)
+                acked = self._accept(db, device_id, snap, memory, settings, state_sha, now,
+                                     upload_sha=upload_sha)
             elif snap.generation == row["generation"]:
                 if hmac.compare_digest(row["state_sha"], state_sha):
                     result = "duplicate"
                     acked = self._accept(db, device_id, snap, memory, settings, state_sha, now,
-                                         project=False)
+                                         project=False, upload_sha=upload_sha)
                 else:
                     result = "generation_conflict"
                     db.execute("UPDATE device_state SET conflict_at=? WHERE device_id=?", (now, device_id))
-                    commands.audit(db, now, "device", "state.conflict", device_id, "rejected")
+                    commands.audit(db, now, "device", "state.conflict", device_id, "rejected",
+                                   collapse=AUDIT_COLLAPSE_SECONDS)
             else:
                 result = "stale"
                 streak = row["stale_streak"] + 1
-                db.execute("UPDATE device_state SET stale_streak=? WHERE device_id=?", (streak, device_id))
+                db.execute("UPDATE device_state SET stale_streak=?,stale_at=? WHERE device_id=?",
+                           (streak, now, device_id))
                 if streak == REGRESSION_WARNING:
                     commands.audit(db, now, "device", "state.regressed", device_id, "warning")
             stored = db.execute("SELECT generation FROM device_state WHERE device_id=?",
@@ -230,16 +256,46 @@ class StateSync:
             db.commit()
         return response
 
+    def _read_only(self, device_id: str, snap: StateSnapshot, upload_sha: str,
+                   now: int) -> dict[str, Any] | None:
+        """Answer retries without a write transaction: an identical re-upload
+        with nothing new to deliver, a repeated stale upload, or a new
+        generation inside the rate limit. None = take the write path."""
+        with connect(self.filename) as db:
+            row = db.execute("SELECT generation, upload_sha, received_at, stale_at FROM device_state "
+                             "WHERE device_id=?", (device_id,)).fetchone()
+            if row is None:
+                return None
+            if snap.generation > row["generation"]:
+                if now - row["received_at"] < MIN_INTERVAL:
+                    raise SyncError(429, "STATE_RATE_LIMITED")
+                return None
+            if snap.generation == row["generation"]:
+                if not hmac.compare_digest(row["upload_sha"], upload_sha) or db.execute(
+                        "SELECT 1 FROM commands WHERE device_id=? AND state='pending' "
+                        "AND (delivered_at IS NULL OR expires_at<=?)", (device_id, now)).fetchone():
+                    return None
+                result, acked = "duplicate", [r.command_id for r in snap.applied_commands]
+            elif now - (row["stale_at"] or 0) < MIN_INTERVAL:
+                result, acked = "stale", []
+            else:
+                return None
+            return {"result": result, "generation": row["generation"],
+                    "server_rev": commands.server_rev(db, device_id), "acked_commands": acked,
+                    "commands": commands.deliverable(db, device_id, now, mark=False)}
+
     def _accept(self, db, device_id, snap: StateSnapshot, memory: Memory, settings,
-                state_sha: str, now: int, *, project: bool = True) -> list[int]:
+                state_sha: str, now: int, *, upload_sha: str,
+                project: bool = True) -> list[int]:
         receipts = [(r.command_id, r.result) for r in snap.applied_commands]
         self._clear_results(db, commands.apply_receipts(db, device_id, receipts, now), snap.generation)
         db.execute(
             "INSERT INTO device_state(device_id,generation,state_sha,received_at,ledger_schema,fw_version,"
             "rtc_day,pet_json,battery_pct,charging,inventory_json,sd_free_kib,parent_settings_json,"
-            "parent_settings_rev,awaiting_json,temperament,stale_streak) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(device_id) DO UPDATE SET "
+            "parent_settings_rev,awaiting_json,temperament,upload_sha,stale_streak) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(device_id) DO UPDATE SET "
             "generation=excluded.generation,state_sha=excluded.state_sha,received_at=excluded.received_at,"
+            "upload_sha=excluded.upload_sha,"
             "ledger_schema=excluded.ledger_schema,fw_version=excluded.fw_version,rtc_day=excluded.rtc_day,"
             "pet_json=excluded.pet_json,battery_pct=excluded.battery_pct,charging=excluded.charging,"
             "inventory_json=excluded.inventory_json,sd_free_kib=excluded.sd_free_kib,"
@@ -250,7 +306,7 @@ class StateSync:
              snap.rtc_day, json.dumps(snap.pet.model_dump(), sort_keys=True), snap.battery.pct,
              int(snap.battery.charging), json.dumps([i.model_dump() for i in snap.inventory]),
              snap.sd_free_kib, json.dumps(settings.as_dict(), sort_keys=True),
-             snap.parent_settings_rev, json.dumps(snap.awaiting_confirm), memory.trait))
+             snap.parent_settings_rev, json.dumps(snap.awaiting_confirm), memory.trait, upload_sha))
         if project and not self._tombstoned(db, device_id, snap.generation):
             self._project(db, device_id, snap.generation, memory)
         return [r.command_id for r in snap.applied_commands]
@@ -299,10 +355,12 @@ class StateSync:
                 # wrote back in the meantime (late confirmation after expiry).
                 db.execute("DELETE FROM memory_current WHERE device_id=?", (command["device_id"],))
                 db.execute("DELETE FROM daily_summaries WHERE device_id=?", (command["device_id"],))
+            # After "resume sync" (clear_state 'none') only an applied clear
+            # changes anything: a late refusal must not freeze sync again.
             db.execute("UPDATE memory_clears SET clear_state=?, applied_generation=? "
-                       "WHERE device_id=? AND command_id=?",
+                       "WHERE device_id=? AND command_id=? AND (clear_state!='none' OR ?='applied')",
                        (command["state"], generation if command["state"] == "applied" else None,
-                        command["device_id"], command["command_id"]))
+                        command["device_id"], command["command_id"], command["state"]))
 
     def _expire(self, db, now: int, device_id: str | None = None) -> None:
         # Server timeouts carry no snapshot generation; a later device

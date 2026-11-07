@@ -15,7 +15,7 @@ from services.pet_learning.memory_codec import (  # noqa: E402
     CodecError, Day, ParentSettings, decode_memory, decode_parent_settings)
 
 FIXTURES = ROOT / "tests" / "fixtures" / "memory"
-VALID_MEMORY = ("empty", "rich", "full", "wiped", "capped")
+VALID_MEMORY = ("empty", "rich", "full", "wiped", "capped", "limits", "saturated", "seven_days")
 VALID_SETTINGS = ("default", "custom")
 
 
@@ -58,6 +58,22 @@ class MemoryGoldenTest(unittest.TestCase):
         wiped = decode_memory((FIXTURES / "memory_wiped.bin").read_bytes())
         self.assertTrue(wiped.empty())
         self.assertEqual(wiped.trait, "lively")
+
+    def test_limit_saturation_and_milestone_vectors(self):
+        limits = decode_memory((FIXTURES / "memory_limits.bin").read_bytes())
+        self.assertEqual((limits.today.day, limits.yesterday.day), (0xFFFFFFFF, 0xFFFFFFFE))
+        self.assertEqual((limits.today.last_book, limits.today.last_game), (0xFFFF, 0xFFFF))
+        self.assertEqual(limits.preferences[0].source_event, 2 ** 64 - 1)
+        self.assertEqual((limits.preferences[0].slot, limits.preferences[0].option), (0xFFFF, 0xFFFF))
+        saturated = decode_memory((FIXTURES / "memory_saturated.bin").read_bytes())
+        self.assertEqual(saturated.today.counts(),
+                         {"feeds": 250, "greetings": 250, "books": 250, "games": 250, "choices": 250})
+        self.assertEqual((saturated.growth.books_finished, saturated.growth.games_completed), (65535, 65535))
+        self.assertEqual(saturated.growth.milestones, 0b0111111)  # through ten_games
+        seven = decode_memory((FIXTURES / "memory_seven_days.bin").read_bytes())
+        self.assertEqual(seven.growth.active_days, 7)
+        self.assertEqual(seven.growth.milestones, (1 << 6) | (1 << 3))  # seven_days, first_game
+        self.assertEqual(seven.yesterday, Day(105, 1, 0, 0, 1, 0, 0, 3))
 
     def test_corrupt_memory_vectors_are_rejected(self):
         for path in sorted(FIXTURES.glob("memory_bad_*.bin")):

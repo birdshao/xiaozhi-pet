@@ -17,7 +17,8 @@
 
 ## 快照规则
 
-- 请求体 ≤ 4 KiB（超出 413）；`schema_version` 只认 `"2.0"`，`ledger_schema` 只认 `3`，未知字段 422。
+- 请求体 ≤ 5 KiB（超出 413）。方案 §9 写的是 4 KiB，但所有字段取上限时的紧凑 JSON 是 4440 字节（测试 `test_worst_case_snapshot_fits_the_limit`），所以放宽到 5120 并要求紧凑 JSON。`schema_version` 只认 `"2.0"`，`ledger_schema` 只认 `3`；整数严格（布尔、小数、数字字符串都拒绝），未知字段 422。
+- 重复上传先只读判断：完全相同的重发（且没有新命令要送达）、10 s 内重复的 `stale`、限流内的新 generation 都不开写事务。同一设备同一种解码失败每小时只记一条审计。
 - `memory_b64`（288 字节）和 `parent_settings_b64`（28 字节）严格解码；任何失败整份快照 422（`MEMORY_FORMAT_UNSUPPORTED` / `MEMORY_CORRUPT` / `SETTINGS_VERSION_UNSUPPORTED` / `SETTINGS_CORRUPT` / `BASE64_INVALID`），不更新任何状态，审计 `state.reject`。未知格式版本拒绝，不猜。
 - 幂等键 `(device_id, generation)`。`state_sha` 只覆盖**账本提交的内容**（`ledger_schema`、`pet`、`memory_b64`、`parent_settings_b64`、`parent_settings_rev`）：更大 → `accepted`；相等且账本内容相同 → `duplicate`，同时刷新不经账本的字段（电量、时钟、清单、TF 空间、`awaiting_confirm`）并处理回执；相等但账本内容不同 → `generation_conflict`（不更新、审计、面板告警 7 天）；更小 → `stale`（连续 3 次 → 面板提示"重新开通"）。四种都是 HTTP 200，看 `result`。
 - 新快照与上一份已接受快照间隔 < 10 s → 429 + `Retry-After: 10`（重复重发不受限）。
@@ -42,7 +43,7 @@
 
 ## 固件需要发送 / 接受的内容（§11.2 设备端配套）
 
-**发送** `PUT /v1/devices/{id}/state`，`Authorization: Bearer <token>`，JSON ≤ 4 KiB：
+**发送** `PUT /v1/devices/{id}/state`，`Authorization: Bearer <token>`，**紧凑 JSON**（cJSON `cJSON_PrintUnformatted`）≤ 5120 字节，最坏情况 4440 字节：
 
 | 字段 | 要求 |
 |---|---|
@@ -51,17 +52,19 @@
 | `ledger_schema` | `3` |
 | `fw_version` | 1–40 个 `[A-Za-z0-9._+-]` |
 | `rtc_day` | 本地日期距 1970-01-01 的天数（与 `MemoryEvent::day` 同一约定），时钟未知为 0 |
-| `pet` | `{"mode","mood"}`：1–16 个 `A-Z_`；`fed_total` u32 |
+| `pet` | `PetSnapshot`（`pet_controller.h`）：`mode` ∈ `IDLE INTERACT STORY LISTENING SPEAKING QUIET`，`mood` ∈ `NEUTRAL HAPPY CURIOUS THINKING SLEEPY`（枚举名大写），`interaction_count` u32，`active_page` 1..65535，`quiet` bool |
 | `memory_b64` | `MemoryStore::Encode` 的 288 字节，标准 base64（384 字符，带填充） |
 | `parent_settings_b64` | `ParentSettingsCodec::Encode` 的 28 字节（40 字符） |
 | `parent_settings_rev` | u32（v2 codec 之前可固定 0） |
 | `battery` | `{"pct": 0..100, "charging": bool}` |
 | `inventory` | ≤ 32 项 `{"kind":"book"|"soundpack"|"game","content_id":u16,"revision":u16,"header_crc":"8 位小写 hex"}` |
 | `sd_free_kib` | 可选，u32 |
-| `awaiting_confirm` | ≤ 16 个正在家长入口等待确认的 `command_id` |
+| `awaiting_confirm` | ≤ 8 个正在家长入口等待确认的 `command_id`（1..2^53-1） |
 | `applied_commands` | ≤ 16 个 `{"command_id","result":"applied"|"rejected"|"expired"}` |
 
-不允许其他字段。频率：联网后一次、账本提交后去抖 30 s、关机前一次；两次新快照至少间隔 10 s。离线不排队，下次只发最新。
+不允许其他字段；整数必须是 JSON 整数（不能是 `true`、`5.0` 或 `"5"`）。
+
+**何时上传**（都去抖 30 s，两次新 generation 至少间隔 10 s）：联网后一次；账本提交后；**回执列表或待确认列表变化后**（没有账本提交就用同一个 generation 重发，服务端按 `duplicate` 刷新）；关机前一次（如果网络在）。离线不排队，下次只发最新。
 
 **接受** 响应（HTTP 200）：
 
@@ -74,7 +77,9 @@
 
 - `applied_commands` 里的回执要一直带着，直到某次响应的 `acked_commands` 包含它（`accepted`/`duplicate` 才会确认；`stale`/`generation_conflict` 不处理回执）。
 - `command_id` 是 1..2^53-1 的随机数：最高位为 0（`IsExternalEventId`），且 cJSON 的 double 能精确表示。用它作为账本事件 id → 重放窗口去重。
-- `requires_confirm: true`（`MEMORY_CLEAR`、`SET_TEMPERAMENT`）：只进内存待确认、放进 `awaiting_confirm`，家长在设备家长入口确认后才以 `MemorySource::Parent` 提交；拒绝回 `rejected`。
+- **是否需要家长确认由设备按 `kind` 决定，忽略 `requires_confirm`**（它只供显示）：`MEMORY_CLEAR`、`SET_TEMPERAMENT` 永远要在设备家长入口确认（D5），即使收到 `requires_confirm: false` 也一样；服务端也从不对这两种发 `false`。待确认的命令只进内存、放进 `awaiting_confirm`，家长确认后才以 `MemorySource::Parent` 提交，回执 `applied`。
+- 家长**拒绝**要持久化（写账本或 NVS，不能只在内存）：重启后同一命令再次送达时直接回 `rejected`，不再问家长。
+- 再次送达的命令若已在重放窗口里（账本判为 Duplicate），回执 `applied`（它当初就是被执行了）。
 - `expires_at` 是 Unix 秒；设备时钟已知且已过期 → 不执行，回 `expired`。时钟未知时只执行幂等命令（清空、性格、内容同步）。
 - 未知 `kind` 忽略并回 `rejected`。错误：401 token 不对，413 太大，422 格式/解码错误（`detail` 是代码，不重试同一内容），429 按 `Retry-After` 等待。
 - `GET /v1/devices/{id}/commands` 返回 `{"server_rev","commands":[...]}`，格式同上。

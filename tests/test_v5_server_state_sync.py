@@ -78,7 +78,7 @@ class StateSyncTests(unittest.TestCase):
         body = {
             "schema_version": "2.0", "generation": generation, "ledger_schema": 3,
             "fw_version": "pet-2026.11.04", "rtc_day": 20761,
-            "pet": {"mode": "HOME", "mood": "HAPPY", "fed_total": 57},
+            "pet": {"mode": "IDLE", "mood": "HAPPY", "interaction_count": 57, "active_page": 1, "quiet": False},
             "memory_b64": base64.b64encode((memory or memory_with(20761)).encode()).decode(),
             "parent_settings_b64": base64.b64encode(ParentSettings().encode()).decode(),
             "parent_settings_rev": 7,
@@ -176,12 +176,97 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(self.put(self.snapshot(parent_settings_b64=base64.b64encode(bad).decode()))
                          .json()["detail"], "SETTINGS_VERSION_UNSUPPORTED")
         self.assertEqual(self.put(self.snapshot(memory_b64="!" * 384)).json()["detail"], "BASE64_INVALID")
-        huge = self.snapshot(fw_version="x" * 5000)
+        huge = self.snapshot(fw_version="x" * 6000)
         self.assertEqual(self.put(huge).status_code, 413)
+        for bad in ({"generation": True}, {"generation": 5.0}, {"rtc_day": "20761"},
+                    {"battery": {"pct": 64.0, "charging": False}}, {"awaiting_confirm": [2 ** 53]},
+                    {"awaiting_confirm": [0]}, {"awaiting_confirm": [1] * 9},
+                    {"pet": {"mode": "HOME", "mood": "HAPPY", "interaction_count": 1, "active_page": 1,
+                             "quiet": False}},
+                    {"pet": {"mode": "IDLE", "mood": "HAPPY", "interaction_count": 1, "active_page": 1,
+                             "quiet": 0}}):
+            with self.subTest(bad):
+                self.assertEqual(self.put(self.snapshot(**bad)).json()["detail"], "INVALID_STATE")
         self.assertEqual(self.table("SELECT COUNT(*) FROM device_state"), [(0,)])
         self.assertEqual(self.put(self.snapshot()).status_code, 200)
         early = self.put(self.snapshot(), advance=3)
         self.assertEqual((early.status_code, early.headers["retry-after"]), (429, "10"))
+
+    def test_worst_case_snapshot_fits_the_limit(self):
+        top = 2 ** 53 - 1
+        worst = self.snapshot(
+            generation=2 ** 63 - 1, fw_version="x" * 40, rtc_day=2 ** 32 - 1, parent_settings_rev=2 ** 32 - 1,
+            pet={"mode": "LISTENING", "mood": "THINKING", "interaction_count": 2 ** 32 - 1,
+                 "active_page": 65535, "quiet": False},
+            battery={"pct": 100, "charging": False}, sd_free_kib=2 ** 32 - 1,
+            inventory=[{"kind": "soundpack", "content_id": 65535, "revision": 65535,
+                        "header_crc": "ffffffff"}] * 32,
+            awaiting_confirm=[top] * 8, applied_commands=[{"command_id": top, "result": "rejected"}] * 16)
+        compact = json.dumps(worst, separators=(",", ":")).encode()
+        self.assertEqual(len(compact), 4440)
+        self.now += 11
+        result = self.client.put("/v1/devices/pet-001/state", content=compact, headers={
+            "Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+        self.assertEqual(result.json()["result"], "accepted")
+        padded = compact[:-1] + b" " * (5121 - len(compact)) + b"}"
+        self.now += 11
+        self.assertEqual(self.client.put("/v1/devices/pet-001/state", content=padded, headers={
+            "Authorization": f"Bearer {TOKEN}"}).status_code, 413)
+
+    def test_retries_are_answered_without_a_write(self):
+        first = self.snapshot()
+        self.put(first)
+        writes = []
+        original = self.sync._accept
+
+        def counting(*args, **kwargs):
+            writes.append(1)
+            return original(*args, **kwargs)
+        self.sync._accept = counting
+        self.assertEqual(self.put(first, advance=1).json()["result"], "duplicate")
+        self.assertEqual(writes, [])
+        with connect(self.path) as db:  # a new command must be delivered: write path
+            commands.enqueue(db, "pet-001", "SYNC_CONTENT", {}, self.now)
+        self.assertEqual(len(self.put(first, advance=1).json()["commands"]), 1)
+        self.assertEqual(writes, [1])
+        self.assertEqual(self.put(first, advance=1).json()["result"], "duplicate")
+        self.assertEqual(writes, [1])
+        self.put(self.snapshot(generation=5))
+        self.put(self.snapshot(generation=1))
+        self.assertEqual(self.put(self.snapshot(generation=1), advance=1).json()["result"], "stale")
+        self.assertEqual(self.table("SELECT stale_streak FROM device_state"), [(1,)])
+        # Repeated decode failures produce one audit row per hour.
+        bad = base64.b64encode((FIXTURES / "memory_bad_zero_book.bin").read_bytes()).decode()
+        for _ in range(5):
+            self.assertEqual(self.put(self.snapshot(memory_b64=bad)).status_code, 422)
+        self.assertEqual(self.table("SELECT COUNT(*) FROM audit_log WHERE action='state.reject'"), [(1,)])
+
+    def test_confirm_kinds_always_require_confirmation(self):
+        original = dict(commands.KINDS)
+        self.addCleanup(lambda: commands.KINDS.update(original))
+        commands.KINDS.update({"MEMORY_CLEAR": False, "SET_TEMPERAMENT": False})  # misconfiguration
+        with connect(self.path) as db:
+            clear = commands.enqueue(db, "pet-001", "MEMORY_CLEAR", {"clear_epoch": 1}, self.now)
+            commands.enqueue(db, "pet-001", "SET_TEMPERAMENT", {"temperament": "lively"}, self.now)
+            with self.assertRaises(ValueError):
+                commands.enqueue(db, "pet-001", "SYNC_CONTENT", {"requires_confirm": False}, self.now)
+        self.assertEqual(clear["expires_at"] - self.now, commands.CONFIRM_TTL)
+        delivered = self.put(self.snapshot()).json()["commands"]
+        self.assertEqual([(c["kind"], c["requires_confirm"]) for c in delivered],
+                         [("MEMORY_CLEAR", True), ("SET_TEMPERAMENT", True)])
+
+    def test_late_refusal_after_resume_does_not_refreeze(self):
+        self.login()
+        self.put(self.snapshot())
+        cid = self.clear()["memory_clear"]["command"]["command_id"]
+        self.now += commands.CONFIRM_TTL + 1
+        self.sync.resume("pet-001", None)
+        self.put(self.snapshot(receipts=[(cid, "rejected")]))
+        self.put(self.snapshot())
+        view = self.sync.memories("pet-001")
+        self.assertEqual(view["memory_clear"]["state"], "none")
+        self.assertEqual(len(view["memory"]["likes"]), 2)
+        self.assertEqual(self.table("SELECT state FROM commands"), [("rejected",)])
 
     def test_token_is_bound_to_its_device(self):
         body = self.snapshot()

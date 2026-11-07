@@ -166,12 +166,57 @@ MemoryStore Capped() {
     return m;
 }
 
+MemoryStore Limits() {
+    // Every u16 id, the u32 day and the u64 event id at their maxima.
+    MemoryStore m;
+    m.NotePetAction(PetAction::Feed, 0xFFFFFFFEu);
+    Like(&m, UINT64_MAX, 0xFFFF, 0xFFFF, 0xFFFFFFFFu);
+    Book(&m, 2, 0xFFFF, 0xFFFFFFFFu);
+    Game(&m, 3, 0xFFFF, 0xFFFFFFFFu);
+    assert(m.Yesterday().day == 0xFFFFFFFEu && m.Today().day == 0xFFFFFFFFu);
+    assert(m.PreferenceAt(0).source_event == UINT64_MAX);
+    return m;
+}
+
+MemoryStore Saturated() {
+    // Daily counters stop at 250, growth counters at 65535; every
+    // book/game milestone is reached.
+    MemoryStore m;
+    for (uint32_t i = 0; i < 65600; ++i) Book(&m, 1 + i, 1, 0);
+    for (uint32_t i = 0; i < 65600; ++i) Game(&m, 100000 + i, 2, 0);
+    for (uint32_t i = 0; i < 300; ++i) Like(&m, 200000 + i, 1, static_cast<uint16_t>(1 + i % 3), 0);
+    for (int i = 0; i < 300; ++i) {
+        m.NotePetAction(PetAction::Feed, 0);
+        m.NotePetAction(PetAction::Pickup, 0);
+    }
+    assert(m.GetGrowth().books_finished == UINT16_MAX && m.GetGrowth().games_completed == UINT16_MAX);
+    assert(m.Today().books == MemoryStore::kTodayCap && m.Today().greetings == MemoryStore::kTodayCap);
+    assert(m.GetGrowth().milestones == 63);
+    return m;
+}
+
+MemoryStore SevenDays() {
+    // Seven active days in a row; the last-but-one has a game, so
+    // "yesterday" carries a game.
+    MemoryStore m;
+    for (uint32_t d = 100; d <= 106; ++d) {
+        m.NotePetAction(PetAction::Feed, d);
+        if (d == 105) Game(&m, 50, 3, d);
+    }
+    assert(m.GetGrowth().active_days == 7 && m.Yesterday().games == 1);
+    assert(m.GetGrowth().milestones == (MemoryStore::kSevenDays | MemoryStore::kFirstGame));
+    return m;
+}
+
 void MemoryVectors() {
     ValidMemory("empty", MemoryStore{});
     ValidMemory("rich", Rich());
     ValidMemory("full", Full());
     ValidMemory("wiped", Wiped());
     ValidMemory("capped", Capped());
+    ValidMemory("limits", Limits());
+    ValidMemory("saturated", Saturated());
+    ValidMemory("seven_days", SevenDays());
 
     // Layout (memory_store.cc): today @4, yesterday @18, growth @32,
     // books @44, preferences @60 (12 bytes each), reserved @252.

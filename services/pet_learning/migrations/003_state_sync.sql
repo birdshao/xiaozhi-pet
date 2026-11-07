@@ -18,8 +18,11 @@ CREATE TABLE device_state (
     parent_settings_rev INTEGER NOT NULL,
     awaiting_json TEXT NOT NULL,
     temperament TEXT NOT NULL,
+    -- hash of the whole upload: identical retries are answered read-only
+    upload_sha TEXT NOT NULL,
     -- Consecutive snapshots older than the stored generation (§5.2).
     stale_streak INTEGER NOT NULL DEFAULT 0,
+    stale_at INTEGER,
     conflict_at INTEGER
 );
 CREATE TABLE memory_current (
