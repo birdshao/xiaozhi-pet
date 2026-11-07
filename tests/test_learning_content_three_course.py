@@ -14,6 +14,10 @@ from content_pipeline.catalog import build_index
 from content_pipeline.game_lessons import (
     original_math_lesson, original_math_unit_lessons, validate_lesson)
 from content_pipeline.schema import ContentError, write_json
+from content_pipeline.game_packaging import stage_game, build_reviewed_game
+from content_pipeline.speech import narrate_game
+from tools.learning_math_native_fixture import _tone
+from tools import game_pack
 from tools.learning_course_sd import stage_course_card
 from tools.learning_math_unit_sources import write_unit_sources
 from tools.learning_three_course_fixture import make_three_course_fixture, COURSE, SKILLS
@@ -109,6 +113,43 @@ class ThreeCourseSelection(unittest.TestCase):
                     packages=[packages[0], altered, packages[2]],
                     active="counts", output=p / "card", test_only=True)
             self.assertFalse((p / "card").exists())
+
+    def test_actual_review_gate_and_named_unit_kpg1_output(self):
+        """Named unit build uses the *production* review-gated entrypoint."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "draft"
+            stage = root / "stage"
+            source.mkdir()
+            lesson = original_math_unit_lessons()["shapes"]
+            write_json(source / "lesson.json", lesson)
+            audio = narrate_game(
+                source / "lesson.json", source, voice="zh-CN-XiaoxiaoNeural",
+                synthesize=_tone, test_only=True)
+            self.assertEqual(audio["status"], "test_only")
+            candidate = stage_game(source / "lesson.json",
+                                   source / "audio_map.json", stage)
+            review = root / "review.json"
+            write_json(review, {
+                "status": "reviewed", "reviewer": "CI fixture, not real approval",
+                "checked_hash": candidate["checked_hash"],
+                "attestations": {
+                    "educational_accuracy": True, "answer_uniqueness": True,
+                    "audio": True, "age_safety": True, "source": True,
+                },
+            })
+            dest = root / "games/shapes.kpg"
+            with self.assertRaisesRegex(ContentError, "synthetic test-only"):
+                build_reviewed_game(stage, review, dest)
+            self.assertFalse(dest.exists())
+            result = build_reviewed_game(stage, review, dest, smoke_only=True)
+            self.assertEqual(result["sd_path"], "/games/shapes.kpg")
+            self.assertTrue(result["placeholder"])
+            parsed = game_pack.parse(dest.read_bytes())
+            self.assertEqual(parsed["content_id"], 20011)
+            self.assertEqual(len(parsed["rounds"]), 5)
+            self.assertFalse(json.loads(
+                (stage / "game.json").read_text(encoding="utf-8"))["approved"])
 
     def test_writer_exports_review_pending_units(self):
         with tempfile.TemporaryDirectory() as tmp:
