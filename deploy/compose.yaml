@@ -1,0 +1,112 @@
+# S7 application stack. Run from this directory:  docker compose --env-file .env up -d --build
+# The only published port is the gateway (PET_GATEWAY_BIND:PET_GATEWAY_PORT); TLS, DNS and the
+# public reverse proxy are the operator's job (docs/V5_V6_SERVER_PLAN.md §3.3).
+name: pet-server
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  pet-learning:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.pet-learning
+    image: pet-learning:s7
+    user: "10001:10001"
+    tmpfs: [/tmp]
+    environment:
+      KID_PET_ENV: production
+      KID_PET_DB: /data/pet_learning.sqlite3
+      KID_PET_CONTENT_DIR: /data/packages
+      KID_PET_PUBLIC_ORIGIN: ${KID_PET_PUBLIC_ORIGIN:?set KID_PET_PUBLIC_ORIGIN}
+      # The app trusts forwarded headers only from the gateway (fixed address below); the gateway in
+      # turn trusts X-Forwarded-For only from the operator's ingress, KID_PET_TRUSTED_PROXY.
+      KID_PET_TRUSTED_PROXY: 172.28.0.2
+      KID_PET_TOTP_KEY: ${KID_PET_TOTP_KEY:?set KID_PET_TOTP_KEY}
+      KID_PET_BACKUP_KEY: ${KID_PET_BACKUP_KEY:-}
+    volumes:
+      - pet-data:/data
+      - pet-backups:/backups
+    networks:
+      pet: {ipv4_address: 172.28.0.10}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8765/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Shares pet-learning's network namespace: the child guard only calls loopback (S5 makes the
+  # allow-list configurable; until then this keeps 127.0.0.1 true without patching the guard).
+  xiaozhi-server:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.xiaozhi
+    image: xiaozhi-server-child:s7
+    user: "10001:10001"
+    network_mode: "service:pet-learning"
+    depends_on:
+      pet-learning: {condition: service_healthy}
+    tmpfs: [/tmp, "/opt/xiaozhi-esp32-server/tmp:uid=10001,gid=10001"]
+    volumes:
+      - xiaozhi-data:/opt/xiaozhi-esp32-server/data
+      # Local ASR model (child audio never leaves the box); fetch with deploy/fetch_models.sh
+      - ./models/sherpa-onnx-paraformer-zh-small-2024-03-09:/opt/xiaozhi-esp32-server/models/sherpa-onnx-paraformer-zh-small-2024-03-09:ro
+    environment:
+      KID_PET_PUBLIC_ORIGIN: ${KID_PET_PUBLIC_ORIGIN}
+      XZ_AUTH_KEY: ${XZ_AUTH_KEY:?set XZ_AUTH_KEY}
+      KID_PET_CHILD_MODE: ${KID_PET_CHILD_MODE:-1}
+      KID_PET_API_URL: http://127.0.0.1:8765
+      KID_PET_UPSTREAM_DEVICE_ID: ${KID_PET_UPSTREAM_DEVICE_ID:?set KID_PET_UPSTREAM_DEVICE_ID}
+      KID_PET_BUSINESS_DEVICE_ID: ${KID_PET_BUSINESS_DEVICE_ID:?set KID_PET_BUSINESS_DEVICE_ID}
+      KID_PET_DEVICE_TOKEN: ${KID_PET_DEVICE_TOKEN:?set KID_PET_DEVICE_TOKEN}
+      XZ_ASR_MODULE: ${XZ_ASR_MODULE:-}
+      XZ_LLM_MODULE: ${XZ_LLM_MODULE:-}
+      XZ_TTS_MODULE: ${XZ_TTS_MODULE:-}
+    env_file:
+      - path: providers.env   # only provider settings: XZ__<section>__<module>__<key>=value lines
+        required: false       # (kept apart from .env so the voice container never sees other secrets)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8003/xiaozhi/ota/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+  gateway:
+    <<: *hardening
+    image: nginx:1.27-alpine
+    cap_add: [CHOWN, SETUID, SETGID]
+    depends_on:
+      pet-learning: {condition: service_healthy}
+    ports:
+      - "${PET_GATEWAY_BIND:-127.0.0.1}:${PET_GATEWAY_PORT:-8780}:8780"
+    environment:
+      INGRESS_PROXY_IP: ${KID_PET_TRUSTED_PROXY:?set KID_PET_TRUSTED_PROXY}
+    volumes:
+      - ./nginx/gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+    tmpfs: [/var/cache/nginx, /var/run, /tmp, /etc/nginx/conf.d]
+    networks:
+      pet: {ipv4_address: 172.28.0.2}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8780/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  pet:
+    ipam:
+      config: [{subnet: 172.28.0.0/24}]
+
+volumes:
+  pet-data:
+  pet-backups:
+  xiaozhi-data:

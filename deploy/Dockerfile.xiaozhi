@@ -1,0 +1,28 @@
+# xiaozhi-esp32-server pinned by commit (version-lock.json voice_server) + child guard overlay.
+FROM python:3.10-slim AS src
+ARG XZ_COMMIT=8f2dda09cf18f1c1ece0f906eee4cc2fabb7fb58
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git init -q /src && cd /src \
+ && git remote add origin https://github.com/xinnan-tech/xiaozhi-esp32-server.git \
+ && git fetch -q --depth 1 origin "$XZ_COMMIT" && git checkout -q FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "$XZ_COMMIT"
+COPY scripts/p3_server_overlay.py deploy/apply_overlay.py integrations/xiaozhi_server/child_voice_guard.py /overlay/
+RUN cd /overlay && python apply_overlay.py --source /src/main/xiaozhi-server --module child_voice_guard.py
+
+FROM python:3.10-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libopus0 ffmpeg locales \
+ && sed -i '/zh_CN.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && rm -rf /var/lib/apt/lists/*
+ENV LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set global.extra-index-url https://pypi.org/simple && pip config set global.timeout 120
+WORKDIR /opt/xiaozhi-esp32-server
+COPY --from=src /src/main/xiaozhi-server/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=src /src/main/xiaozhi-server/ .
+COPY deploy/xiaozhi/entrypoint.py deploy/xiaozhi/child.config.yaml /opt/pet/
+COPY services/pet_learning/xz_checklist.py /opt/pet/xz_checklist.py
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin pet \
+ && mkdir -p data tmp && chown -R pet data tmp
+USER 10001
+EXPOSE 8000 8003
+ENTRYPOINT ["python", "/opt/pet/entrypoint.py"]

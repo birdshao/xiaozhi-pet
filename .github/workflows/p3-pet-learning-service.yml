@@ -8,6 +8,8 @@ on:
       - 'tests/test_v5_server_*.py'
       - 'tests/test_p3_pet_learning_api.py'
       - 'tools/pet_learning_admin.py'
+      - 'deploy/**'
+      - 'tests/test_s7_*.py'
       - 'integrations/xiaozhi_server/**'
       - 'scripts/p3_server_overlay.py'
       - 'tests/test_p3_xiaozhi_child_voice_guard.py'
@@ -22,6 +24,8 @@ on:
       - 'tests/test_v5_server_*.py'
       - 'tests/test_p3_pet_learning_api.py'
       - 'tools/pet_learning_admin.py'
+      - 'deploy/**'
+      - 'tests/test_s7_*.py'
       - 'integrations/xiaozhi_server/**'
       - 'scripts/p3_server_overlay.py'
       - 'tests/test_p3_xiaozhi_child_voice_guard.py'
@@ -53,6 +57,6 @@ jobs:
       - name: Check local browser UI JavaScript syntax
         run: node --check services/pet_learning/playground/play.js
       - name: Compile service source
-        run: python -m compileall -q services integrations/xiaozhi_server scripts/p3_server_overlay.py tools/pet_learning_admin.py tools/seed_sample_content.py
+        run: python -m compileall -q services integrations/xiaozhi_server scripts/p3_server_overlay.py tools/pet_learning_admin.py deploy/apply_overlay.py tools/seed_sample_content.py
       - name: Run isolated service integration tests (no hardware/cloud)
         run: python -m unittest discover -s tests -p "test_*.py" -v
