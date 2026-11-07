@@ -1490,6 +1490,15 @@ void ReaderScene(MonoFrame& f, const SceneModel& model) {
         if (static_cast<int>(model.book_page % indicators) == i) Disk(f, x, y, 9);
         else Ring(f, x, y, 7, 7, 3);
     }
+    // V8 series: a small book with an arrow, "the next book is waiting"
+    // (book_page bit 14, see BookScene).
+    if ((model.book_page & 0x4000) != 0) {
+        FillRoundRect(f, 640, 330, 70, 50, 8);
+        FillRoundRect(f, 646, 336, 58, 38, 4, false);
+        Stroke(f, 722, 355, 756, 355, 6);
+        Stroke(f, 744, 343, 756, 355, 6);
+        Stroke(f, 744, 367, 756, 355, 6);
+    }
 }
 
 // No book to read (no fonts: the child reads the icons). TuanTuan wonders

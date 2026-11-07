@@ -721,5 +721,49 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM content_packages").fetchone()[0], 1)
 
 
+class BranchBookImportTests(Base):
+    """V8: KPB2 v3 branching books and series go through the same import."""
+
+    def setUp(self):
+        super().setUp()
+        from tools import make_branch_test_book
+        out = Path(self.tmp.name) / "branch"
+        make_branch_test_book.build(out)
+        self.branch = (out / "books" / "branch_test.kpb").read_bytes()
+
+    def patched(self, at, value, size=1):
+        blob = bytearray(self.branch)
+        struct.pack_into("<B" if size == 1 else "<H", blob, at, value)
+        data_start = struct.unpack_from("<I", blob, 40)[0]
+        struct.pack_into("<I", blob, 60, kpb2.crc32(bytes(blob[96:data_start])))
+        struct.pack_into("<I", blob, 92, kpb2.crc32(bytes(blob[:92])))
+        return bytes(blob)
+
+    def test_branching_book_becomes_a_draft_with_series_metadata(self):
+        meta = content.inspect(self.branch)
+        self.assertEqual((meta["kind"], meta["content_id"], meta["branching"]), ("book", 901, True))
+        self.assertEqual(meta["series"], {"id": 7, "index": 1, "count": 2, "next_content_id": 902})
+        response = self.upload(self.branch)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["package"]["path"], "/books/c901.kpb")
+        self.assertEqual(response.json()["package"]["status"], "draft")
+
+    def test_linear_book_has_no_series(self):
+        meta = content.inspect(BOOK)
+        self.assertEqual((meta["branching"], meta["series"]["id"]), (False, 0))
+
+    def test_bad_story_graphs_are_pack_invalid(self):
+        question = 96 + 6 * 96 + 32 + 3  # first option jump byte of the branch question
+        for name, blob in (
+                ("jump to a missing page", self.patched(question, 9)),
+                ("loop", self.patched(96 + 3 * 96 + 64, 2, 2)),
+                ("unreachable page", self.patched(question + 48, 3)),
+                ("series points at itself", self.patched(70, 901, 2))):
+            response = self.upload(blob)
+            self.assertEqual((response.status_code, response.json()["detail"]), (422, "PACK_INVALID"),
+                             name)
+        self.assertEqual(self.client.get("/v1/parent/content").json()["packages"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

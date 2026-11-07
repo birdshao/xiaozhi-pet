@@ -31,6 +31,7 @@ constexpr uint32_t kQuestionRecord = 192;
 constexpr uint32_t kOptionRecord = 48;
 constexpr uint32_t kOptionsAt = 32;
 constexpr uint16_t kPageGrey = 0x0001;
+constexpr uint16_t kHeaderBranching = 0x0001;  // v3: pages carry next, options jump
 constexpr uint8_t kQuestionVoice = 0x01;
 constexpr uint8_t kOptionLike = 0x01;
 // Highest registered option id per like slot (index = slot; 0 unused).
@@ -149,7 +150,7 @@ bool Overlap(const PageRect& a, const PageRect& b) {
 }
 
 bool ParsePage(const uint8_t* r, uint16_t number, uint16_t question_first,
-               ContentPage* out) {
+               bool branching, ContentPage* out) {
     ContentPage p{};
     p.number = U16(r);
     const uint16_t flags = U16(r + 2);
@@ -166,7 +167,8 @@ bool ParsePage(const uint8_t* r, uint16_t number, uint16_t question_first,
     if (p.number != number || (flags & ~kPageGrey) != 0 ||
         p.question_first != question_first ||
         questions > ContentPackReader::kMaxQuestionsPerPage ||
-        !AllZero(r + 64, kPageRecord - 64) ||
+        (branching ? !AllZero(r + 66, kPageRecord - 66)
+                   : !AllZero(r + 64, kPageRecord - 64)) ||
         p.mono.bytes != ContentPackReader::kMonoBytes ||
         (p.has_grey ? p.grey.bytes != ContentPackReader::kGreyBytes
                     : !Empty(p.grey)) ||
@@ -174,12 +176,13 @@ bool ParsePage(const uint8_t* r, uint16_t number, uint16_t question_first,
         !Pcm(p.pcm, kMaxPagePcm) || !Text(p.text, kMaxPageText))
         return false;
     p.question_count = static_cast<uint8_t>(questions);
+    if (branching) p.next = U16(r + 64);
     *out = p;
     return true;
 }
 
 // Pure field and geometry checks of one 192-byte question record.
-bool ParseQuestion(const uint8_t* r, uint16_t page, uint8_t index,
+bool ParseQuestion(const uint8_t* r, uint16_t page, uint8_t index, bool branching,
                    ContentQuestion* out) {
     ContentQuestion q{};
     q.page = U16(r);
@@ -216,7 +219,8 @@ bool ParseQuestion(const uint8_t* r, uint16_t page, uint8_t index,
         opt.label = Seg(o + 36);
         const PageRect& b = opt.box;
         const uint16_t m = ContentPackReader::kHighlightMargin;
-        if ((oflags & ~kOptionLike) != 0 || o[3] != 0 ||
+        if (branching) opt.goto_page = o[3];
+        if ((oflags & ~kOptionLike) != 0 || (!branching && o[3] != 0) ||
             (opt.counts_as_like
                  ? (q.like_slot == 0 ||
                     q.like_slot >= std::size(kLikeOptionMax) || opt.id == 0 ||
@@ -242,7 +246,102 @@ bool ParseQuestion(const uint8_t* r, uint16_t page, uint8_t index,
     // A like question has no right answer and at least one like option;
     // a question without a slot never writes memory (checked per option).
     if (q.like_slot != 0 && (q.correct != 0 || !any_like)) return false;
+    // Branch question: all options jump or none do, and nothing is "right".
+    uint8_t jumps = 0;
+    for (uint8_t k = 0; k < q.option_count; ++k) jumps += q.options[k].goto_page != 0;
+    if (jumps != 0 && (jumps != q.option_count || q.correct != 0)) return false;
     *out = q;
+    return true;
+}
+
+
+// v3 story graph over <= 32 pages (bit p-1 = page p). Edges to page 1 that
+// are marked "restart" ("read it again") are the only ones allowed to close
+// a loop; every page must be reachable from page 1 and must reach an ending
+// without using a restart edge.
+struct StoryGraph {
+    std::array<uint32_t, ContentPackReader::kMaxPages> succ{};
+    std::array<bool, ContentPackReader::kMaxPages> ends{};
+    std::array<bool, ContentPackReader::kMaxPages> restarts{};
+    std::array<bool, ContentPackReader::kMaxPages> explicit_link{};
+
+    bool Valid(uint16_t count) const {
+        const uint32_t all = count >= 32 ? 0xFFFFFFFFu : ((1u << count) - 1u);
+        uint32_t reach = 1u, frontier = 1u;
+        while (frontier) {
+            uint32_t grown = 0;
+            for (uint16_t p = 0; p < count; ++p)
+                if (frontier & (1u << p)) grown |= succ[p];
+            frontier = grown & ~reach;
+            reach |= grown;
+        }
+        if (reach != all) return false;
+        uint32_t removed = 0;  // acyclic: peel pages whose successors are gone
+        for (bool again = true; again;) {
+            again = false;
+            for (uint16_t p = 0; p < count; ++p) {
+                if (!(removed & (1u << p)) && (succ[p] & ~removed) == 0) {
+                    removed |= 1u << p;
+                    again = true;
+                }
+            }
+        }
+        if (removed != all) return false;
+        uint32_t can_end = 0;
+        for (bool again = true; again;) {
+            again = false;
+            for (uint16_t p = 0; p < count; ++p) {
+                if (!(can_end & (1u << p)) && (ends[p] || (succ[p] & can_end))) {
+                    can_end |= 1u << p;
+                    again = true;
+                }
+            }
+        }
+        return can_end == all;
+    }
+};
+
+// Adds the edges of page `number` (1-based); false on an invalid link.
+bool AddStoryEdges(StoryGraph& g, uint16_t number, uint16_t count, const ContentPage& p,
+                   const std::array<ContentQuestion, ContentPackReader::kMaxQuestionsPerPage>& qs) {
+    const uint16_t i = number - 1;
+    bool branch = false;
+    for (uint8_t j = 0; j < p.question_count; ++j) {
+        if (!qs[j].IsBranch()) continue;
+        if (j + 1 != p.question_count) return false;  // last question only
+        branch = true;
+        for (uint8_t k = 0; k < qs[j].option_count; ++k) {
+            const uint8_t go = qs[j].options[k].goto_page;
+            if (go == ContentPackReader::kGotoRestart) {
+                if (number == 1) return false;
+                g.restarts[i] = true;
+            } else if (go >= 1 && go <= count && go != number) {
+                g.succ[i] |= 1u << (go - 1);
+            } else {
+                return false;
+            }
+        }
+    }
+    if (branch) {
+        g.explicit_link[i] = true;
+        return p.next == 0;
+    }
+    if (p.next == 0) {
+        if (number < count) g.succ[i] |= 1u << number;
+        else g.ends[i] = true;
+        return true;
+    }
+    g.explicit_link[i] = true;
+    if (p.next == ContentPackReader::kNextEnd) {
+        g.ends[i] = true;
+    } else if (p.next == ContentPackReader::kNextRestart) {
+        if (number == 1) return false;
+        g.restarts[i] = true;
+    } else if (p.next >= 1 && p.next <= count && p.next != number) {
+        g.succ[i] |= 1u << (p.next - 1);
+    } else {
+        return false;
+    }
     return true;
 }
 
@@ -261,6 +360,9 @@ void ContentPackReader::Close() {
     format_ = PackFormat::None;
     content_id_ = 0;
     revision_ = 0;
+    version_ = 0;
+    branching_ = false;
+    series_id_ = series_index_ = series_count_ = series_next_ = 0;
     count_ = 0;
     question_count_ = 0;
     question_table_ = 0;
@@ -361,16 +463,32 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
     const uint32_t total = U32(h + 44);
     const ContentSegment title = Seg(h + 48);
     const uint32_t tables_crc = U32(h + 60);
-    if (U16(h + 4) != 2 || U16(h + 6) != kHeader ||
+    const uint16_t version = U16(h + 4);
+    const uint16_t hflags = U16(h + 10);
+    const bool v3 = version == 3;
+    const bool branching = v3 && (hflags & kHeaderBranching) != 0;
+    const uint16_t series_id = v3 ? U16(h + 64) : 0;
+    const uint16_t series_index = v3 ? U16(h + 66) : 0;
+    const uint16_t series_count = v3 ? U16(h + 68) : 0;
+    const uint16_t series_next = v3 ? U16(h + 70) : 0;
+    const bool series_ok =
+        (series_id == 0 && series_index == 0 && series_count == 0 && series_next == 0) ||
+        (series_id != 0 && series_count >= 1 && series_count <= ContentPackReader::kMaxSeries &&
+         series_index >= 1 && series_index <= series_count &&
+         (series_index < series_count ? series_next != 0 && series_next != U16(h + 16)
+                                      : series_next == 0));
+    if ((version != 2 && !v3) || U16(h + 6) != kHeader ||
         U16(h + 8) != static_cast<uint16_t>(PackType::Book) ||
-        U16(h + 10) != 0 || U16(h + 12) != kWidth ||
+        (hflags & ~(v3 ? kHeaderBranching : uint16_t{0})) != 0 || !series_ok ||
+        U16(h + 12) != kWidth ||
         U16(h + 14) != kHeight || U16(h + 16) == 0 || U16(h + 18) == 0 ||
         count == 0 || count > kMaxPages || questions > kMaxQuestions ||
         page_table != kHeader || page_bytes != count * kPageRecord ||
         question_table != page_table + page_bytes ||
         question_bytes != questions * kQuestionRecord ||
         data != question_table + question_bytes || total != size ||
-        total < data || !Text(title, kMaxTitle) || !AllZero(h + 64, 28) ||
+        total < data || !Text(title, kMaxTitle) ||
+        (v3 ? !AllZero(h + 72, 20) : !AllZero(h + 64, 28)) ||
         Crc(h, 92) != U32(h + 92))
         return false;
     if (!Verified(file, {page_table, data - page_table, tables_crc}))
@@ -379,12 +497,14 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
     SegmentChain chain(file, data, total);
     if (!chain.Next(title, true)) return false;
     uint16_t seen = 0;
+    StoryGraph graph{};
     for (uint16_t i = 0; i < count; ++i) {
         std::array<uint8_t, kPageRecord> record{};
         ContentPage p{};
+        std::array<ContentQuestion, kMaxQuestionsPerPage> page_questions{};
         if (!file.ReadAt(page_table + i * kPageRecord, record.data(),
                          record.size()) ||
-            !ParsePage(record.data(), static_cast<uint16_t>(i + 1), seen, &p) ||
+            !ParsePage(record.data(), static_cast<uint16_t>(i + 1), seen, branching, &p) ||
             seen + p.question_count > questions ||
             !chain.Next(p.mono) || (p.has_grey && !chain.Next(p.grey)) ||
             !chain.Next(p.pcm) || !chain.Next(p.text, true))
@@ -394,7 +514,7 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
             ContentQuestion q{};
             if (!file.ReadAt(question_table + (seen + j) * kQuestionRecord,
                              raw.data(), raw.size()) ||
-                !ParseQuestion(raw.data(), p.number, j, &q) ||
+                !ParseQuestion(raw.data(), p.number, j, branching, &q) ||
                 !chain.Next(q.prompt_pcm) || !chain.Next(q.prompt_text, true))
                 return false;
             for (uint8_t k = 0; k < q.option_count; ++k) {
@@ -403,12 +523,26 @@ bool ContentPackReader::OpenKpb2(StoryPackFile& file, uint64_t size) {
                     !chain.Next(o.label, true))
                     return false;
             }
+            page_questions[j] = q;
         }
+        if (!AddStoryEdges(graph, p.number, count, p, page_questions)) return false;
         seen = static_cast<uint16_t>(seen + p.question_count);
         pages_[i] = p;
     }
     if (seen != questions || chain.End() != total) return false;
+    if (!graph.Valid(count)) return false;
+    if (branching) {  // the flag must mean something
+        bool any = false;
+        for (uint16_t i = 0; i < count; ++i) any = any || graph.explicit_link[i];
+        if (!any) return false;
+    }
     format_ = PackFormat::Kpb2;
+    version_ = version;
+    branching_ = branching;
+    series_id_ = series_id;
+    series_index_ = series_index;
+    series_count_ = series_count;
+    series_next_ = series_next;
     content_id_ = U16(h + 16);
     revision_ = U16(h + 18);
     count_ = count;
@@ -432,7 +566,7 @@ bool ContentPackReader::Question(uint16_t page, uint8_t index,
     return file_->ReadAt(question_table_ +
                              (p.question_first + index) * kQuestionRecord,
                          raw.data(), raw.size()) &&
-           ParseQuestion(raw.data(), page, index, out);
+           ParseQuestion(raw.data(), page, index, branching_, out);
 }
 
 bool ContentPackReader::ReadRange(const ContentSegment& s, uint32_t offset,

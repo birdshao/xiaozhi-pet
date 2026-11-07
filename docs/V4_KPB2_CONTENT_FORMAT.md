@@ -305,3 +305,7 @@ python -m tools.story_pack preview  --package out/forest_friends.kpb --output ou
 - 声音包、游戏包等其他包类型：只保留了类型值，没有格式和读取器。（后续：声音包用自己的 KPS1，见 [V2_SOUND_PACK.md](V2_SOUND_PACK.md)；小游戏包用自己的 KPG1，见 [V4_MINI_GAMES.md](V4_MINI_GAMES.md)；都不套 KPB2 外壳，清单里的 `package_type` 名称沿用本表。）
 - 板端仍固定打开 `forest_friends`，没有书目列表和家长白名单。
 - 打开一本大书时全量 CRC 的耗时未在真板上测量。
+
+## 18. 版本 3：分支、系列（V8）
+
+版本 2 的书一字不变，旧读取器和黄金样例照旧。版本 3 在原来“必须为 0”的位置增加：头部 `flags` bit0（分支书）、头部 64..72 的系列字段、页记录 64..66 的 `next`、选项记录 byte 3 的 `goto`；编译器只在用到分支或系列时才输出版本 3。字段、校验规则（目标存在、全页可达、无环只允许回第 1 页的 restart、全页能到结局）、书源写法见 [V8_BOOKS.md](V8_BOOKS.md) §2。
