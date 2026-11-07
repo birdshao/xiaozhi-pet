@@ -179,6 +179,7 @@ struct SnapshotCase {
     bool charging;
     std::vector<uint64_t> awaiting;
     std::vector<CommandReceipt> receipts;
+    uint32_t stickers;  // V8 (ledger v4)
 };
 
 PetSnapshot Pet(PetMode mode, PetMood mood, uint32_t count, uint16_t page, bool quiet) {
@@ -196,20 +197,22 @@ std::vector<SnapshotCase> SnapshotCases() {
     const uint64_t max_id = kMaxCommandId;
     SnapshotCase worst{"worst", "memory_full.bin", "settings_custom.bin", 9223372036854775807ull,
                        0xFFFFFFFFu, Pet(PetMode::Quiet, PetMood::Sleepy, 0xFFFFFFFFu, 0xFFFF, true),
-                       100, false, {}, {}};
+                       100, false, {}, {}, kAllStickers};
     for (uint64_t i = 0; i < 8; ++i) worst.awaiting.push_back(max_id - i);
     for (uint64_t i = 0; i < 16; ++i)
         worst.receipts.push_back(CommandReceipt{max_id - 100 - i, ReceiptResult::Rejected});
     return {
         {"empty", "memory_empty.bin", "settings_default.bin", 1, 0,
-         Pet(PetMode::Idle, PetMood::Neutral, 0, 1, false), 0, false, {}, {}},
+         Pet(PetMode::Idle, PetMood::Neutral, 0, 1, false), 0, false, {}, {}, 0},
         {"rich", "memory_rich.bin", "settings_custom.bin", 1842, 20761,
          Pet(PetMode::Story, PetMood::Happy, 57, 3, false), 64, true, {4098},
          {{4097, ReceiptResult::Applied}, {4099, ReceiptResult::Rejected},
-          {4100, ReceiptResult::Expired}}},
+          {4100, ReceiptResult::Expired}},
+         StickerBit(Sticker::FirstBook) | StickerBit(Sticker::FirstFeed) |
+             StickerBit(Sticker::Festival)},
         {"wiped", "memory_wiped.bin", "settings_default.bin", 77, 20762,
          Pet(PetMode::Interact, PetMood::Curious, 3, 1, false), 100, true, {},
-         {{9007199254740000ull, ReceiptResult::Applied}}},
+         {{9007199254740000ull, ReceiptResult::Applied}}, 0},
         worst,
     };
 }
@@ -230,6 +233,7 @@ StateSnapshotInput InputFor(const SnapshotCase& c) {
     in.charging = c.charging;
     for (uint64_t id : c.awaiting) in.awaiting[in.awaiting_count++] = id;
     for (const auto& r : c.receipts) in.receipts[in.receipt_count++] = r;
+    in.stickers = c.stickers;
     return in;
 }
 
@@ -287,6 +291,9 @@ void TestSnapshotGolden() {
     assert(fails(bad));
     bad = base;
     bad.parent.volume_cap_pct = 15;  // not a 10 % step: settings do not encode
+    assert(fails(bad));
+    bad = base;
+    bad.stickers = 1u << 31;  // V8: no such sticker
     assert(fails(bad));
     assert(!fails(base));
 }

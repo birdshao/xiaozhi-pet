@@ -50,19 +50,20 @@ MAX_ID = (1 << 53) - 1
 CASES = {
     "empty": dict(memory="memory_empty.bin", settings="settings_default.bin", generation=1,
                   rtc_day=0, pet=("IDLE", "NEUTRAL", 0, 1, False), battery=(0, False),
-                  awaiting=[], receipts=[]),
+                  awaiting=[], receipts=[], stickers=[]),
     "rich": dict(memory="memory_rich.bin", settings="settings_custom.bin", generation=1842,
                  rtc_day=20761, pet=("STORY", "HAPPY", 57, 3, False), battery=(64, True),
                  awaiting=[4098], receipts=[(4097, "applied"), (4099, "rejected"),
-                                            (4100, "expired")]),
+                                            (4100, "expired")], stickers=[0, 7, 17]),
     "wiped": dict(memory="memory_wiped.bin", settings="settings_default.bin", generation=77,
                   rtc_day=20762, pet=("INTERACT", "CURIOUS", 3, 1, False), battery=(100, True),
-                  awaiting=[], receipts=[(9007199254740000, "applied")]),
+                  awaiting=[], receipts=[(9007199254740000, "applied")], stickers=[]),
     "worst": dict(memory="memory_full.bin", settings="settings_custom.bin",
                   generation=(1 << 63) - 1, rtc_day=0xFFFFFFFF,
                   pet=("QUIET", "SLEEPY", 0xFFFFFFFF, 0xFFFF, True), battery=(100, False),
                   awaiting=[MAX_ID - i for i in range(8)],
-                  receipts=[(MAX_ID - 100 - i, "rejected") for i in range(16)]),
+                  receipts=[(MAX_ID - 100 - i, "rejected") for i in range(16)],
+                  stickers=list(range(19))),
 }
 
 
@@ -72,7 +73,7 @@ def reference_snapshot(case):
     body = {
         "schema_version": "2.0",
         "generation": case["generation"],
-        "ledger_schema": 3,
+        "ledger_schema": 4,  # V8: the care store rides in the ledger
         "fw_version": "pet-2026.11.06",
         "rtc_day": case["rtc_day"],
         "pet": {"mode": mode, "mood": mood, "interaction_count": count, "active_page": page,
@@ -84,6 +85,7 @@ def reference_snapshot(case):
         "inventory": [],
         "awaiting_confirm": case["awaiting"],
         "applied_commands": [{"command_id": c, "result": r} for c, r in case["receipts"]],
+        "stickers": case["stickers"],
     }
     return json.dumps(body, separators=(",", ":"))
 

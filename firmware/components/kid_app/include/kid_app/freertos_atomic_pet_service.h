@@ -31,6 +31,12 @@ using AtomicPetOutboundCallback = void (*)(
 // Local civil day number (0 = clock unknown) for memory counters; called on
 // the Pet worker, so it must only read an atomic.
 using AtomicPetDayProvider = uint32_t (*)(void* context);
+// V8: local care minute (CareMinute, 0 = clock unknown), same rules.
+using AtomicPetMinuteProvider = uint32_t (*)(void* context);
+// V8 care event outcome, on the Pet worker after the commit (or the
+// decision not to commit). new_stickers: bits earned by this commit.
+using AtomicPetCareCallback = void (*)(const CareEvent& event, CommitResult result,
+                                       uint32_t new_stickers, void* context);
 
 // Outcome of a server command (PostCommand), on the Pet worker after the
 // commit (or the decision not to commit). Copy and return: the network task
@@ -45,6 +51,7 @@ struct PetSyncView {
     PetSnapshot pet{};
     MemoryStore memory{};
     ParentSettings parent{};
+    uint32_t stickers = 0;  // V8 (ledger v4): CareStore::Stickers() of the same commit
 };
 
 // Replacement for legacy FreertosPetService. Exactly one Pet service must
@@ -73,6 +80,17 @@ public:
         day_provider_ = provider;
         day_context_ = context;
     }
+    // V8: set before Start; without it care events carry minute 0 (unknown)
+    // and finished books / games do not count as play.
+    void SetMinuteProvider(AtomicPetMinuteProvider provider, void* context) {
+        minute_provider_ = provider;
+        minute_context_ = context;
+    }
+    // V8: set before Start; without it care outcomes are only logged.
+    void SetCareCallback(AtomicPetCareCallback callback, void* context) {
+        care_cb_ = callback;
+        care_context_ = context;
+    }
     // Set before Start; without it command outcomes are only logged.
     void SetCommandCallback(AtomicPetCommandCallback callback, void* context) {
         command_cb_ = callback;
@@ -85,6 +103,11 @@ public:
     // books/games, parent wipe/temperament). id 0 = the worker assigns a
     // local id; day 0 = the day provider's day. Guard rules: MemoryStore.
     bool PostMemory(const MemoryEvent& event);
+    // V8 care event (food choice, bath, brush, tickle, lullaby, habit tick,
+    // clothes, parent habit / birthday, festival seen). id 0 = the worker
+    // assigns a local id; minute 0 = the minute provider's minute. Guard
+    // rules: CareStore::Apply. The outcome goes to the care callback.
+    bool PostCare(const CareEvent& event);
     // V3-06 parent menu: commits the settings and waits up to `wait` for the
     // result (never call on the Pet worker). Not retried by the worker: on
     // StorageError the caller keeps what ParentNow() says. A timed-out save
@@ -113,6 +136,7 @@ public:
     ParentSettings ParentNow() const;
     MemoryStore MemoryNow() const;
     MemoryStore::Day TodayNow() const;  // small: for callers on tight stacks
+    CareStore CareNow() const;          // V8, 96 bytes
     Temperament TemperamentNow() const {
         return static_cast<Temperament>(temperament_.load());
     }
@@ -123,11 +147,12 @@ public:
     PetLedgerMigration::Report Migration() const { return migration_; }
 
 private:
-    enum class Kind : uint8_t { External, Local, Ack, Memory, Parent, Command };
+    enum class Kind : uint8_t { External, Local, Ack, Memory, Parent, Command, Care };
     struct Message {
         Kind kind = Kind::External;
         PetEvent event{};
         MemoryEvent memory{};
+        CareEvent care{};
         ParentSettings parent{};
         DeviceCommand command{};
         bool confirmed = false;
@@ -149,6 +174,7 @@ private:
     void PublishView();
     void NotifyHead();
     uint32_t Day() const { return day_provider_ ? day_provider_(day_context_) : 0; }
+    uint32_t Minute() const { return minute_provider_ ? minute_provider_(minute_context_) : 0; }
     static void TaskEntry(void* context);
     void Run();
 
@@ -174,6 +200,10 @@ private:
     void* context_ = nullptr;
     AtomicPetDayProvider day_provider_ = nullptr;
     void* day_context_ = nullptr;
+    AtomicPetMinuteProvider minute_provider_ = nullptr;
+    void* minute_context_ = nullptr;
+    AtomicPetCareCallback care_cb_ = nullptr;
+    void* care_context_ = nullptr;
     std::atomic<uint64_t> temperament_seq_{0};
     AtomicPetCommandCallback command_cb_ = nullptr;
     void* command_context_ = nullptr;
@@ -181,6 +211,7 @@ private:
     // View copies (view_mutex_, except the temperament atomic).
     ParentSettings parent_view_{};
     MemoryStore memory_view_{};
+    CareStore care_view_{};
     PetSnapshot pet_view_{};
     std::atomic<uint8_t> temperament_{static_cast<uint8_t>(Temperament::Gentle)};
     uint64_t generation_view_ = 0;

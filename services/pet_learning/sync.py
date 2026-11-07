@@ -34,7 +34,14 @@ from .memory_codec import (CodecError, MILESTONES, Memory, decode_memory,
 from .routers.parent import check_origin, client_ip
 
 SCHEMA_VERSION = "2.0"
-LEDGER_SCHEMAS = frozenset({3})
+LEDGER_SCHEMAS = frozenset({3, 4})
+# V8 (ledger schema 4): sticker ids are bit numbers of kid_app::Sticker
+# (care_store.h), append-only. Unknown ids from a newer device are kept
+# and shown without a name.
+STICKERS = ("first_book", "five_books", "ten_books", "first_game", "ten_games", "first_like",
+            "seven_days", "first_feed", "ten_feeds", "first_bath", "first_brush", "first_tickle",
+            "first_lull", "habit_3", "habit_7", "habit_14", "birthday", "festival", "care_star")
+MAX_STICKER_ID = 31
 # Compact JSON at every schema maximum is 4440 bytes (test_worst_case_snapshot_fits_the_limit).
 MAX_STATE_BYTES = 5120
 MIN_INTERVAL = 10           # §9: state uploads at least 10 s apart per device
@@ -52,6 +59,7 @@ MAX_RECEIPTS = 16
 
 
 CommandId = Annotated[int, Field(ge=1, le=(1 << commands.ID_BITS) - 1)]
+StickerId = Annotated[int, Field(ge=0, le=MAX_STICKER_ID)]
 
 
 class DeviceModel(BaseModel):
@@ -100,6 +108,8 @@ class StateSnapshot(DeviceModel):
     sd_free_kib: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
     awaiting_confirm: list[CommandId] = Field(max_length=MAX_AWAITING)
     applied_commands: list[Receipt] = Field(max_length=MAX_RECEIPTS)
+    # V8: earned sticker ids, ascending; present exactly when ledger_schema >= 4.
+    stickers: list[StickerId] | None = Field(default=None, max_length=MAX_STICKER_ID + 1)
 
 
 class SyncError(Exception):
@@ -208,6 +218,9 @@ class StateSync:
             raise SyncError(422, "INVALID_STATE") from None
         if snap.ledger_schema not in LEDGER_SCHEMAS:
             raise SyncError(422, "UNSUPPORTED_LEDGER_SCHEMA")
+        if (snap.stickers is not None) != (snap.ledger_schema >= 4) or (
+                snap.stickers is not None and snap.stickers != sorted(set(snap.stickers))):
+            raise SyncError(422, "INVALID_STATE")
         try:
             memory = decode_memory(_b64(snap.memory_b64))
             settings = decode_parent_settings(_b64(snap.parent_settings_b64))
@@ -225,6 +238,8 @@ class StateSync:
         ledger = {"ledger_schema": snap.ledger_schema, "pet": snap.pet.model_dump(),
                   "memory_b64": snap.memory_b64, "parent_settings_b64": snap.parent_settings_b64,
                   "parent_settings_rev": snap.parent_settings_rev}
+        if snap.stickers is not None:  # ledger v4: committed with the care store
+            ledger["stickers"] = snap.stickers
         canonical = json.dumps(ledger, sort_keys=True, separators=(",", ":"))
         state_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         full = json.dumps(snap.model_dump(), sort_keys=True, separators=(",", ":"))
@@ -329,7 +344,7 @@ class StateSync:
         for hook in self.hooks:
             hook(db, device_id, settings, snap.parent_settings_rev, now)
         if project and not self._tombstoned(db, device_id, snap.generation):
-            self._project(db, device_id, snap.generation, memory)
+            self._project(db, device_id, snap.generation, memory, snap.stickers)
         return [r.command_id for r in snap.applied_commands]
 
     def _tombstoned(self, db, device_id: str, generation: int | None = None) -> bool:
@@ -344,7 +359,8 @@ class StateSync:
         return (row["clear_state"] == "applied" and generation is not None
                 and generation <= row["applied_generation"])
 
-    def _project(self, db, device_id: str, generation: int, memory: Memory) -> None:
+    def _project(self, db, device_id: str, generation: int, memory: Memory,
+                 stickers: list[int] | None = None) -> None:
         previous = db.execute("SELECT memory_json FROM memory_current WHERE device_id=?",
                               (device_id,)).fetchone()
         # Daily archive: the previous "today" once the device has moved on,
@@ -363,8 +379,11 @@ class StateSync:
                             d["choices"], d["last_book"], d["last_game"]))
         epoch = db.execute("SELECT clear_epoch FROM memory_clears WHERE device_id=?",
                            (device_id,)).fetchone()
+        projection = memory_projection(memory)
+        if stickers is not None:
+            projection["stickers"] = list(stickers)
         db.execute("INSERT OR REPLACE INTO memory_current VALUES(?,?,?,?)",
-                   (device_id, generation, json.dumps(memory_projection(memory), sort_keys=True),
+                   (device_id, generation, json.dumps(projection, sort_keys=True),
                     epoch[0] if epoch else 0))
 
     def _clear_results(self, db, changed: list[dict], generation: int | None) -> None:
@@ -439,6 +458,9 @@ class StateSync:
                     "today": m["today"],
                     "recent_books": [{"content_id": b, "title": self.names.book(db, b)}
                                      for b in m["recent_books"]],
+                    # V8: earned stickers (empty for a device before ledger v4).
+                    "stickers": [{"id": i, "name": STICKERS[i] if i < len(STICKERS) else None}
+                                 for i in m.get("stickers", [])],
                 }
             history = [dict(r) for r in db.execute(
                 "SELECT day,feeds,greetings,books,games,choices,last_book,last_game FROM daily_summaries "

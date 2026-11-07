@@ -490,6 +490,46 @@ class StateSyncTests(unittest.TestCase):
                 self.assertEqual(client.get("/v1/voice/pet-001/summary", headers={
                     "Authorization": f"Bearer {VOICE_TOKEN}"}).status_code, expected, peer)
 
+    def test_v8_stickers_ledger_v4(self):
+        """V8: ledger schema 4 appends the earned sticker ids; nothing else changes."""
+        self.login()
+        # A v3 device keeps working and simply has no stickers.
+        self.assertEqual(self.put(self.snapshot()).json()["result"], "accepted")
+        self.assertEqual(self.memories()["memory"]["stickers"], [])
+        v4 = self.snapshot(ledger_schema=4, stickers=[0, 7, 17, 30])
+        self.assertEqual(self.put(v4).json()["result"], "accepted")
+        self.assertEqual(self.memories()["memory"]["stickers"], [
+            {"id": 0, "name": "first_book"}, {"id": 7, "name": "first_feed"},
+            {"id": 17, "name": "festival"}, {"id": 30, "name": None}])
+        # Stickers are ledger content: same generation, other stickers = conflict.
+        same = dict(v4, stickers=[0, 7])
+        self.assertEqual(self.put(same).json()["result"], "generation_conflict")
+        self.assertEqual(self.put(v4).json()["result"], "duplicate")
+        # Strict: present exactly for schema 4, ascending, unique, 0..31.
+        for bad in (self.snapshot(ledger_schema=4),
+                    self.snapshot(ledger_schema=3, stickers=[]),
+                    self.snapshot(ledger_schema=4, stickers=[7, 0]),
+                    self.snapshot(ledger_schema=4, stickers=[1, 1]),
+                    self.snapshot(ledger_schema=4, stickers=[32]),
+                    self.snapshot(ledger_schema=4, stickers=[True]),
+                    self.snapshot(ledger_schema=4, stickers="0")):
+            result = self.put(bad)
+            self.assertEqual(result.status_code, 422, bad.get("stickers"))
+        self.assertEqual(self.put(self.snapshot(ledger_schema=5, stickers=[])).json()["detail"],
+                         "UNSUPPORTED_LEDGER_SCHEMA")
+        # A worst-case v4 snapshot (all 32 ids) still fits the size limit.
+        top = 2 ** 53 - 1
+        worst = self.snapshot(
+            ledger_schema=4, stickers=list(range(32)), generation=2 ** 63 - 1, fw_version="x" * 40,
+            rtc_day=2 ** 32 - 1, parent_settings_rev=2 ** 32 - 1,
+            pet={"mode": "LISTENING", "mood": "THINKING", "interaction_count": 2 ** 32 - 1,
+                 "active_page": 65535, "quiet": False},
+            battery={"pct": 100, "charging": False}, sd_free_kib=2 ** 32 - 1,
+            inventory=[{"kind": "soundpack", "content_id": 65535, "revision": 65535,
+                        "header_crc": "ffffffff"}] * 32,
+            awaiting_confirm=[top] * 8, applied_commands=[{"command_id": top, "result": "rejected"}] * 16)
+        self.assertLessEqual(len(json.dumps(worst, separators=(",", ":")).encode()), 5120)
+
     def test_parent_view_requires_session_and_csrf(self):
         self.assertEqual(self.client.get("/v1/parent/devices/pet-001/memories").status_code, 401)
         self.login()
