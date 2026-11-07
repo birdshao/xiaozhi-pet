@@ -12,12 +12,13 @@ namespace kid_app {
 // V8 sound activities as a SceneKind::Game scene (no new SceneKind): the
 // parrot, the song player and the brushing / hand-washing companion fill the
 // GameView `sound` subtype, drawn by SceneComposer next to the quiz cards and
-// the motion tracks. Picture ids 401..410 are this session's range
-// (activity_list.h); append only, never renumber.
+// the motion tracks. Picture ids 701..710 are this session's range
+// (PlayArt owns 401..513, CareArt 601..660, activity_list.h; the test
+// "Art ranges never overlap" checks it); append only, never renumber.
 enum class SoundArt : uint16_t {
-    Parrot = 401, Song = 402, ToothBrush = 403, HandWash = 404, Lullaby = 405,
+    Parrot = 701, Song = 702, ToothBrush = 703, HandWash = 704, Lullaby = 705,
 };
-constexpr bool SoundArtValid(uint16_t id) { return id >= 401 && id <= 410; }
+constexpr bool SoundArtValid(uint16_t id) { return id >= 701 && id <= 710; }
 
 // GameView::sound values.
 constexpr uint8_t kSoundParrot = 1, kSoundSongs = 2, kSoundBrush = 3, kSoundWash = 4;

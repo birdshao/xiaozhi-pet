@@ -15,7 +15,7 @@
 | 声音包规格与打包工具 `tools/sound_extras.py` | 完成（声音文件本身是 TODO） |
 | **板级接线**（`p1_integrate.py`：活动列表入口、场景绘制、拨轮按住、麦克风帧 tap、PCM 播放、歌曲 worker、语音提议） | 已接，**CI 固件编译验证、真机未验证**，见 §8 |
 
-入口全部走会话①的“活动列表”（`activity_list.h`），**没有新增 `SceneKind`**：三个活动是 `SceneKind::Game` 场景的 `GameView.sound` 子类型（`sound_view.h`，`SceneComposer` 绘制）。GameChoice id 31–34，图片 `SoundArt` 401–405（会话③段 400–499）。
+入口全部走会话①的“活动列表”（`activity_list.h`），**没有新增 `SceneKind`**：三个活动是 `SceneKind::Game` 场景的 `GameView.sound` 子类型（`sound_view.h`，`SceneComposer` 绘制）。GameChoice id 31–34，图片 `SoundArt` 701–705（段 701–710；PlayArt 401–513、CareArt 601–660，互不重叠，测试断言）。
 
 ## 1. 鹦鹉学舌
 

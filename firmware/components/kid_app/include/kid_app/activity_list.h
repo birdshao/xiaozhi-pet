@@ -35,7 +35,7 @@ enum class GameChoice : uint8_t {
     Memory4 = 13, Memory6 = 14, Maze = 15, Dice = 16, Tree = 17, Statue = 18, DayNight = 19,
     Shapes = 20, Counting = 21, SpotDiff = 22, MamaBaby = 23, SizeOrder = 24, Pattern = 25,
     Classify = 26, Shadow = 27, LeftRight = 28, Clock = 29, Weather = 30,
-    // V8 sound (session 3, sound_view.h): ids 31..34, pictures SoundArt 401..405.
+    // V8 sound (session 3, sound_view.h): ids 31..34, pictures SoundArt 701..705.
     Parrot = 31, Songs = 32, ToothBrush = 33, HandWash = 34,
     // Other sessions: append here (35, 36, ...).
 };

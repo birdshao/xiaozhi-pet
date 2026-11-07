@@ -61,8 +61,20 @@ int main() {
     assert(FindActivity(GameChoice::HandWash)->group == ActivityGroup::Care);
     assert(static_cast<uint8_t>(GameChoice::Parrot) == 31 && static_cast<uint8_t>(GameChoice::HandWash) == 34);
 
+    // Art ranges never overlap: no picture id is valid for two sessions (a
+    // sound card must never draw as an apple), tone clip ids stay above them.
+    for (uint32_t id = 1; id < 0x2000; ++id) {  // composite PlayArt (0x2000..) are options too, by design
+        const uint16_t art = static_cast<uint16_t>(id);
+        const int owners = (GameArtIsOption(art) ? 1 : 0) + (MicArtValid(art) ? 1 : 0) +
+                           (CareArtValid(art) ? 1 : 0) + (PlayArtValid(art) ? 1 : 0) +
+                           (SoundArtValid(art) ? 1 : 0);
+        assert(owners <= 1);
+    }
+    assert(SoundArtValid(701) && !PlayArtValid(701) && !CareArtValid(701));
+    assert(!SoundArtValid(401) && PlayArtValid(401));
+
     // Every card picture draws something.
-    for (uint16_t art = 401; art <= 405; ++art) {
+    for (uint16_t art = 701; art <= 705; ++art) {
         assert(SoundArtValid(art));
         GameView g;
         g.question_art = art;
