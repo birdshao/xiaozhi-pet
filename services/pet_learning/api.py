@@ -19,6 +19,7 @@ from .routers import device, voice, parent
 from .quiz import QuizEngine
 from .story_reader import StoryReader
 from .store import PetStore
+from . import sync
 
 
 def create_app(filename: str | Path | None = None, *, settings: Settings | None = None) -> FastAPI:
@@ -86,6 +87,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(device.create_router(store, quiz, reader))
     app.include_router(voice.create_router(store, quiz, reader))
     app.include_router(parent.router)
+    app.include_router(sync.create_router(app, store))
 
     return app
 
