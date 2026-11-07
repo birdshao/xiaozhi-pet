@@ -14,6 +14,7 @@ import binascii
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import json
 import sqlite3
 import time
@@ -616,19 +617,22 @@ def create_router(app, store) -> APIRouter:
     @router.get("/v1/voice/{device_id}/summary")
     def voice_summary(device_id: str, request: Request,
                       authorization: str | None = Header(default=None)) -> dict:
-        # Internal-only, as /v1/voice/*/turn (§3.3 N6, §9); checked before
-        # the token so external callers learn nothing about token validity.
-        # TODO(S5 #91): switch to the KID_PET_VOICE_ALLOWED_PEERS allowlist once it is on main.
-        peer = request.client.host if request.client else ""
-        if (peer == request.app.state.settings.trusted_proxy
-                or "x-forwarded-for" in request.headers or "forwarded" in request.headers):
-            raise HTTPException(403, "VOICE_INTERNAL_ONLY")
-        expected = getattr(request.app.state.settings, "voice_token", "")
+        # Same checks, in the same order, as /v1/voice/*/turn: the voice token, then
+        # the internal-only rule (§3.3 N6, §9) — the peer must be in
+        # KID_PET_VOICE_ALLOWED_PEERS, never the public proxy, with no forwarding header.
         scheme, _, token = (authorization or "").partition(" ")
-        if (scheme != "Bearer" or not expected or not token or len(token) > 256
-                or not hmac.compare_digest(hashlib.sha256(token.encode("utf-8")).digest(),
-                                           hashlib.sha256(expected.encode("utf-8")).digest())):
+        if scheme != "Bearer" or not request.app.state.voice_turns.authorized(token):
             raise HTTPException(401, "VOICE_AUTH_REQUIRED")
+        settings = request.app.state.settings
+        try:
+            address = ipaddress.ip_address(request.client.host if request.client else "")
+        except ValueError:
+            address = None
+        if (address is None or str(address) == settings.trusted_proxy
+                or not any(address in net for net in settings.voice_peer_networks())
+                or any(name in request.headers for name in
+                       ("x-forwarded-for", "forwarded", "x-real-ip"))):
+            raise HTTPException(403, "VOICE_INTERNAL_ONLY")
         return call(sync.summary, device_id)
 
     return router

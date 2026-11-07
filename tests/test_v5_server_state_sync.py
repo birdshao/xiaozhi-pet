@@ -1,6 +1,5 @@
 """Server S2: snapshot sync, command channel, tombstones, memory APIs (§5.2-§8)."""
 import base64
-from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
@@ -31,12 +30,6 @@ START = 1_793_600_000  # 2026-11-03 local
 FIXTURES = ROOT / "tests" / "fixtures" / "memory"
 
 
-@dataclass(frozen=True)
-class VoiceSettings(Settings):
-    # The voice identity field arrives with S5; declared here so S2 runs alone.
-    voice_token: str = ""
-
-
 class Names(CatalogNames):
     def like(self, db, slot, option):
         return {(7, 2): ("最喜欢的动物", "大象")}.get((slot, option))
@@ -57,7 +50,7 @@ class StateSyncTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "pet.sqlite3"
         self.now = START
-        self.settings = VoiceSettings(totp_key=Fernet.generate_key().decode(), voice_token=VOICE_TOKEN)
+        self.settings = Settings(totp_key=Fernet.generate_key().decode(), voice_token=VOICE_TOKEN)
         self.app = create_app(self.path, settings=self.settings)
         self.sync = self.app.state.state_sync
         self.sync.clock = lambda: self.now
@@ -65,7 +58,8 @@ class StateSyncTests(unittest.TestCase):
         store = self.app.state.pet_store
         store.enroll_device("pet-001", TOKEN)
         store.enroll_device("pet-002", OTHER_TOKEN)
-        self.client = TestClient(self.app, base_url="https://testserver")
+        # The voice summary is internal-only; 127.0.0.1 is in the default voice allowlist.
+        self.client = TestClient(self.app, base_url="https://testserver", client=("127.0.0.1", 5000))
         self.addCleanup(self.client.close)
         self.generation = 0
 
@@ -444,14 +438,36 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(self.summary().json()["today"], {"feed": 0, "books": 0, "games": 0})
         self.assertEqual(self.summary(**{"X-Forwarded-For": "1.2.3.4"}).status_code, 403)
         self.assertEqual(self.client.get("/v1/voice/pet-001/summary", headers={
-            "Authorization": "Bearer wrong", "Forwarded": "for=1.2.3.4"}).status_code, 403)
+            "Authorization": "Bearer wrong", "Forwarded": "for=1.2.3.4"}).status_code, 401)
+        self.assertEqual(self.summary(**{"X-Real-IP": "1.2.3.4"}).status_code, 403)
         self.assertEqual(self.client.get("/v1/voice/pet-001/summary").status_code, 401)
         self.assertEqual(self.client.get("/v1/voice/nope-999/summary",
                                          headers={"Authorization": f"Bearer {VOICE_TOKEN}"}).status_code, 404)
+        # S5's battery answer reads this S2 row.
+        (received,), = self.table("SELECT received_at FROM device_state WHERE device_id='pet-001'")
+        self.assertEqual(self.app.state.voice_turns.battery.latest("pet-001"), (64, received))
 
     def test_voice_summary_disabled_without_voice_token(self):
-        self.app.state.settings = Settings(totp_key=self.settings.totp_key)
-        self.assertEqual(self.summary().status_code, 401)
+        app = create_app(self.path, settings=Settings(totp_key=self.settings.totp_key))
+        with TestClient(app, client=("127.0.0.1", 5000)) as client:
+            self.assertEqual(client.get("/v1/voice/pet-001/summary",
+                                        headers={"Authorization": f"Bearer {VOICE_TOKEN}"}).status_code, 401)
+
+    def test_voice_summary_uses_voice_peer_allowlist(self):
+        # Same order as /v1/voice/*/turn: a bad token is 401 anywhere; a valid token
+        # from outside KID_PET_VOICE_ALLOWED_PEERS is 403.
+        for peer in ("10.0.0.9", "testclient"):
+            with TestClient(self.app, client=(peer, 5000)) as client:
+                for auth, expected in ((VOICE_TOKEN, 403), ("wrong", 401)):
+                    self.assertEqual(client.get("/v1/voice/pet-001/summary", headers={
+                        "Authorization": f"Bearer {auth}"}).status_code, expected, peer)
+        settings = Settings(totp_key=self.settings.totp_key, voice_token=VOICE_TOKEN,
+                            voice_allowed_peers="172.18.0.0/16", trusted_proxy="172.18.0.1")
+        app = create_app(self.path, settings=settings)
+        for peer, expected in (("172.18.0.5", 200), ("172.18.0.1", 403), ("127.0.0.1", 403)):
+            with TestClient(app, client=(peer, 5000)) as client:
+                self.assertEqual(client.get("/v1/voice/pet-001/summary", headers={
+                    "Authorization": f"Bearer {VOICE_TOKEN}"}).status_code, expected, peer)
 
     def test_parent_view_requires_session_and_csrf(self):
         self.assertEqual(self.client.get("/v1/parent/devices/pet-001/memories").status_code, 401)
