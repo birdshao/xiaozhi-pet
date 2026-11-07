@@ -213,14 +213,14 @@ class CredentialTests(PairingBase):
         self.assertEqual(self.device_status("pet-aaa", old), 401)
         self.assertEqual(self.device_status("pet-aaa", new), 200)
 
-    def test_rotating_with_old_token_keeps_original_deadline(self):
+    def test_previous_token_cannot_rotate_and_current_survives(self):
         old = self.pair()
-        self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old))
-        self.now += 3600
-        again = self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old)).json()["token"]
-        self.now += pairing.ROTATION_OVERLAP - 3600 + 1
-        self.assertEqual(self.device_status("pet-aaa", old), 401)
-        self.assertEqual(self.device_status("pet-aaa", again), 200)
+        new = self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old)).json()["token"]
+        r = self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header(old))
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(self.device_status("pet-aaa", new), 200)
+        self.assertIn(("token.rotate", "via_previous"),
+                      [(x["action"], x["result"]) for x in self.audit_rows()])
 
     def test_revoked_token_rejected_everywhere(self):
         token = self.pair()
@@ -261,19 +261,69 @@ class CredentialTests(PairingBase):
         self.assertEqual(self.client.post("/v1/parent/devices/pet-aaa/revoke").status_code, 403)
         self.assertEqual(self.parent_post("/v1/parent/devices/pet-nope/revoke").status_code, 404)
 
-    def test_last_used_ip_recorded_and_bad_token_throttled(self):
+    def test_last_used_ip_recorded(self):
         token = self.pair()
         self.now += 120
         self.device_status("pet-aaa", token)
         dev = self.client.get("/v1/parent/devices").json()["devices"][0]
         self.assertEqual(dev["last_seen_at"], self.now)
         self.assertEqual(dev["last_seen_ip"], "testclient")
-        for _ in range(20):
-            self.client.post("/v1/devices/pet-aaa/token/rotate", headers=self.auth_header("x" * 40))
-        # Throttled: even the right token is refused on these endpoints for the window.
+
+    def test_bad_tokens_throttled_but_correct_token_never_refused(self):
+        token = self.pair()
+        codes = [self.client.post("/v1/devices/pet-aaa/token/confirm",
+                                  headers=self.auth_header("x" * 40)).status_code for _ in range(22)]
+        self.assertEqual(codes[:20], [401] * 20)
+        self.assertEqual(codes[20:], [429, 429])
+        self.assertEqual(self.client.post("/v1/devices/pet-aaa/token/confirm",
+                                          headers=self.auth_header(token)).status_code, 200)
         self.assertEqual(self.client.post("/v1/devices/pet-aaa/token/rotate",
-                                          headers=self.auth_header(token)).status_code, 401)
-        self.assertEqual(self.device_status("pet-aaa", token), 200)  # normal API unaffected
+                                          headers=self.auth_header(token)).status_code, 200)
+        with connect(self.path) as db:  # capped: no unbounded growth once limited
+            n = db.execute("SELECT COUNT(*) FROM pairing_attempts WHERE scope='devauth_ip'").fetchone()[0]
+        self.assertEqual(n, 20)
+
+    def test_bad_tokens_counted_per_device_across_ips(self):
+        self.pair()
+        for i in range(20):
+            with self.assertRaises(pairing.PairingError) as e:
+                self.app.state.pairing.confirm_rotation("pet-aaa", "y" * 40, f"10.0.0.{i}")
+            self.assertEqual(e.exception.status, 401)
+        with self.assertRaises(pairing.PairingError) as e:
+            self.app.state.pairing.confirm_rotation("pet-aaa", "y" * 40, "10.0.1.1")
+        self.assertEqual(e.exception.status, 429)
+
+    def test_all_device_and_voice_routes_reject_revoked_token(self):
+        token = self.pair()
+        self.parent_post("/v1/parent/devices/pet-aaa/revoke")
+        h = self.auth_header(token)
+        checked = 0
+        for path, methods in self.app.openapi()["paths"].items():
+            if not (path.startswith("/v1/devices/") or path.startswith("/v1/voice/")
+                    or path.startswith("/v1/books/")):
+                continue
+            url = path.replace("{device_id}", "pet-aaa").replace("{book_id}", "bk-001").replace("{page}", "1")
+            for method in methods:
+                r = self.client.request(method.upper(), url, headers={**h, "X-Device-Id": "pet-aaa"}, json={})
+                self.assertEqual(r.status_code, 401, f"{method} {path}")
+                checked += 1
+        self.assertGreaterEqual(checked, 12)
+
+    def test_code_hash_is_salted_and_peppered(self):
+        pid, started = self.start_pairing()
+        code = started.json()["code"]
+        with connect(self.path) as db:
+            row = db.execute("SELECT code_salt, code_sha FROM pairing_codes").fetchone()
+        self.assertTrue(row["code_salt"])
+        self.assertNotEqual(row["code_sha"], pairing.digest(f"{pid}:{code}"))
+        self.assertNotEqual(row["code_sha"], pairing.digest(f"{row['code_salt']}:{pid}:{code}"))
+
+    def test_unparsable_forwarded_for_from_trusted_proxy_logs_warning(self):
+        settings = Settings(totp_key=self.app.state.settings.totp_key, trusted_proxy="testclient")
+        self.app.state.settings = settings
+        with self.assertLogs("services.pet_learning.pairing", "WARNING"):
+            self.client.post("/v1/pairing/start", json={"device_id": "pet-aaa"},
+                             headers={"X-Forwarded-For": "not-an-ip"})
 
 
 class MigrationTests(unittest.TestCase):

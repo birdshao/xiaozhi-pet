@@ -13,6 +13,7 @@ CREATE TABLE pairing_codes (
     expires_at INTEGER NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('open','code_issued','approved','claimed','done','void','expired')),
     device_id TEXT,
+    code_salt TEXT,
     code_sha TEXT,
     claim_sha TEXT,
     starts INTEGER NOT NULL DEFAULT 0,

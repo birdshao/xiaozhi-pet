@@ -12,7 +12,7 @@
 
 ## 凭证
 
-- **轮换**：`POST /v1/devices/{id}/token/rotate`（Bearer 当前或仍在重叠期的旧 token）→ 新 token；旧 token 在 24 h 内仍有效。设备写入 NVS 后调用 `POST /v1/devices/{id}/token/confirm`（Bearer 新 token），旧 token 立即失效。设备没收到上次轮换响应时可用旧 token 再轮换，重叠截止时间不顺延。每设备每小时最多 10 次。
+- **轮换**：`POST /v1/devices/{id}/token/rotate`（Bearer 当前或仍在重叠期的旧 token）→ 新 token；旧 token 在 24 h 内仍有效。设备写入 NVS 后调用 `POST /v1/devices/{id}/token/confirm`（Bearer 新 token），旧 token 立即失效。旧（重叠期）token **不能**再轮换（会杀掉当前 token）：返回 409 `ROTATE_WITH_CURRENT_TOKEN`，审计结果 `via_previous`。设备若丢了轮换响应，只能在 24 h 内继续用旧 token，之后需重新配对。每设备每小时最多 10 次。
 - **撤销**：`POST /v1/parent/devices/{id}/revoke`（家长会话 + CSRF）→ `status=revoked`，新旧 token 立即 401（所有经 `PetStore.authenticated` 的设备/语音接口、轮换接口）。
 - **列表**：`GET /v1/parent/devices` 返回状态、入网时间、轮换时间、`last_seen_at`/`last_seen_ip`（写入限频：每设备 60 s 一次，IP 变化立即写）、固件版本、重叠截止时间；绝不返回哈希。
 - **越权**：token 只与自己的 device_id 绑定；A 的 token 对 B 的任何接口（含 rotate）为 401。
@@ -26,9 +26,15 @@
 | `start` | 每 IP 10 / 10 min，每 device_id 5 / 10 min |
 | `claim` | 每 IP 120 / 10 min |
 | `redeem` | 每 IP 10 / 10 min；每账号错码 10 / 15 min |
-| 坏 token 打 rotate/confirm | 每 IP 20 / 10 min（窗口内该 IP 对这两个接口的正确 token 也拒绝；普通业务接口不受影响） |
+| 坏 token 打 rotate/confirm | 只统计失败：每 IP 20 / 10 min，每 device_id 20 / 10 min，满后失败请求 429；**正确 token 永不因桶满被拒**。桶满后不再写入新记录 |
 
-客户端 IP 取法同家长登录（仅信任 `KID_PET_TRUSTED_PROXY` 的 XFF）。
+客户端 IP 取法同家长登录（仅信任 `KID_PET_TRUSTED_PROXY` 的 XFF）。**代理必须把 `X-Forwarded-For` 覆盖为单个客户端 IP**；来自受信代理但 XFF 无法解析时，限流会退化为代理地址，此时记录 WARNING 日志。
+
+## 设备鉴权依赖
+
+`pairing.device_auth` 是所有设备接口共用的 FastAPI 依赖（device/voice 路由已挂在 router 级；S2/S4/S5 新路由请用 `APIRouter(dependencies=[Depends(device_auth)])`）。设备 id 取路径参数 `device_id` 或 `X-Device-Id`。测试会枚举 OpenAPI 里所有 `/v1/devices/`、`/v1/voice/`、`/v1/books/` 路由，断言已撤销 token 全部 401。
+
+配对码存 `HMAC-SHA256(pepper, 每配对随机 salt : pairing_id : code)`；pepper 由 `KID_PET_TOTP_KEY` 派生（未配置时为进程内随机，重启使未完成配对失效）。
 
 ## 迁移与既有 CLI token
 
@@ -48,4 +54,5 @@
 
 - 没有 `DELETE /v1/parent/devices/{id}`（级联删除全部数据，§8）；依赖 S2+ 的数据表，留给后续阶段。目前已撤销的 device_id 不能重新配对。
 - 敏感操作二次验证（§9）不在本阶段。
+- 后续：把开放配对绑定到家长提供的 device id（消除抢占式 DoS）；`DELETE /v1/parent/devices/{id}` + 敏感操作二次验证（§9）；审计行加 `account_id`。
 - 开放配对窗口内，网络上任何人可抢先 `start` 占住（拿到的码家长看不到，因此只能造成拒绝服务，不能入网）；设备本机重试可重新取码。

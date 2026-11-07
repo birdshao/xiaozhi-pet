@@ -11,17 +11,20 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
 from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
 from .db import connect, migrate
-from .routers.parent import check_origin, client_ip
+from .routers.parent import check_origin, client_ip as _proxy_client_ip
+
+log = logging.getLogger(__name__)
 
 DEVICE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$")
 CODE_RE = re.compile(r"^[0-9]{6}$")
@@ -44,10 +47,22 @@ LIMITS = {
     "redeem_ip": (10, 600),
     "redeem_acct": (10, 900),   # wrong codes only; lockout until the window drains
     "rotate_dev": (10, 3600),
-    "devauth_ip": (20, 600),    # bad tokens on rotate/confirm endpoints
+    "devauth_ip": (20, 600),    # bad tokens on rotate/confirm endpoints (failures only)
+    "devauth_dev": (20, 600),   # same, per device_id
 }
 
 request_ip: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_ip", default=None)
+
+
+def client_ip(request):
+    """Client address; the trusted proxy must overwrite X-Forwarded-For with ONE client IP."""
+    ip = _proxy_client_ip(request)
+    settings = getattr(request.app.state, "settings", None)
+    peer = request.client.host if request.client else None
+    if settings and settings.trusted_proxy and peer == settings.trusted_proxy and ip == peer:
+        log.warning("Request from trusted proxy has no valid X-Forwarded-For; "
+                    "rate limits collapse to the proxy address")
+    return ip
 
 
 def now() -> int:
@@ -78,7 +93,10 @@ def _count(db, scope, key, at):
 
 
 def _hit(db, scope, key, at):
-    db.execute("INSERT INTO pairing_attempts VALUES(?,?,?)", (scope, key, at))
+    """Record an event unless the scope is already limited (bounds table growth)."""
+    count, limit = _count(db, scope, key, at)
+    if count < limit:
+        db.execute("INSERT INTO pairing_attempts VALUES(?,?,?)", (scope, key, at))
 
 
 def _limited(db, scope, key, at, *, record):
@@ -87,7 +105,7 @@ def _limited(db, scope, key, at, *, record):
     if count >= limit:
         return True
     if record:
-        _hit(db, scope, key, at)
+        db.execute("INSERT INTO pairing_attempts VALUES(?,?,?)", (scope, key, at))
     return False
 
 
@@ -135,9 +153,14 @@ def verify_token(filename, device_id, token, *, allow_pending=False):
 
 
 class PairingService:
-    def __init__(self, filename):
+    def __init__(self, filename, pepper=None):
         self.filename = filename
+        # Server-side secret: a copy of the database alone cannot brute-force the 6-digit codes.
+        self.pepper = pepper or secrets.token_bytes(32)
         migrate(filename)
+
+    def _code_sha(self, salt, pairing_id, code):
+        return hmac.new(self.pepper, f"{salt}:{pairing_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
     def _run(self, work):
         """Run work(db, at) in a write transaction; errors surface after commit."""
@@ -191,7 +214,7 @@ class PairingService:
                 _hit(db, "redeem_acct", str(account_id), at)
                 _audit(db, at, "parent", "pairing.redeem", pairing_id[:8], "invalid", ip)
                 return PairingError(404, "PAIRING_INVALID")
-            if hmac.compare_digest(digest(f"{pairing_id}:{code}"), row["code_sha"]):
+            if hmac.compare_digest(self._code_sha(row["code_salt"] or "", pairing_id, code), row["code_sha"]):
                 db.execute("UPDATE pairing_codes SET state='approved', expires_at=? WHERE pairing_id=?",
                            (at + CLAIM_TTL, pairing_id))
                 _audit(db, at, "parent", "pairing.redeem", row["device_id"], "success", ip)
@@ -248,9 +271,11 @@ class PairingService:
                 return PairingError(404, "PAIRING_NOT_AVAILABLE")
             code = f"{secrets.randbelow(10 ** 6):06d}"
             claim = secrets.token_urlsafe(24)
-            db.execute("UPDATE pairing_codes SET state='code_issued', device_id=?, code_sha=?, claim_sha=?, "
-                       "starts=starts+1 WHERE pairing_id=?",
-                       (device_id, digest(f"{row['pairing_id']}:{code}"), digest(claim), row["pairing_id"]))
+            salt = secrets.token_hex(16)
+            db.execute("UPDATE pairing_codes SET state='code_issued', device_id=?, code_salt=?, code_sha=?, "
+                       "claim_sha=?, starts=starts+1 WHERE pairing_id=?",
+                       (device_id, salt, self._code_sha(salt, row["pairing_id"], code), digest(claim),
+                        row["pairing_id"]))
             _audit(db, at, "device", "pairing.start", device_id, "success", ip)
             return {"code": code, "claim_secret": claim, "expires_in": row["expires_at"] - at}
         return self._run(work)
@@ -283,11 +308,8 @@ class PairingService:
         def work(db, at):
             row = db.execute("SELECT * FROM devices WHERE device_id=? AND status='pending'",
                              (device_id,)).fetchone() if _valid_token_shape(device_id, token) else None
-            if (not row or _matches(row, token) != "current"
-                    or _limited(db, "devauth_ip", ip, at, record=False)):
-                if _valid_token_shape(device_id, token):
-                    _hit(db, "devauth_ip", ip, at)
-                return PairingError(401, "DEVICE_AUTH_REQUIRED")
+            if not row or _matches(row, token) != "current":
+                return self._auth_failure(db, at, device_id, token, ip)
             db.execute("UPDATE devices SET status='active', last_seen_at=?, last_seen_ip=? WHERE device_id=?",
                        (at, ip, device_id))
             db.execute("UPDATE pairing_codes SET state='done' WHERE device_id=? AND state='claimed'",
@@ -296,36 +318,42 @@ class PairingService:
             return {"status": "active"}
         return self._run(work)
 
+    @staticmethod
+    def _auth_failure(db, at, device_id, token, ip):
+        """Only failures are counted/throttled; a correct token is never refused for a full bucket."""
+        if not _valid_token_shape(device_id, token):
+            return PairingError(401, "DEVICE_AUTH_REQUIRED")
+        full = (_count(db, "devauth_ip", ip, at)[0] >= LIMITS["devauth_ip"][0]
+                or _count(db, "devauth_dev", device_id, at)[0] >= LIMITS["devauth_dev"][0])
+        _hit(db, "devauth_ip", ip, at)
+        _hit(db, "devauth_dev", device_id, at)
+        return PairingError(429, "PAIRING_THROTTLED") if full else PairingError(401, "DEVICE_AUTH_REQUIRED")
+
     def _device_auth(self, db, at, device_id, token, ip):
-        """Authenticated active device row and matched credential, or None (counts failures)."""
+        """Authenticated active device row and matched credential, or (None, None)."""
         row = None
-        if _valid_token_shape(device_id, token) and not _limited(db, "devauth_ip", ip, at, record=False):
+        if _valid_token_shape(device_id, token):
             row = db.execute("SELECT * FROM devices WHERE device_id=? AND status='active'",
                              (device_id,)).fetchone()
         matched = _matches(row, token) if row else None
-        if matched is None:
-            if _valid_token_shape(device_id, token):
-                _hit(db, "devauth_ip", ip, at)
-            return None, None
-        return row, matched
+        return (row, matched) if matched else (None, None)
 
     def rotate(self, device_id, token, ip):
         def work(db, at):
             row, matched = self._device_auth(db, at, device_id, token, ip)
             if not row:
-                return PairingError(401, "DEVICE_AUTH_REQUIRED")
+                return self._auth_failure(db, at, device_id, token, ip)
+            if matched != "current":
+                # The previous token may not mint credentials: it would kill the current one.
+                _audit(db, at, "device", "token.rotate", device_id, "via_previous", ip)
+                return PairingError(409, "ROTATE_WITH_CURRENT_TOKEN")
             if _limited(db, "rotate_dev", device_id, at, record=True):
                 _audit(db, at, "device", "token.rotate", device_id, "rate_limited", ip)
                 return PairingError(429, "ROTATION_THROTTLED")
             new = secrets.token_urlsafe(32)
-            if matched == "current":
-                db.execute("UPDATE devices SET prev_token_sha=token_sha, prev_token_expires_at=?, "
-                           "token_sha=?, token_rotated_at=? WHERE device_id=?",
-                           (at + ROTATION_OVERLAP, digest(new), at, device_id))
-            else:
-                # Device never received the earlier replacement; keep the original deadline.
-                db.execute("UPDATE devices SET token_sha=?, token_rotated_at=? WHERE device_id=?",
-                           (digest(new), at, device_id))
+            db.execute("UPDATE devices SET prev_token_sha=token_sha, prev_token_expires_at=?, "
+                       "token_sha=?, token_rotated_at=? WHERE device_id=?",
+                       (at + ROTATION_OVERLAP, digest(new), at, device_id))
             _audit(db, at, "device", "token.rotate", device_id, "success", ip)
             return {"token": new, "overlap_seconds": ROTATION_OVERLAP}
         return self._run(work)
@@ -334,12 +362,25 @@ class PairingService:
         def work(db, at):
             row, matched = self._device_auth(db, at, device_id, token, ip)
             if not row or matched != "current":
-                return PairingError(401, "DEVICE_AUTH_REQUIRED")
+                return self._auth_failure(db, at, device_id, token, ip)
             db.execute("UPDATE devices SET prev_token_sha=NULL, prev_token_expires_at=0 WHERE device_id=?",
                        (device_id,))
             _audit(db, at, "device", "token.rotate_confirm", device_id, "success", ip)
             return {"status": "ok"}
         return self._run(work)
+
+
+def device_auth(request: Request, authorization: str | None = Header(default=None),
+                x_device_id: str | None = Header(default=None)) -> str:
+    """Shared FastAPI dependency for every device-authenticated route (S2/S4/S5 reuse it).
+
+    Device id comes from the ``{device_id}`` path parameter or the X-Device-Id header.
+    """
+    device_id = request.path_params.get("device_id") or x_device_id
+    token = authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+    if not device_id or not request.app.state.pet_store.authenticated(device_id, token):
+        raise HTTPException(401, "DEVICE_AUTH_REQUIRED")
+    return device_id
 
 
 def _bearer(request):
@@ -466,6 +507,8 @@ class _ClientIpMiddleware:
 
 
 def mount(app, filename):
-    app.state.pairing = PairingService(filename)
+    key = app.state.settings.totp_key
+    pepper = hashlib.sha256(b"pairing-code-v1" + key.encode()).digest() if key else None
+    app.state.pairing = PairingService(filename, pepper)
     app.add_middleware(_ClientIpMiddleware)
     app.include_router(create_router())
