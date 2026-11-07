@@ -7,6 +7,7 @@ No raw audio, ASR transcript or unreviewed AI reply is stored here.
 from __future__ import annotations
 
 from .db import migrate
+from .pairing import verify_token
 
 from contextlib import contextmanager
 import hashlib
@@ -82,12 +83,8 @@ class PetStore:
             db.commit()
 
     def authenticated(self, device_id: str, token: str) -> bool:
-        if not DEVICE_RE.fullmatch(device_id) or not token or len(token) > 256:
-            return False
-        with self._connect() as db:
-            row = db.execute("SELECT token_sha FROM devices WHERE device_id=?", (device_id,)).fetchone()
-        return bool(row and hmac.compare_digest(
-            row["token_sha"], hashlib.sha256(token.encode("utf-8")).hexdigest()))
+        # Status, rotation overlap and last-used records live in pairing.py (S1).
+        return verify_token(self.path, device_id, token)
 
     def add_approved_page(self, book_id: str, title: str, page: int,
                           text: str, *, approved: bool = False) -> None:
