@@ -2372,6 +2372,10 @@ BOARD_WORKER = r'''
     // The day plan comes from the parent settings (V3-06, see Rhythm()).
     std::atomic<int> day_phase_{-1};  // kid_app::DayPhase, -1 = RTC not set
     std::atomic<bool> quiet_hours_{false};
+    // Self-test "phase" step: the day phase (and quiet hours) a script forces
+    // instead of the RTC's; kPhaseNone = the RTC decides.
+    static constexpr int kPhaseNone = -2;
+    std::atomic<int> phase_inject_{kPhaseNone};
 
     static const char* GestureName(kid_app::Gesture gesture) {
         switch (gesture) {
@@ -2493,8 +2497,12 @@ BOARD_WORKER = r'''
         bool stopped = true;
         const bool ok = RtcRead(&rtc, &stopped) && !stopped && kid_app::PlausibleWallClock(rtc);
         const auto rhythm = Rhythm();
-        const int phase = ok ? static_cast<int>(rhythm.PhaseAt(rtc)) : -1;
-        const bool quiet = ok && rhythm.QuietAt(rtc);
+        int phase = ok ? static_cast<int>(rhythm.PhaseAt(rtc)) : -1;
+        bool quiet = ok && rhythm.QuietAt(rtc);
+        if (const int forced = phase_inject_.load(); forced != kPhaseNone) {
+            phase = forced;  // self-test: the script says what time of day it is
+            quiet = forced == static_cast<int>(kid_app::DayPhase::Night);
+        }
         // V5-02: today's memory counters roll over on the local civil day.
         local_day_.store(ok ? static_cast<uint32_t>(kid_app::EpochFromCivil(rtc) / 86400) : 0);
         local_minute_.store(kid_app::CareMinute(rtc, ok));  // V8, 0 = unknown
@@ -4843,6 +4851,16 @@ BOARD_WORKER = r'''
                     env_inject_c10_.store(off ? kEnvNoInject : static_cast<int>(step.ms) * 10);
                     ESP_LOGI(TAG, "PET_SELFTEST_TEMP c=%u off=%d", static_cast<unsigned>(step.ms),
                              off ? 1 : 0);
+                    break;
+                }
+                case kid_app::SelfTestOp::Phase: {
+                    // Day phase / quiet hours as the script says (the reader's
+                    // bedtime story and the sleep ritual follow the phase).
+                    const bool off = step.ms == kid_app::SelfTestScript::kPhaseOff;
+                    phase_inject_.store(off ? kPhaseNone : static_cast<int>(step.ms));
+                    rhythm_refresh_.store(true);
+                    ESP_LOGI(TAG, "PET_SELFTEST_PHASE phase=%s off=%d",
+                             off ? "rtc" : PhaseName(static_cast<int>(step.ms)), off ? 1 : 0);
                     break;
                 }
                 case kid_app::SelfTestOp::Volume:

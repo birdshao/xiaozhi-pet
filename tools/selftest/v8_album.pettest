@@ -1,0 +1,61 @@
+PETSELFTEST1
+# V8 sticker album: the Game rail item opens the play menu, the album is
+# its 24th card (index 23, after the games and before parrot and songs).
+# Dial down = next page, up = back, press = home. Quiet UI only: no pet
+# commits of its own. Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:PET_GAME_MENU 1
+# expect min:game=stickers 1
+# START and END both print the kind.
+# expect min:kind=album 2
+# expect none:PET_CARE_RECORD 0
+# expect none:PET_CARE_START_FAILED 0
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Game(2), press: play menu (full).
+tap down 2500
+tap press 6000
+# 23 cards on: the highlight moves are cheap partials.
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+# Album (full), next page, back, press = home (full).
+tap press 6000
+tap down 2500
+tap up 2500
+tap press 8000
+pet
+wait 5000
+end

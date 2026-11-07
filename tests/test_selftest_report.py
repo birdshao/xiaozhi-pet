@@ -224,7 +224,7 @@ class SelfTestReportTests(unittest.TestCase):
         # Mirrors SelfTestScript::Parse (test_selftest_script.cc covers it).
         known = {"wait", "pet", "tap", "hold", "combo", "mark", "alarm", "volume", "gesture",
                  "morning", "voice", "battery", "temp", "book", "game", "timescale", "twait",
-                 "waitidle", "micgame", "envelope", "vcmd", "end"}
+                 "waitidle", "micgame", "envelope", "vcmd", "phase", "end"}
         root = Path(__file__).resolve().parents[1] / "tools/selftest"
         scaled = []
         for path in sorted(root.glob("*.pettest")):
@@ -328,6 +328,46 @@ class SelfTestReportTests(unittest.TestCase):
                       evaluate(text, good.replace("PET_MOTION_FOUND\n", "", 1))["failed"])
         self.assertIn("none:PET_GAME_REFUSED",
                       evaluate(text, good + "PET_GAME_REFUSED reason=motion_off\n")["failed"])
+
+    @staticmethod
+    def _steps(name):
+        path = Path(__file__).resolve().parents[1] / "tools/selftest" / name
+        text = path.read_text(encoding="ascii")
+        return text, [line.split() for line in text.splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")]
+
+    def test_v8_scenarios_never_power_off_and_pin_the_day_phase(self):
+        # V8 scenarios are unattended and carry no alarm step: none of them may
+        # reach a sleep flow (tap pwr / SLEEP_REQUEST), and the ones whose
+        # behaviour follows the time of day say which phase they mean.
+        for name in ("v8_care_cards.pettest", "v8_album.pettest", "v8_play_games.pettest",
+                     "v8_sound_routines.pettest", "v4_book_reader.pettest"):
+            text, steps = self._steps(name)
+            self.assertIn(["phase", "day"], steps, name)
+            self.assertLess(steps.index(["phase", "day"]), steps.index(["pet"]), name)
+            self.assertNotIn(["alarm"], [w[:1] for w in steps], name)
+            self.assertFalse(any(w[:2] == ["tap", "pwr"] for w in steps), name)
+            self.assertFalse(any(w[:2] == ["vcmd", "SLEEP_REQUEST"] for w in steps), name)
+            p = plan(text)
+            self.assertFalse(p["power_off"], name)
+            self.assertEqual(p["until"], "PET_SELFTEST_DONE", name)
+            self.assertTrue(expectations(text), name)
+            self.assertLessEqual(len(steps) - 2, 64, name)  # header and "end"
+
+    def test_v8_feed_is_three_presses_in_the_home_rail_scenarios(self):
+        # Rail Feed -> care menu -> food picker -> the fish: the third press feeds
+        # (2026-11-07 board logs: two presses stopped in the picker).
+        for name in ("v2_home_rail.pettest", "v5_phrases.pettest"):
+            _, steps = self._steps(name)
+            at = max(i for i, w in enumerate(steps) if w[:2] == ["tap", "press"]
+                     and steps[i - 1][:2] == ["tap", "press"] and steps[i - 2][:2] == ["tap", "press"])
+            self.assertEqual([w[0] for w in steps[at + 1:at + 2]], ["wait"], name)
+            self.assertGreaterEqual(int(steps[at + 1][1]), 9000, name)
+        text, _ = self._steps("v2_home_rail.pettest")
+        # 12 rail moves + 1 hearts + 3 feed animation frames + 2 moves after; 5 fulls.
+        self.assertEqual(expectations(text)["partial_refreshes"], "18")
+        self.assertEqual(expectations(text)["full_refreshes"], "5")
+        self.assertEqual(expectations(text)["home_select"], "0,1,2,3,4,3,2,1,0,1,2,3,2,1")
 
     def test_apply_timescale(self):
         text = "PETSELFTEST1\n# expect timescale 25\ntimescale 25\ntwait 8000\nend\n"

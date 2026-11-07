@@ -3,6 +3,7 @@
 #include "kid_app/battery_policy.h"
 #include "kid_app/gesture_detector.h"
 #include "kid_app/mic_envelope.h"
+#include "kid_app/rhythm_scheduler.h"
 #include "kid_app/selftest_clock.h"
 #include "kid_app/voice_face.h"
 
@@ -99,6 +100,23 @@ bool GestureName(const char* name, uint32_t* out) {
     for (const auto& entry : kGestures) {
         if (std::strcmp(name, entry.name) == 0) {
             *out = static_cast<uint32_t>(entry.gesture);
+            return true;
+        }
+    }
+    return false;
+}
+bool DayPhaseName(const char* name, uint32_t* out) {
+    struct Entry {
+        const char* name;
+        uint32_t value;
+    };
+    static const Entry kNames[] = {{"day", static_cast<uint32_t>(DayPhase::Day)},
+                                   {"evening", static_cast<uint32_t>(DayPhase::Evening)},
+                                   {"night", static_cast<uint32_t>(DayPhase::Night)},
+                                   {"off", SelfTestScript::kPhaseOff}};
+    for (const auto& entry : kNames) {
+        if (std::strcmp(name, entry.name) == 0) {
+            *out = entry.value;
             return true;
         }
     }
@@ -207,6 +225,9 @@ bool SelfTestScript::Parse(const char* text) {
             } else if (n != 2 || !Number(words[1], &step.ms) || step.ms > kMaxTempC) {
                 return false;
             }
+        } else if (std::strcmp(words[0], "phase") == 0) {
+            if (n != 2 || !DayPhaseName(words[1], &step.ms)) return false;
+            step.op = SelfTestOp::Phase;
         } else if (std::strcmp(words[0], "timescale") == 0) {
             if (n != 2 || !Number(words[1], &step.ms) || step.ms < kMinTimeScalePct ||
                 step.ms > 100)
@@ -296,7 +317,8 @@ uint64_t SelfTestScript::TotalMs() const {
         if (steps_[i].op == SelfTestOp::Alarm || steps_[i].op == SelfTestOp::Volume ||
             steps_[i].op == SelfTestOp::Gesture || steps_[i].op == SelfTestOp::Voice ||
             steps_[i].op == SelfTestOp::Battery || steps_[i].op == SelfTestOp::Game ||
-            steps_[i].op == SelfTestOp::TimeScale || steps_[i].op == SelfTestOp::Temp)
+            steps_[i].op == SelfTestOp::TimeScale || steps_[i].op == SelfTestOp::Temp ||
+            steps_[i].op == SelfTestOp::Phase)
             continue;
         total += steps_[i].ms + steps_[i].gap_ms;
     }

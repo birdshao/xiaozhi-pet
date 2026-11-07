@@ -597,6 +597,19 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertNotIn('esp_partition_erase', patched)
         self.assertIn('"pet_selftest"', patched)
 
+    def test_selftest_phase_step_forces_day_phase_and_quiet_hours(self):
+        patched = self._board()
+        self.assertIn('case kid_app::SelfTestOp::Phase:', patched)
+        self.assertIn('phase_inject_.store(', patched)
+        rhythm = patched[patched.index('void UpdateRhythm()'):]
+        rhythm = rhythm[:rhythm.index('\n    }\n')]
+        # The script's phase replaces the RTC's, quiet hours only at night.
+        self.assertIn('phase_inject_.load()', rhythm)
+        self.assertIn('kid_app::DayPhase::Night', rhythm)
+        # Applied at once, not at the next heartbeat.
+        run = patched[patched.index('case kid_app::SelfTestOp::Phase:'):]
+        self.assertIn('rhythm_refresh_.store(true)', run[:run.index('break;')])
+
     def test_v2_border_waveform_per_refresh_mode(self):
         impl = patch_display_cc('#include <vector>\nvoid Flush() {\n    driver->EPD_Clear();\n}\n')
         fast = impl[impl.index('bool CustomEpdDisplay::ShowPetSceneFast'):]

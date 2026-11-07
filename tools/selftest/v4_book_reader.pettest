@@ -24,6 +24,13 @@ PETSELFTEST1
 # expect selftest_done 1
 # expect max_partial_ms 3000
 # expect max_full_ms 12000
+# V8: in the evening day phase (19:30..) Story opens as the bedtime story
+# (auto-turn, no questions, dial leaves it): the board log of 2026-11-07
+# 19:39 shows exactly that, the audio path itself was fine (kind=prompt /
+# kind=option played once the dial had left bedtime). So pin the phase:
+# this scenario is the normal daytime reader, whatever the RTC says.
+# The bedtime story has its own scenario (v8_bedtime_book).
+phase day
 volume 15
 book reader_test
 # Start as soon as XiaoZhi is idle (Wi-Fi up, activated), not after a

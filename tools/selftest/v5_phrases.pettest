@@ -35,13 +35,19 @@ wait 6000
 # Gentle shake again: giggle (272).
 gesture gentle
 wait 6000
-# Rail Story(1) -> Feed(3), press: V8 care menu; press the fish: its
-# care line (PET_CARE_*), then home: yummy (241).
+# Rail Story(1) -> Feed(3), press: V8 care menu; press: food picker; press
+# the fish: its care line (PET_CARE_*), then home: yummy (241). The wait
+# outlasts the reaction (2.5 s), the home full refresh (~4.4 s) and the
+# feed animation before the next dial move. (The board logs of 2026-11-07
+# showed the old two-press sequence stopping inside the picker, so the
+# Sleep press never happened: scenario out of date, not a firmware bug;
+# care ends with sleep=0 and feeding never starts the sleep flow.)
 tap down 2500
 tap down 2500
 tap press 6000
-tap press 8000
-wait 4000
+tap press 6000
+tap press 3000
+wait 9000
 # Feed(3) -> Sleep(4), press: good night (261), then cancel in the window.
 tap down 2500
 tap press 8000

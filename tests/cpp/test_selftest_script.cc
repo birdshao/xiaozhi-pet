@@ -259,6 +259,24 @@ int main() {
         assert(script.Count() == 0);
     }
 
+    // phase <day|evening|night|off>: the day phase a script forces (the
+    // reader's bedtime story and quiet hours follow it); a setting, not a delay.
+    {
+        SelfTestScript script;
+        assert(script.Parse("PETSELFTEST1\nphase day\nphase evening\nphase night\nphase off\n"
+                            "wait 10\nend\n"));
+        assert(script.Count() == 5 && script.TotalMs() == 10);
+        for (int i = 0; i < 4; ++i) assert(script.Steps()[i].op == SelfTestOp::Phase);
+        assert(script.Steps()[0].ms == static_cast<uint32_t>(DayPhase::Day));
+        assert(script.Steps()[1].ms == static_cast<uint32_t>(DayPhase::Evening));
+        assert(script.Steps()[2].ms == static_cast<uint32_t>(DayPhase::Night));
+        assert(script.Steps()[3].ms == SelfTestScript::kPhaseOff);
+        assert(!script.Parse("PETSELFTEST1\nphase\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nphase noon\nend\n"));
+        assert(!script.Parse("PETSELFTEST1\nphase day 1\nend\n"));
+        assert(script.Count() == 0);
+    }
+
     // timescale <percent>: test-only feature-timer scale, 10..100 %;
     // waitidle <timeout_ms>: XiaoZhi ready, bounded (counts as a delay).
     {

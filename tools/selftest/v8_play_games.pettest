@@ -1,0 +1,70 @@
+PETSELFTEST1
+# V8 new mini games from the play menu: memory4 (card 8) and the tilt maze
+# (card 21, needs motion on in the parent menu). Each is entered, shown for
+# a moment and left by a long press: this checks the entry wiring, the
+# rules are host-tested. Counted from "mark begin" (tools/selftest_report.py).
+# Games are UI only until a game completes: no completion here.
+# expect min:PET_GAME_MENU 2
+# expect min:game=memory4 2
+# expect min:game=maze 2
+# expect min:end=home 2
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_GAME_START_FAILED 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Game(2), press: play menu.
+tap down 2500
+tap press 6000
+# memory4 is card 8.
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap press 6000
+wait 3000
+hold press 1500 8000
+# Menu again (the rail still sits on Game): maze is card 21.
+tap press 6000
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap press 6000
+wait 3000
+hold press 1500 8000
+pet
+wait 5000
+end
