@@ -21,7 +21,7 @@ from .routers import device, voice, parent
 from .quiz import QuizEngine
 from .story_reader import StoryReader
 from .store import PetStore
-from . import profile, sync
+from . import panel, profile, sync
 from .voice import VoiceTurns
 
 
@@ -95,6 +95,7 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(sync.create_router(app, store))
     app.include_router(distribution.create_router(app, database))
     app.include_router(profile.create_router(app, database))
+    app.include_router(panel.create_router(app, database))
 
     return app
 
