@@ -230,6 +230,17 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_pet_memory"
 "$BUILD/test_pet_memory"
 
+# Server S2 golden vectors: the Python memory/settings decoders are asserted
+# against these files; C++ must still produce (or reject) every one exactly.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/parent_settings.cc" \
+  "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/tests/cpp/test_memory_golden.cc" \
+  -o "$BUILD/test_memory_golden"
+"$BUILD/test_memory_golden" "$ROOT/tests/fixtures/memory"
+
 # V5-01 personality: fixed temperament parameters, reviewed phrase ids and
 # home-item proposals; same input -> same output.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \

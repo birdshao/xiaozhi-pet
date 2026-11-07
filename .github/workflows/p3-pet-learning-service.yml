@@ -6,6 +6,7 @@ on:
     paths:
       - 'services/**'
       - 'tests/test_v5_server_*.py'
+      - 'tests/fixtures/memory/**'
       - 'tests/test_p3_pet_learning_api.py'
       - 'tools/pet_learning_admin.py'
       - 'integrations/xiaozhi_server/**'
@@ -21,6 +22,7 @@ on:
     paths:
       - 'services/**'
       - 'tests/test_v5_server_*.py'
+      - 'tests/fixtures/memory/**'
       - 'tests/test_p3_pet_learning_api.py'
       - 'tools/pet_learning_admin.py'
       - 'integrations/xiaozhi_server/**'
