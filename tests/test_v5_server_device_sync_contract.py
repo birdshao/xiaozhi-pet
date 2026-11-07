@@ -152,7 +152,7 @@ class ReplyFixtureTests(ServerBase):
                 commands.enqueue(db, "pet-001", "SET_TEMPERAMENT",
                                  {"temperament": "lively", "seq": 1}, self.now)
                 commands.enqueue(db, "pet-001", "SYNC_CONTENT", {}, self.now)
-        case = dict(CASES["rich"], generation=1, awaiting=[4098], receipts=[(4099, "rejected")])
+        case = dict(CASES["rich"], generation=1, awaiting=[], receipts=[(4099, "rejected")])
         result = self.put(reference_snapshot(case))
         self.assertEqual(result.status_code, 200, result.text)
         reply = result.json()
@@ -163,6 +163,10 @@ class ReplyFixtureTests(ServerBase):
                                  headers={"Authorization": f"Bearer {TOKEN}"})
         self.assertEqual(polled.status_code, 200)
         self.check("commands_reply.json", polled.json())
+        # S3: a command the device reports as awaiting_confirm is not delivered again.
+        again = self.put(reference_snapshot(dict(case, receipts=[], awaiting=[4098])))
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual([c["command_id"] for c in again.json()["commands"]], [4097])
 
 
 class PairingShapeTests(ServerBase):
