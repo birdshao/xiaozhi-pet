@@ -14,6 +14,7 @@ Lucky(192.168.1.224): DDNS(pet.birdshao.cn A)  +  ACME 泛域名证书 ──(�
 | `install.sh` | CT 上一次性安装（幂等）：目录、专用拉取密钥、systemd 单元、logrotate（14 天）、占位自签证书、防火墙 |
 | `firewall.sh` | ufw 放行 8443；`DOCKER-USER` 对 8443 开例外（Docker 发布的端口不走 ufw INPUT） |
 | `pull-cert.sh` + `pet-cert-pull.{service,timer}` | 每天 04:10 左右从 Lucky 拉证书；校验主机名、剩余有效期 ≥7 天、含中间证书、私钥匹配，通过且有变化才替换并 reload |
+| `lucky-export.sh` | 装在 Lucky 容器里的 SSH 强制命令：只输出指定证书的 crt/key |
 | `reload-ingress.sh` | `nginx -t` 后 HUP 入口容器 |
 | `verify.sh` | 局域网/外网验收：路由白名单、voice 被拒、WSS、413、HSTS、TLS 版本、限流 |
 | `lucky.env.example` | 拉取配置（非密钥） |
@@ -32,10 +33,12 @@ sh ingress/verify.sh 192.168.1.110 -k        # 拿到正式证书前用 -k（占
 
 1. **DDNS**：Lucky「动态域名」里已有的任务（腾讯云）加一条域名记录：`pet.birdshao.cn`，A，默认线路，只开 IPv4。
 2. **证书**：Lucky「SSL/TLS证书」里的 `*.birdshao.cn` ACME 证书已覆盖 `pet.birdshao.cn`。在「路径映射」里确认导出文件路径（形如 `/goodluck/cert_export/<名称>.crt` 和 `.key`）。注意：泛域名证书的私钥会存在 CT 108 上，CT 108 被攻破等于这把私钥泄露；要隔离就在 Lucky 里单独签一张只含 `pet.birdshao.cn` 的证书。
-3. **SSH 授权**：在 Lucky 所在主机用一个只读账号，把 `install.sh` 打印的公钥加进它的 `authorized_keys`，并限制成只能读这两个文件，例如（`CERT` 换成证书名）：
+3. **SSH 授权**：在 Lucky 所在主机在 Lucky 所在容器里装 `lucky-export.sh`（强制命令，只会输出那张证书的 crt 和 key），并把 `install.sh` 打印的公钥以 `restrict,command=` 形式加进 `authorized_keys`（`CERT_NAME` 换成 Lucky「路径映射」里的证书名）：
 
-   ```
-   restrict,command="case \"$SSH_ORIGINAL_COMMAND\" in \"cat '/goodluck/cert_export/CERT.crt'\"|\"cat '/goodluck/cert_export/CERT.key'\") eval \"$SSH_ORIGINAL_COMMAND\";; *) exit 1;; esac" ssh-ed25519 AAAA… pet-ingress cert pull
+   ```bash
+   install -m 755 lucky-export.sh /usr/local/bin/pet-cert-export    # 先把仓库里的这个文件拷到 Lucky 容器
+   sed -i 's/^CERT=.*/CERT=CERT_NAME/' /usr/local/bin/pet-cert-export
+   mkdir -p ~/.ssh && echo 'restrict,command="/usr/local/bin/pet-cert-export" ssh-ed25519 AAAA… pet-ingress cert pull' >> ~/.ssh/authorized_keys
    ```
 
 4. **在 CT 108 上**写配置并固定主机密钥（先核对指纹与 Lucky 主机一致）：

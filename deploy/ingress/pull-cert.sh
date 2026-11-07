@@ -3,7 +3,8 @@
 # ingress. Lucky renews it; this runs daily from pet-cert-pull.timer and reloads nginx only on change.
 # Config (not secret) in /etc/pet-ingress/lucky.env:
 #   LUCKY_SSH=user@192.168.1.224      LUCKY_SSH_PORT=22
-#   LUCKY_CRT=/path/to/cert_export/xxx.crt   LUCKY_KEY=/path/to/cert_export/xxx.key
+# The Lucky side runs only lucky-export.sh (forced command): it prints the crt for the request "crt" and the
+# key for "key", nothing else.
 # Auth: the dedicated key /etc/pet-ingress/lucky_pull_ed25519 (no other use). Run by hand to test.
 set -eu
 . /etc/pet-ingress/lucky.env
@@ -14,8 +15,8 @@ SSH="ssh -i /etc/pet-ingress/lucky_pull_ed25519 -p ${LUCKY_SSH_PORT:-22} -o Batc
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 umask 077
-$SSH "cat '$LUCKY_CRT'" > "$tmp/fullchain.pem"
-$SSH "cat '$LUCKY_KEY'" > "$tmp/privkey.pem"
+$SSH crt > "$tmp/fullchain.pem"
+$SSH key > "$tmp/privkey.pem"
 
 # Refuse anything that would break the ingress or be useless to devices.
 openssl x509 -in "$tmp/fullchain.pem" -noout -checkhost "$HOST" | grep -q "does match" \
