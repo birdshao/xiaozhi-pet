@@ -1,0 +1,41 @@
+{
+  "schema_version": "COURSE1",
+  "course_id": "preschool.math_units",
+  "title": "数学启蒙（三门独立课程）",
+  "age_band": "3-5",
+  "units": [
+    {
+      "unit_id": "find_shapes",
+      "name": "认识基础形状",
+      "skill_id": "math.shapes_basic",
+      "items": [
+        {
+          "kind": "game",
+          "content_id": 20011
+        }
+      ]
+    },
+    {
+      "unit_id": "count_blocks",
+      "name": "数一数 1–5",
+      "skill_id": "math.count_1_5",
+      "items": [
+        {
+          "kind": "game",
+          "content_id": 20012
+        }
+      ]
+    },
+    {
+      "unit_id": "compare_sizes",
+      "name": "大球和小球",
+      "skill_id": "math.size_compare",
+      "items": [
+        {
+          "kind": "game",
+          "content_id": 20013
+        }
+      ]
+    }
+  ]
+}

@@ -42,6 +42,8 @@ class MigrationTests(unittest.TestCase):
         migrate(self.path)
         with connect(self.path) as db:
             after = {t: [tuple(r) for r in db.execute(f"SELECT * FROM {t}")] for t in tables}
+        # Later migrations append columns to devices; the S0 columns must be untouched.
+        after["devices"] = [row[:len(before["devices"][0])] for row in after["devices"]]
         self.assertEqual(before, after)
 
     def test_version_one_upgrade(self):

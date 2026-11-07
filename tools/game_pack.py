@@ -339,7 +339,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
     Path(tmp.name).replace(path)
 
 
-def make_pack(source: Path, output: Path, *, reviewed: bool, placeholder: bool = False) -> dict:
+def make_pack(source: Path, output: Path, *, reviewed: bool, placeholder: bool = False,
+              checked_hash: str | None = None) -> dict:
     """Compile a reviewed game.json into output (.kpg) + .manifest.json."""
     if not reviewed:
         raise ValueError("pass --reviewed: an adult checked every round and recording")
@@ -370,6 +371,8 @@ def make_pack(source: Path, output: Path, *, reviewed: bool, placeholder: bool =
         "session_lines_built_in": sorted(n for n, c in SESSION_CLIPS.items()
                                          if c not in game["clips"]),
     }
+    if checked_hash is not None:
+        manifest["checked_hash"] = checked_hash
     _write_atomic(output.with_suffix(".manifest.json"),
                   (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return manifest

@@ -1,6 +1,6 @@
 # 服务端 S4：内容目录与自动分发
 
-对应 `V5_V6_SERVER_PLAN.md` §7.4、§6.3、§9、§11.1。代码：`services/pet_learning/content.py`（导入、审核、派生）、`distribution.py`（分配、manifest、Range 下载、回报、清单比对、路由）、迁移 `003_content.sql`、参考下载器 `tools/fake_device.py`。测试：`tests/test_v6_content_catalog.py`。
+对应 `V5_V6_SERVER_PLAN.md` §7.4、§6.3、§9、§11.1。代码：`services/pet_learning/content.py`（导入、审核、派生）、`distribution.py`（分配、manifest、Range 下载、回报、清单比对、路由）、迁移 `004_content.sql`、参考下载器 `tools/fake_device.py`。测试：`tests/test_v6_content_catalog.py`。
 
 ## 接口
 
@@ -26,7 +26,7 @@
 
 ## 迁移编号
 
-本分支用 `003_content.sql`（基于 main）。S1 分支也有 `003_pairing.sql`，后合并的一方需把自己的迁移改成下一个编号（文件内容不依赖顺序，只依赖 `devices` 与 `audit_log`）。`test_v5_server_migrations` 改为按迁移文件数断言版本号。
+本分支用 `004_content.sql`（排在 S1 的 `003_pairing.sql` 之后）。
 
 ## 部署注意
 

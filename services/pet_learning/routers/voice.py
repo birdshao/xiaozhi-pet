@@ -1,22 +1,14 @@
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
+from ..pairing import device_auth
 from ..models import EventBatch, QuizAnswer, VoiceQuery
 from ..intent import resolve
 
 
 def create_router(store, quiz, reader):
-    router = APIRouter()
-    def require_device(device_id: str, authorization: str | None) -> None:
-        # No user identity or bearer token is returned in error messages.
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
-        token = authorization[7:]
-        if not store.authenticated(device_id, token):
-            raise HTTPException(status_code=401, detail="DEVICE_AUTH_REQUIRED")
-
+    router = APIRouter(dependencies=[Depends(device_auth)])
     @router.post("/v1/devices/{device_id}/intent")
     def classify_intent(device_id: str, query: VoiceQuery,
                         authorization: str | None = Header(default=None)) -> dict:
-        require_device(device_id, authorization)
         context = store.snapshot(device_id)
         learning_reply = quiz.intent(device_id, query.text, quiet=context["quiet"])
         if learning_reply is not None:

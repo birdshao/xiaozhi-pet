@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import Field
@@ -21,6 +21,7 @@ from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
 from .content import (MAX_UPLOAD_BYTES, ContentCatalog, ContentError, audit, package_view)
 from .db import connect
 from .models import StrictModel
+from .pairing import device_auth
 from .routers.parent import check_origin, client_ip
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
