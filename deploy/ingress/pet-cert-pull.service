@@ -1,0 +1,8 @@
+[Unit]
+Description=Pull the TLS certificate exported by Lucky and reload the ingress
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pet-ingress/pull-cert.sh

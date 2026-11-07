@@ -120,11 +120,13 @@ class DeployFilesTests(unittest.TestCase):
         self.assertGreaterEqual(len(re.findall(r"limit_req zone=", conf)), 7)
 
     def test_ingress_files_carry_no_secrets(self):
-        example = text("ingress", "dnspod.env.example")
-        self.assertRegex(example, r"(?m)^DP_Id=$")
-        self.assertRegex(example, r"(?m)^DP_Key=$")
+        example = text("ingress", "lucky.env.example")
+        self.assertNotIn("PRIVATE KEY", example)
         for path in (p for p in (DEPLOY / "ingress").iterdir() if p.is_file()):
-            self.assertNotRegex(path.read_text(encoding="utf-8"), r"DP_Key=[0-9a-f]{8,}", path.name)
+            self.assertNotIn("BEGIN OPENSSH PRIVATE KEY", path.read_text(encoding="utf-8"), path.name)
+        pull = text("ingress", "pull-cert.sh")
+        for guard in ("-checkhost", "-checkend", "openssl pkey", "StrictHostKeyChecking=yes"):
+            self.assertIn(guard, pull)
         self.assertIn("rotate 14", text("ingress", "pet-ingress.logrotate"))
 
     def test_dockerignore_and_maintenance_units(self):

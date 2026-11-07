@@ -1,8 +1,0 @@
-[Unit]
-Description=pet-ingress Let's Encrypt renewal (acme.sh, DNSPod DNS-01)
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/opt/pet-ingress/acme-renew.sh
