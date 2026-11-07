@@ -287,14 +287,19 @@ void TestMenu() {
     v = m.View();
     assert(out.redraw && out.clip != 0 && v.highlight == 1 && v.options[0] == kCat &&
            v.options[1] == kCandle && v.options[2] == kHand);
-    out = m.Input(GameInput::Down, 1360);  // clap: last window, highlight on the last card
+    out = m.Input(GameInput::Down, 1360);  // clap: the window slides on, highlight in the middle
     v = m.View();
-    assert(out.redraw && v.highlight == 2 && v.options[0] == kCat && v.options[1] == kCandle &&
-           v.options[2] == kHand);
-    out = m.Input(GameInput::Down, 1400);  // clamped
+    assert(out.redraw && v.highlight == 1 && v.options[0] == kCandle && v.options[1] == kHand);
+    // Walk to the last card (the V8 games follow): last window, highlight on the last card.
+    const uint8_t cards = static_cast<uint8_t>(ActivityCount(ActivityGroup::Play));
+    for (uint8_t i = 5; i < cards; ++i) out = m.Input(GameInput::Down, 1400 + i);
+    v = m.View();
+    assert(out.redraw && v.highlight == 2);
+    out = m.Input(GameInput::Down, 1500);  // clamped
     assert(!out.redraw && m.View().highlight == 2);
-    out = m.Input(GameInput::Press, 1500);
-    assert(out.chosen == GameChoice::Clap && !m.Active() && !out.finished);
+    out = m.Input(GameInput::Press, 1600);
+    assert(out.chosen == ActivityAt(ActivityGroup::Play, cards - 1)->id && !m.Active() &&
+           !out.finished);
     // Picks map to the five games; Start can preselect (after a refusal).
     const GameChoice want[] = {GameChoice::Quiz, GameChoice::Ball, GameChoice::Peekaboo,
                                GameChoice::Candle, GameChoice::Clap};

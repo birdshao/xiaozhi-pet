@@ -1400,8 +1400,8 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('GameChoiceIsPlay(out.chosen)', choice)
         self.assertIn('StartPlayGame(game)', choice)
         # Motion games honour the parents' motion switch; the menu re-opens on the same card.
-        self.assertIn('info->needs_motion && !motion_enabled_.load()', choice)
-        self.assertIn('GameMenu::IndexOf(out.chosen)', choice)
+        self.assertIn('ActivityNeeds::Motion && !motion_enabled_.load()', choice)
+        self.assertIn('ActivityIndexOf(out.chosen)', choice)
         start = self._body(patched, 'void StartPlayGame(kid_app::PlayGame game)')
         self.assertIn('game_seed_.exchange(0)', start)  # the self-test "game" step
         self.assertIn('BuildClockPool(', start)  # RTC; fixed round when the clock is not set

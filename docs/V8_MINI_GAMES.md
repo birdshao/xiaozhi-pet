@@ -4,7 +4,7 @@
 
 ## 1. 游戏清单和 id（`GAME_COMPLETED` 的 option）
 
-旧 id：1 知识题内置、2 吹蜡烛、3 拍手节奏、4 滚球、5 躲猫猫，包的 id 从 100 起。**新游戏占 21–39**，和旧 id、包 id 都不冲突（测试保证唯一且在 1–99 内）。菜单顺序按年龄、难度（`kGameMenuOrder`，第一张永远是知识题，自测要用）。
+旧 id：1 知识题内置、2 吹蜡烛、3 拍手节奏、4 滚球、5 躲猫猫，包的 id 从 100 起。**新游戏占 21–39**，和旧 id、包 id 都不冲突（测试保证唯一且在 1–99 内）。菜单是 #102 的**活动列表**（`activity_list.h`）：18 个游戏是 Play 组末尾追加的 18 行（`GameChoice` 13–30 = 12 + `PlayGame`），按年龄、难度排在旧的 5 个游戏后面，知识题仍是第一张（自测要用）。**菜单卡片 id（GameChoice）和成长记忆里的游戏 id 是两套数**，后者是下表的 id。
 
 | id | 游戏 | 年龄/难度 | 种类 | 玩法 |
 |---:|---|---|---|---|
@@ -105,8 +105,9 @@ IMU 每 500 ms 一个窗口摘要（`MotionStats::Summary`：三轴均值 mg、`
 
 ## 7. 接入（主会话/会话①合并时）
 
-- 在会话①的“活动列表”合并前，游戏挂在首页“游戏”入口的游戏菜单里（`GameMenu`，23 项，按年龄/难度排序；`GameChoice` 5+`PlayGame`，菜单位置用 `GameMenu::IndexOf/ChoiceAt`）。
-- `scripts/p1_integrate.py`：`GameMode::Play`、`StartPlayGame`、`ApplyPlayOutput`、`maze_tracker_`（四向倾斜，`pet_boot_diag` 喂）、`play_window_`（木头人窗口队列）、`play_shake_`（摇骰子/摇树）、实时的 RTC/SHTC3 原子量。`Gesture` 追加 `TiltUp/TiltDown`（自测 `gesture tiltup|tiltdown`）。体感游戏在家长关了“体感”时被拒绝（`PET_GAME_REFUSED reason=motion_off`）。
+- 游戏是活动列表的行（`needs=Motion` 的家长关了体感就拒绝），`GameMenu` 用主线那套，没有自己的菜单。`HandleMenuOutput` 里加了一个 `GameChoiceIsPlay` 分派分支（`StartPlayGame`）。
+- `scripts/p1_integrate.py`：`GameMode::Play`、`StartPlayGame`、`ApplyPlayOutput`、`maze_tracker_`（四向倾斜，`pet_boot_diag` 喂）、`play_window_`（木头人窗口队列）、`play_shake_`（摇骰子/摇树）、实时的 RTC/SHTC3 原子量。`Gesture` 追加 `TiltUp/TiltDown`（自测 `gesture tiltup|tiltdown`）。
+- 图片 id：`PlayArt` 简单图为 **401–513**（201–223 是 #102 的 `CareArt`，互不重叠，测试断言）；复合图 0x2000–0x38FF；影子图的低字节用 101–107 表示 401–407。
 - 日志：`PET_GAME_START src=play game= id= seed= rounds=`、`PET_PLAY_ROUND`、`PET_PLAY_RIGHT`、`PET_GAME_END mode=play …`。
 - 没有改 `SceneKind`、`home_menu`、账本和记忆存储格式。
 
@@ -118,7 +119,7 @@ IMU 每 500 ms 一个窗口摘要（`MotionStats::Summary`：三轴均值 mg、`
 | `tests/test_v8_quiz_content.py` | 三个朗读包 ≥ 20 题、能编译成 KPG1 并校验、未审核的拒绝、审核清单与代码同步 |
 | `tests/test_v4_game_pack.py` | 更新：大小形状 id 与头文件一致、KPG1 仍只有 1–5 种 |
 | `tests/test_p1_integration_contract.py` | 板端接线（`test_v8_mini_games_wiring`） |
-| `tests/cpp/test_motion_game.cc` | 游戏菜单改为 23 项 |
+| `tests/cpp/test_motion_game.cc` | 菜单窗口滑动改为按活动表走到最后一张 |
 
 ## 9. 没有做的 / 需要真机验证
 
