@@ -68,6 +68,7 @@ def make_review_packet(stage_dir: Path) -> dict:
     credits = (
         "Author(s): " + escape(", ".join(creators["text"])) + " | "
         "Illustrator(s): " + escape(", ".join(creators["illustration"])) + " | "
+        "Designer(s): " + escape(", ".join(creators.get("design", []))) + " | "
         "Translation(s): " + escape(", ".join(creators["translation"]))
     )
     license_ = escape(details["source"]["license_id"])
@@ -102,6 +103,8 @@ def make_review_packet(stage_dir: Path) -> dict:
         candidate["checked_hash"] + '</code></p></div>'
         '<p>' + credits + '</p><p>License: ' + license_ + '</p>'
         '<p>修改声明：AI 辅助中文草稿，电子纸画面转换和实验性音频；需要人工检查。</p>'
+        '<p>最后一页为自动生成的署名页（出版时随书发布）：<code>' +
+        escape(book["pages"][-1]["text"]) + '</code></p>'
         '<h2>快速浏览</h2><p><img style="width:100%;height:auto" src="contact-mono.png" alt="1-bit contact"></p>'
         '<p><img style="width:100%;height:auto" src="contact-grey.png" alt="4-gray contact"></p>'
         + "".join(pages) +

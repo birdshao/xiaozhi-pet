@@ -8,6 +8,16 @@ from typing import Any
 from content_pipeline.schema import ContentError, safe_relpath, validate_document
 
 
+def join_paragraphs(text: str, locale: str) -> str:
+    """Flatten Markdown paragraphs/soft line breaks into one reviewable line.
+
+    KPB2 text rejects control characters, so newlines must not survive import.
+    Chinese is joined without a separator, other languages with one space.
+    """
+    parts = [line.strip() for line in text.splitlines() if line.strip()]
+    return ("" if locale.lower().startswith("zh") else " ").join(parts)
+
+
 def make_book_draft(*, provider: str, source_text: str, source_item_id: str,
                     source_url: str, source_ref: str, item_uid: str, title: str,
                     locale: str, content_id: int, revision: int, skills: list[str],
