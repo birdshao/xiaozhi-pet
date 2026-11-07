@@ -52,6 +52,47 @@ class DeployFilesTests(unittest.TestCase):
         self.assertIn("sherpa-onnx-paraformer-zh-small-2024-03-09", text("compose.yaml"))
         self.assertRegex(text("fetch_models.sh"), r"SHA256=[0-9a-f]{64}")
 
+    def test_compose_structure(self):
+        import ipaddress
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+        compose = yaml.safe_load(text("compose.yaml"))
+        services = compose["services"]
+        subnet = ipaddress.ip_network(compose["networks"]["pet"]["ipam"]["config"][0]["subnet"])
+        pet_ip = services["pet-learning"]["networks"]["pet"]["ipv4_address"]
+        xz_ip = services["xiaozhi-server"]["networks"]["pet"]["ipv4_address"]
+        self.assertEqual(services["pet-learning"]["environment"]["KID_PET_VOICE_ALLOWED_PEERS"], xz_ip)
+        for ip in (pet_ip, xz_ip, services["gateway"]["networks"]["pet"]["ipv4_address"]):
+            self.assertIn(ipaddress.ip_address(ip), subnet)
+        self.assertEqual(services["xiaozhi-server"]["environment"]["KID_PET_API_URL"], f"http://{pet_ip}:8765")
+        published = [(name, p) for name, svc in services.items() for p in svc.get("ports", [])]
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0][0], "gateway")
+        # the backup key is only given to the one-off backup job
+        self.assertNotIn("KID_PET_BACKUP_KEY", services["pet-learning"]["environment"])
+        self.assertIn("KID_PET_BACKUP_KEY", services["backup"]["environment"])
+        for job in ("backup", "cleanup"):
+            self.assertEqual(services[job]["profiles"], ["ops"])
+            self.assertEqual(services[job]["network_mode"], "none")
+            self.assertEqual(services[job]["restart"], "no")
+
+    def test_gateway_rate_limits_xiaozhi_routes(self):
+        conf = text("nginx", "gateway.conf.template")
+        self.assertEqual(len(re.findall(r"limit_req zone=xz_", conf)), 2)
+        self.assertIn("limit_req_zone $binary_remote_addr zone=xz_ota", conf)
+        self.assertIn("limit_req_zone $binary_remote_addr zone=xz_ws", conf)
+
+    def test_dockerignore_and_maintenance_units(self):
+        ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        for entry in ("**/.env", "deploy/models", ".git", "*.sqlite3", "research_content"):
+            self.assertIn(entry, ignore)
+        service = text("host", "pet-maintenance.service")
+        self.assertIn("run --rm --no-deps backup", service)
+        self.assertIn("run --rm --no-deps cleanup", service)
+        self.assertIn("OnCalendar", text("host", "pet-maintenance.timer"))
+
     def test_providers_file_is_separate_from_env_and_ignored(self):
         self.assertIn("providers.env", text("compose.yaml"))
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -64,7 +105,7 @@ class DeployFilesTests(unittest.TestCase):
             env = Path(tmp) / "env"
             env.write_text("\n".join([
                 "KID_PET_PUBLIC_ORIGIN=https://pet.example.com", "KID_PET_TRUSTED_PROXY=192.168.1.1",
-                "KID_PET_TOTP_KEY=x", "XZ_AUTH_KEY=x", "KID_PET_UPSTREAM_DEVICE_ID=a",
+                "KID_PET_TOTP_KEY=x", "KID_PET_BACKUP_KEY=x", "XZ_AUTH_KEY=x", "KID_PET_UPSTREAM_DEVICE_ID=a",
                 "KID_PET_BUSINESS_DEVICE_ID=b", "KID_PET_VOICE_TOKEN=x"]), encoding="utf-8")
             run = subprocess.run(["docker", "compose", "--env-file", str(env), "-f", str(DEPLOY / "compose.yaml"),
                                   "config", "-q"], capture_output=True, text=True)

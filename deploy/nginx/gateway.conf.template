@@ -10,6 +10,11 @@ map $realip_remote_addr $pet_fwd_proto {
     default http;
     ${INGRESS_PROXY_IP} $http_x_forwarded_proto;
 }
+# /xiaozhi/ota/ hands a signed WebSocket token to any caller at the pinned XiaoZhi commit, so the
+# device-facing XiaoZhi routes are rate limited per client address here and again at the ingress.
+limit_req_zone $binary_remote_addr zone=xz_ota:1m rate=20r/m;
+limit_req_zone $binary_remote_addr zone=xz_ws:1m rate=30r/m;
+limit_req_status 429;
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ""      close;
@@ -53,9 +58,13 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 300s;                 # N5: >= 120 s idle
+        limit_req zone=xz_ws burst=10 nodelay;
         proxy_pass http://172.28.0.20:8000;
     }
-    location ^~ /xiaozhi/ota/ { proxy_pass http://172.28.0.20:8003; }
+    location ^~ /xiaozhi/ota/ {
+        limit_req zone=xz_ota burst=10 nodelay;
+        proxy_pass http://172.28.0.20:8003;
+    }
 
     # Everything else (/v1/voice/, /play, /docs, /openapi.json, XiaoZhi vision/admin) is not routed.
     location / { return 404; }

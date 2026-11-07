@@ -14,14 +14,17 @@
 
 路由：`/v1/devices/ /v1/pairing/ /parent/ /v1/parent/ /v1/content/packages/` → PetLearning；`/xiaozhi/v1/`（WSS）和 `/xiaozhi/ota/` → 小智；其余 404（含 `/v1/voice/`、`/play`、`/docs`、`/openapi.json`、小智视觉/管理接口）。
 
-转发头：`.env` 的 `KID_PET_TRUSTED_PROXY` 是**你的入口**的 IP，只有来自它的 `X-Forwarded-For` 会被 gateway 采信，并改写成单个客户端地址交给应用；应用侧的受信代理固定为 gateway（172.28.0.2）。
+转发头：`.env` 的 `KID_PET_TRUSTED_PROXY` 是**你的入口**的 IP（单个 IP，不能是回环或网段；入口跑在本机时填 `172.28.0.1`，因为回环发布的端口是从 Docker 网桥网关到达 nginx 的），只有来自它的 `X-Forwarded-For` 会被 gateway 采信，并改写成单个客户端地址交给应用；应用侧的受信代理固定为 gateway（172.28.0.2）。
 
 ## 2. 首次部署
 
 ```sh
+# 在仓库根目录：
+cp deploy/.env.example deploy/.env && chmod 600 deploy/.env     # 填密钥；提供商设置见 providers.env.example
+python3 -m tools.pet_learning_admin check-config --env-file deploy/.env   # 必须输出 CHECK_OK（权限过宽会先给 WARN）
+# 宿主没装 Python 依赖时，用镜像检查（先 docker compose build pet-learning）：
+#   docker run --rm --user 0 --network none -v "$PWD/deploy:/cfg:ro" pet-learning:s7 python -m tools.pet_learning_admin check-config --env-file /cfg/.env
 cd deploy
-cp .env.example .env && chmod 600 .env        # 填密钥；提供商设置见 providers.env.example
-python3 -m tools.pet_learning_admin check-config --env-file .env   # 在仓库根目录运行，必须输出 CHECK_OK
 docker compose --env-file .env up -d --build
 docker compose ps                              # 三个服务都应为 healthy
 ```
@@ -41,17 +44,28 @@ docker compose exec -it pet-learning python -m tools.pet_learning_admin --db /da
 `KID_PET_BACKUP_KEY`（Fernet 密钥，须与 `KID_PET_TOTP_KEY` 不同，单独离线保管；丢了就无法恢复备份）。
 
 ```sh
-# 备份：SQLite 在线备份（sqlite3.backup）+ packages 目录 → 分块加密归档，不覆盖已有文件
-docker compose exec pet-learning python -m tools.pet_learning_admin --db /data/pet_learning.sqlite3 backup --out /backups/pet-$(date +%F).enc
+# 备份（一次性容器，只有它拿到 KID_PET_BACKUP_KEY）：SQLite 在线备份 + packages → 分块加密归档 pet-<时间>.enc，保留最新 14 份
+docker compose --env-file .env --profile ops run --rm --no-deps backup
 # 恢复：目标已存在时必须 --force，旧文件改名为 *.pre-restore-<时间>；先校验完整性和 schema 版本
 docker compose stop xiaozhi-server pet-learning
-docker compose run --rm --no-deps pet-learning python -m tools.pet_learning_admin --db /data/pet_learning.sqlite3 restore --archive /backups/pet-YYYY-MM-DD.enc --force
-docker compose up -d
-# 保留期清理（建议每天一次，宿主 cron 调用）
-docker compose exec pet-learning python -m tools.pet_learning_admin --db /data/pet_learning.sqlite3 cleanup
+docker compose --env-file .env run --rm --no-deps -e KID_PET_BACKUP_KEY="$KID_PET_BACKUP_KEY" pet-learning   python -m tools.pet_learning_admin --db /data/pet_learning.sqlite3 restore --archive /backups/pet-YYYYMMDD-HHMMSS.enc --force
+docker compose --env-file .env up -d
+# 保留期清理（一次性容器）
+docker compose --env-file .env --profile ops run --rm --no-deps cleanup
 ```
 
-清理按 §8 D6：`audit_log` 365 天、`commands` 已完成 30 天、`moderation_stats` 90 天，外加过期会话和 1 天前的登录尝试。记忆相关表不在清理清单内，测试断言其不被触碰。`commands`、`moderation_stats` 的表和列由 S2/S6 创建，表不存在时跳过（列名以那两个阶段的迁移为准，届时核对）。备份卷 `pet-backups` 在 Docker 数据盘上，请再用 PVE 备份/`docker cp` 把归档拿到另一块存储。
+**定时执行**（宿主上的 systemd，每天 03:30，备份 + 清理）：
+
+```sh
+cp deploy/host/pet-maintenance.service deploy/host/pet-maintenance.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now pet-maintenance.timer
+systemctl list-timers pet-maintenance.timer        # 查看下次运行
+systemctl start pet-maintenance.service && journalctl -u pet-maintenance -n 20   # 手动验证一次
+```
+
+单元里的路径是 `/opt/pet/app/deploy`，部署在别处请改 `WorkingDirectory`。
+
+清理按 §8 D6：`audit_log` 365 天、`commands` 已完成 30 天、`moderation_stats` 90 天，外加过期会话和 1 天前的登录尝试，以及 14 天前由 restore 挪开的 `*.pre-restore-*` 副本。`parent_login_ips` 没有时间列，无法按保留期清理（需要 S1 加列，列为后续）。记忆相关表不在清理清单内，测试断言其不被触碰。`commands`、`moderation_stats` 的表和列由 S2/S6 创建，表不存在时跳过（列名以那两个阶段的迁移为准，届时核对）。备份卷 `pet-backups` 在 Docker 数据盘上，请再用 PVE 备份/`docker cp` 把归档拿到另一块存储。
 
 ## 4. 小智儿童模式与设备鉴权清单（对 v0.9.8 / `8f2dda09`）
 
@@ -59,8 +73,8 @@ docker compose exec pet-learning python -m tools.pet_learning_admin --db /data/p
 
 | # | 配置键 | 要求 | 原因 |
 |---|---|---|---|
-| X1 | `server.auth.enabled` | `true` | 设备鉴权必开（§3.2）；`websocket_server.py` 与 `ota_handler.py` 据此校验 token |
-| X2 | `server.auth.allowed_devices` | 空 | 白名单设备**跳过** token 校验，默认示例 `11:22:33:44:55:66` 必须清掉 |
+| X1 | `server.auth.enabled` | `true` | WebSocket 要求签名 token；**但在锁定的 commit，`ota_handler.py` 会给任何调用方签发 token，设备 id 头可任填**，所以这不是“只有配对设备能连”，只能挡住绕过 OTA 直连 WSS 的人 |
+| X2 | `server.auth.allowed_devices` | 空 | 白名单设备**跳过** token 校验，默认示例 `11:22:33:44:55:66` 必须清掉。真正的“只处理自己的板子”靠守卫：`conn.device_id` 必须等于 `KID_PET_UPSTREAM_DEVICE_ID`，其余连接只得到固定提示句 |
 | X3 | `server.auth_key` | ≥32 位私密随机值 | token 的 HMAC 密钥；留空时上游会自动生成，不可复现，所以显式配置（`XZ_AUTH_KEY`） |
 | X4 | `server.mqtt_gateway` / `udp_gateway` | 未设置 | 不走 MQTT/UDP 网关，只有 WSS |
 | X5 | `server.websocket` | `wss://` 且与 `KID_PET_PUBLIC_ORIGIN` 同主机端口 | OTA 向设备下发的语音地址 |
@@ -70,6 +84,8 @@ docker compose exec pet-learning python -m tools.pet_learning_admin --db /data/p
 | X9 | `selected_module.Intent` | `nointent` | 意图交给守卫和 PetLearning，不开小智的音乐/IoT 工具 |
 | X10 | `mcp_endpoint` | 未设置（保持上游占位符） | 不接外部 MCP |
 | X11 | `KID_PET_CHILD_MODE=1` + 设备 id + `KID_PET_VOICE_TOKEN` | 必填 | 守卫在儿童模式吞掉每一句 ASR，绝不落到普通 LLM 路径 |
+
+**已知风险（公网入口，D14）**：任何人能从公网拿到 token 并发起 WSS 会话，消耗本机 ASR/TTS 算力（语音内容仍被守卫吞掉，不会进 LLM）。因此入口**必须**对 `/xiaozhi/ota/` 和 `/xiaozhi/v1/` 按来源 IP 限流（本 gateway 已加 `limit_req`：OTA 20 次/分、WSS 30 次/分，突发 10，超限 429；入口那一层也要加，N8）。
 
 另：`enable_greeting: false`（不生成问候语）。
 

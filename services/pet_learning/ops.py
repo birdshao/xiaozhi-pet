@@ -176,6 +176,34 @@ def _has_columns(db, table, *columns):
     return bool(found) and set(columns) <= found
 
 
+def prune_restore_copies(db_path, content_dir, *, days=14, now=None) -> int:
+    """Remove `*.pre-restore-*` copies (old DB/content moved aside by restore) older than `days`."""
+    now = time.time() if now is None else now
+    removed = 0
+    for directory in {Path(db_path).parent, Path(content_dir).parent}:
+        if not directory.is_dir():
+            continue
+        for entry in directory.glob("*.pre-restore-*"):
+            try:
+                if now - entry.stat().st_mtime < days * DAY:
+                    continue
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def rotate_backups(directory, keep: int) -> int:
+    """Keep the newest `keep` encrypted archives (pet-*.enc) in `directory`."""
+    if keep < 1:
+        raise OpsError("--keep must be at least 1")
+    archives = sorted(Path(directory).glob("pet-*.enc"), key=lambda p: p.name, reverse=True)
+    for old in archives[keep:]:
+        old.unlink()
+    return max(len(archives) - keep, 0)
+
+
 def cleanup(db_path, *, now=None) -> dict:
     """Delete rows past their retention period. Returns {table: rows_deleted}."""
     now = int(time.time() if now is None else now)
@@ -195,9 +223,12 @@ def cleanup(db_path, *, now=None) -> dict:
 
 
 def check_deployment(env: dict) -> list[str]:
-    """Return human-readable problems with a production .env (empty = OK)."""
+    """Return human-readable problems with a production .env (empty = OK).
+
+    KID_PET_ENV may be absent: compose pins it to production for the service.
+    """
     problems = []
-    if env.get("KID_PET_ENV") != "production":
+    if env.get("KID_PET_ENV", "production") != "production":
         problems.append("KID_PET_ENV must be production")
     try:
         Settings(
@@ -219,6 +250,14 @@ def check_deployment(env: dict) -> list[str]:
         value = env.get(name, "")
         if len(value) < 32 or _weak(value):
             problems.append(f"{name} must be a private random value of at least 32 characters")
+    proxy = env.get("KID_PET_TRUSTED_PROXY", "")
+    try:
+        address = ipaddress.ip_address(proxy)
+        if address.is_loopback or address.is_unspecified:
+            problems.append("KID_PET_TRUSTED_PROXY must be the ingress address as the gateway sees it "
+                            "(172.28.0.1 for a proxy on the VM itself), not loopback")
+    except ValueError:
+        problems.append("KID_PET_TRUSTED_PROXY must be a single IP address (no CIDR or list)")
     if env.get("KID_PET_CHILD_MODE") != "1":
         problems.append("KID_PET_CHILD_MODE must be 1")
     for name in ("KID_PET_UPSTREAM_DEVICE_ID", "KID_PET_BUSINESS_DEVICE_ID"):
@@ -243,3 +282,16 @@ def check_deployment(env: dict) -> list[str]:
 
 def check_env_file(path) -> list[str]:
     return check_deployment({**read_env(path), **os.environ})
+
+
+def permission_warnings(*paths) -> list[str]:
+    """Secrets files must not be group/world readable (POSIX only)."""
+    warnings = []
+    for path in paths:
+        path = Path(path)
+        try:
+            if os.name == "posix" and path.exists() and path.stat().st_mode & 0o077:
+                warnings.append(f"{path} is group/world accessible; run chmod 600 {path}")
+        except OSError:
+            pass
+    return warnings

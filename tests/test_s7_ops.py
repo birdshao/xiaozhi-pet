@@ -2,6 +2,7 @@ from pathlib import Path
 from contextlib import contextmanager
 import os
 import sqlite3
+import time
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,37 @@ class CleanupTests(unittest.TestCase):
                     self.assertEqual(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 2)
 
 
+class MaintenanceTests(unittest.TestCase):
+    def test_prune_restore_copies_only_old_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db, content = root / "pet.sqlite3", root / "packages"
+            old_db, old_dir = root / "pet.sqlite3.pre-restore-1", root / "packages.pre-restore-1"
+            new = root / "pet.sqlite3.pre-restore-2"
+            for f in (old_db, new):
+                f.write_text("x")
+            old_dir.mkdir()
+            (old_dir / "f").write_text("x")
+            past = time.time() - 30 * 86400
+            os.utime(old_db, (past, past))
+            os.utime(old_dir, (past, past))
+            self.assertEqual(ops.prune_restore_copies(db, content, days=14), 2)
+            self.assertFalse(old_db.exists() or old_dir.exists())
+            self.assertTrue(new.exists())
+
+    def test_rotate_backups_keeps_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [f"pet-2026010{i}-000000.enc" for i in range(1, 6)]
+            for name in names:
+                (Path(tmp) / name).write_text("x")
+            (Path(tmp) / "other.txt").write_text("x")
+            self.assertEqual(ops.rotate_backups(tmp, 2), 3)
+            self.assertEqual(sorted(p.name for p in Path(tmp).glob("pet-*.enc")), names[-2:])
+            self.assertTrue((Path(tmp) / "other.txt").exists())
+            with self.assertRaises(ops.OpsError):
+                ops.rotate_backups(tmp, 0)
+
+
 class ConfigCheckTests(unittest.TestCase):
     def test_good_env_and_each_failure(self):
         self.assertEqual(ops.check_deployment(good_env()), [])
@@ -115,12 +147,30 @@ class ConfigCheckTests(unittest.TestCase):
                            ("KID_PET_PUBLIC_ORIGIN", "https://localhost"), ("KID_PET_TRUSTED_PROXY", ""),
                            ("KID_PET_BACKUP_KEY", "weak"), ("XZ_AUTH_KEY", "short"),
                            ("XZ_AUTH_KEY", "change-me" * 6), ("KID_PET_CHILD_MODE", "0"),
-                           ("KID_PET_ENABLE_PLAYGROUND", "1"), ("PET_GATEWAY_BIND", "0.0.0.0")):
+                           ("KID_PET_ENABLE_PLAYGROUND", "1"), ("PET_GATEWAY_BIND", "0.0.0.0"),
+                           ("KID_PET_TRUSTED_PROXY", "127.0.0.1"), ("KID_PET_TRUSTED_PROXY", "192.168.1.0/24"),
+                           ("KID_PET_TRUSTED_PROXY", "10.0.0.1,10.0.0.2")):
             env = {**good_env(), key: value}
             self.assertTrue(ops.check_deployment(env), key)
         env = good_env()
         env["KID_PET_BACKUP_KEY"] = env["KID_PET_TOTP_KEY"]
         self.assertTrue(ops.check_deployment(env))
+
+    def test_env_without_kid_pet_env_is_checked_as_production(self):
+        env = good_env()
+        del env["KID_PET_ENV"]
+        self.assertEqual(ops.check_deployment(env), [])
+        self.assertEqual(ops.check_deployment({**env, "KID_PET_TRUSTED_PROXY": "172.28.0.1"}), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permissions")
+    def test_permission_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("A=1\n")
+            path.chmod(0o644)
+            self.assertTrue(ops.permission_warnings(path, Path(tmp) / "missing"))
+            path.chmod(0o600)
+            self.assertEqual(ops.permission_warnings(path), [])
 
     def test_xiaozhi_checklist(self):
         self.assertEqual(ops.check_xiaozhi_config(GOOD_XZ, "https://pet.example:8443"), [])
@@ -143,6 +193,11 @@ class ConfigCheckTests(unittest.TestCase):
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertIn("BACKUP_WRITTEN", run.stdout)
+            rotated = subprocess.run([sys.executable, "-m", "tools.pet_learning_admin", "--db", str(db), "backup",
+                                      "--out-dir", str(Path(tmp) / "bk"), "--keep", "1"], cwd=ROOT, env=env,
+                                     capture_output=True, text=True)
+            self.assertEqual(rotated.returncode, 0, rotated.stderr)
+            self.assertEqual(len(list((Path(tmp) / "bk").glob("pet-*.enc"))), 1)
             self.assertNotIn(env["KID_PET_BACKUP_KEY"], run.stdout + run.stderr)
 
 

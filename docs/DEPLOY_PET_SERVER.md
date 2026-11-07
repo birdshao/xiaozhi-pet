@@ -49,13 +49,16 @@ CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780�
 | `POST /v1/parent/login` `{}` | `INVALID_PARENT_REQUEST` |
 | 语音一轮（守卫 → pet-learning，真实 token 与 HMAC 签名，临时库里登记测试设备，用后销毁容器） | “团团睡觉”→ local_command，守卫回“用设备按键”；“现在几点了”→“现在是12点30分。”；开放问题→固定兜底句；空文本→“没听清”；设备 id 不符→“请让家长帮忙连接儿童模式。” |
 
+评审后补充（同日）：`check-config` 在 CT 上用镜像运行输出 `CHECK_OK`；`pet-maintenance.timer` 已安装并手动触发一次，备份写出 `pet-<时间>.enc`（600 权限，只有备份任务容器拿到 `KID_PET_BACKUP_KEY`）、清理任务正常，下次运行 03:30 左右；gateway 对 `/xiaozhi/ota/` 限流生效（突发约 10 次后返回 429）。
+
 没有验证的：真实音频经 ASR/TTS（EdgeTTS 需出网）的完整对话、真实设备连接、gateway 对语音路由的 403（只确认了坏 token 得 401）、公网入口（用户实施）。
 上线时小坑：上游在导入时会创建 `config/assets/wakeup_words`，只读根文件系统下用 tmpfs 解决（见 compose）。
 
 ## 5. 待办与未决项
 
 - pin 不一致已由 S5（#91）统一为 `8f2dda09…`，不再是未决项。
+- **定时备份和清理**：`deploy/host/pet-maintenance.{service,timer}` 已入库，CT 108 上需按 SERVER_S7.md §3 安装并手动验证一次（见下方「验证」）。
 - 公网接入（DNS、公信证书、端口转发/IPv6、反向代理、限流、HSTS）由用户按 SERVER_S7.md §5 实施并逐条验收。
-- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`、设备 id 目前是占位值（`KID_PET_VOICE_TOKEN` 是本机生成的随机值，两侧同值，只在 `.env`），配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
+- `.env` 里的 `KID_PET_PUBLIC_ORIGIN`、`KID_PET_TRUSTED_PROXY`（单个 IP；入口在本机就填 172.28.0.1）、设备 id 目前是占位值（`KID_PET_VOICE_TOKEN` 是本机生成的随机值，两侧同值，只在 `.env`），配对真实设备和确定公网地址后要改，并重新执行 `check-config`。
 - 家长账号尚未创建（需要用户在本地终端设置密码并绑定 TOTP，见 SERVER_S7.md §2）。
 - 备份：`pet-backups` 卷只是同机副本，请在 PVE 上对 CT 108 做 `vzdump`，并把加密归档拷到另一块存储；`KID_PET_BACKUP_KEY` 单独离线保管。

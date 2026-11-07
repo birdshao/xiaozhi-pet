@@ -30,7 +30,6 @@ services:
       # turn trusts X-Forwarded-For only from the operator's ingress, KID_PET_TRUSTED_PROXY.
       KID_PET_TRUSTED_PROXY: 172.28.0.2
       KID_PET_TOTP_KEY: ${KID_PET_TOTP_KEY:?set KID_PET_TOTP_KEY}
-      KID_PET_BACKUP_KEY: ${KID_PET_BACKUP_KEY:-}
       # S5 voice route: only the XiaoZhi container's fixed address may call it, signed with this token.
       KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
@@ -85,6 +84,39 @@ services:
       timeout: 5s
       retries: 8
       start_period: 60s
+
+  # One-off maintenance jobs (docker compose --profile ops run --rm --no-deps backup|cleanup), driven by
+  # deploy/host/pet-maintenance.timer. The backup key lives only in the backup job, not in the service.
+  backup:
+    <<: *hardening
+    restart: "no"
+    profiles: [ops]
+    image: pet-learning:s7
+    user: "10001:10001"
+    network_mode: none
+    tmpfs: [/tmp]
+    environment:
+      KID_PET_BACKUP_KEY: ${KID_PET_BACKUP_KEY:?set KID_PET_BACKUP_KEY}
+      KID_PET_CONTENT_DIR: /data/packages
+    volumes:
+      - pet-data:/data
+      - pet-backups:/backups
+    command: ["python", "-m", "tools.pet_learning_admin", "--db", "/data/pet_learning.sqlite3",
+              "backup", "--out-dir", "/backups", "--keep", "14"]
+
+  cleanup:
+    <<: *hardening
+    restart: "no"
+    profiles: [ops]
+    image: pet-learning:s7
+    user: "10001:10001"
+    network_mode: none
+    tmpfs: [/tmp]
+    environment:
+      KID_PET_CONTENT_DIR: /data/packages
+    volumes:
+      - pet-data:/data
+    command: ["python", "-m", "tools.pet_learning_admin", "--db", "/data/pet_learning.sqlite3", "cleanup"]
 
   gateway:
     <<: *hardening

@@ -6,7 +6,8 @@ server:
   port: 8000
   http_port: 8003
   auth:
-    enabled: true            # device authentication (§3.2); only paired devices
+    enabled: true            # WS requires a signed token, but at the pinned commit /xiaozhi/ota/ hands one to ANY
+                             # caller (any device-id header), so this is NOT per-device pairing: keep it rate-limited
     allowed_devices: []      # whitelisted devices would skip the token check
   mqtt_gateway: null
   udp_gateway: null
