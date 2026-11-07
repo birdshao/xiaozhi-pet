@@ -33,6 +33,10 @@ public:
     AudioPlan EndVoice(uint64_t token);
     AudioPlan Finished(uint64_t token);
     AudioPlan SetQuiet(bool enabled);
+    // V8: PWR (sleep flow) and leaving a sound activity silence whatever is
+    // playing, voice included, without touching the quiet flag and without
+    // resuming a paused story afterwards.
+    AudioPlan StopAll();
 
     AudioStream Active() const { return active_; }
     uint64_t ActiveToken() const { return active_token_; }

@@ -29,7 +29,7 @@ int main() {
     assert(ParseVoiceCommand("TELL_BATTERY") == VoiceCommand::TellBattery);
     assert(ParseVoiceCommand("PAGE_NEXT") == VoiceCommand::PageNext);
     assert(ParseVoiceCommand("OPEN_READER") == VoiceCommand::OpenReader);
-    for (const char* bad : {"", "sleep_request", "PAGE_PREV", "PET_FEED", "GO_HOME", "OPEN_GAME",
+    for (const char* bad : {"", "sleep_request", "PAGE_PREV", "PET_FEED", "GO_HOME", "open_game", "START_BRUSH ",
                             "SLEEP_REQUEST ", "rm -rf", "TELL_TIME\n"})
         assert(ParseVoiceCommand(bad) == VoiceCommand::Unknown);
     assert(ParseVoiceCommand(nullptr) == VoiceCommand::Unknown);
@@ -120,13 +120,94 @@ int main() {
                   "already"));
     }
 
+    // V8-03: the new fixed commands. Wire names round-trip.
+    for (const char* n : {"ASK_NEEDS", "OPEN_GAME", "PLAY_SONG", "GOOD_NIGHT", "TELL_JOKE",
+                          "START_BRUSH", "START_WASH"})
+        assert(std::strcmp(VoiceCommandName(ParseVoiceCommand(n)), n) == 0);
+
+    // Everything below only proposes: VoiceAction stays None, and nothing writes memory.
+    {
+        auto home = Ctx(VoiceScene::Home);
+        auto Proposal = [&](const char* n, const VoiceContext& c) { return Run(n, c).proposal; };
+        auto NoAction = [&](const char* n, const VoiceContext& c) {
+            return Run(n, c).action == VoiceAction::None;
+        };
+        // Off / parent menu / sleeping: nothing happens.
+        for (const char* n : {"ASK_NEEDS", "OPEN_GAME", "PLAY_SONG", "TELL_JOKE", "START_BRUSH",
+                              "START_WASH", "GOOD_NIGHT"}) {
+            assert(Is(Run(n, Ctx(VoiceScene::Off)), VoiceAction::None, VoiceHint::None, "off"));
+            assert(Is(Run(n, Ctx(VoiceScene::Parent)), VoiceAction::None, VoiceHint::None, "parent"));
+            assert(Run(n, Ctx(VoiceScene::Sleeping)).proposal == VoiceProposal::None);
+            assert(Run(n, Ctx(VoiceScene::Sleeping)).action == VoiceAction::None);
+        }
+        assert(std::strcmp(Run("GOOD_NIGHT", Ctx(VoiceScene::Sleeping)).result, "already") == 0);
+
+        // Good night is the sleep flow, also at night and on a low battery.
+        for (VoiceScene s : {VoiceScene::Home, VoiceScene::Reader, VoiceScene::Game}) {
+            auto c = Ctx(s);
+            c.quiet_hours = c.low_battery = true;
+            assert(Is(Run("GOOD_NIGHT", c), VoiceAction::BeginSleep, VoiceHint::None, "done"));
+        }
+
+        // Are you hungry? At home; generic until the care state is readable.
+        auto d = Run("ASK_NEEDS", home);
+        assert(d.proposal == VoiceProposal::AskNeeds && d.generic && !d.silent && NoAction("ASK_NEEDS", home));
+        home.needs_known = true;
+        assert(!Run("ASK_NEEDS", home).generic);
+        home.needs_known = false;
+        auto night = home;
+        night.quiet_hours = true;
+        assert(Run("ASK_NEEDS", night).silent && Run("TELL_JOKE", night).silent);
+        for (VoiceScene s : {VoiceScene::Reader, VoiceScene::Game}) {
+            assert(Is(Run("ASK_NEEDS", Ctx(s)), VoiceAction::None, VoiceHint::Busy, "busy"));
+            assert(Is(Run("TELL_JOKE", Ctx(s)), VoiceAction::None, VoiceHint::Busy, "busy"));
+        }
+        assert(Proposal("TELL_JOKE", home) == VoiceProposal::TellJoke);
+
+        // Game menu / songs: home only, not at night, not on a low battery.
+        for (const char* n : {"OPEN_GAME", "PLAY_SONG"}) {
+            const VoiceProposal want =
+                std::strcmp(n, "OPEN_GAME") == 0 ? VoiceProposal::OpenGame : VoiceProposal::PlaySong;
+            assert(Is(Run(n, home), VoiceAction::None, VoiceHint::None, "done"));
+            assert(Proposal(n, home) == want);
+            assert(Is(Run(n, night), VoiceAction::None, VoiceHint::QuietHours, "quiet"));
+            assert(Run(n, night).proposal == VoiceProposal::None);
+            auto low = home;
+            low.low_battery = true;
+            assert(Is(Run(n, low), VoiceAction::None, VoiceHint::LowBattery, "low_battery"));
+            assert(Is(Run(n, Ctx(VoiceScene::Reader)), VoiceAction::None, VoiceHint::Busy, "busy"));
+        }
+        assert(Is(Run("OPEN_GAME", Ctx(VoiceScene::Game)), VoiceAction::None, VoiceHint::None,
+                  "already"));
+        assert(Is(Run("PLAY_SONG", Ctx(VoiceScene::Game)), VoiceAction::None, VoiceHint::Busy,
+                  "busy"));
+
+        // Routines: home only; bedtime brushing is fine (quiet = no cue sounds); low battery waits.
+        for (const char* n : {"START_BRUSH", "START_WASH"}) {
+            const VoiceProposal want = std::strcmp(n, "START_BRUSH") == 0 ? VoiceProposal::StartBrush
+                                                                            : VoiceProposal::StartWash;
+            assert(Proposal(n, home) == want && !Run(n, home).silent);
+            assert(Proposal(n, night) == want && Run(n, night).silent);
+            auto low = home;
+            low.low_battery = true;
+            assert(Is(Run(n, low), VoiceAction::None, VoiceHint::LowBattery, "low_battery"));
+            for (VoiceScene s : {VoiceScene::Reader, VoiceScene::Game})
+                assert(Is(Run(n, Ctx(s)), VoiceAction::None, VoiceHint::Busy, "busy"));
+        }
+    }
+
     // Names are never empty (they go into the log).
     for (VoiceAction a : {VoiceAction::None, VoiceAction::BeginSleep, VoiceAction::ShowTime,
                           VoiceAction::ShowBattery, VoiceAction::PageNext, VoiceAction::OpenReader})
         assert(*VoiceActionName(a));
     for (VoiceHint h : {VoiceHint::None, VoiceHint::NotInReader, VoiceHint::Busy,
-                        VoiceHint::QuietHours, VoiceHint::ClockUnknown, VoiceHint::BatteryUnknown})
+                        VoiceHint::QuietHours, VoiceHint::ClockUnknown, VoiceHint::BatteryUnknown,
+                        VoiceHint::LowBattery})
         assert(*VoiceHintName(h));
+    for (VoiceProposal p : {VoiceProposal::None, VoiceProposal::AskNeeds, VoiceProposal::OpenGame,
+                            VoiceProposal::PlaySong, VoiceProposal::TellJoke,
+                            VoiceProposal::StartBrush, VoiceProposal::StartWash})
+        assert(*VoiceProposalName(p));
     assert(std::strcmp(VoiceCommandName(VoiceCommand::Unknown), "UNKNOWN") == 0);
 
     std::cout << "voice command tests passed\n";

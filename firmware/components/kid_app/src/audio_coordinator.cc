@@ -94,4 +94,15 @@ AudioPlan AudioCoordinator::SetQuiet(bool enabled) {
     return plan;
 }
 
+AudioPlan AudioCoordinator::StopAll() {
+    AudioPlan plan{};
+    plan.accepted = true;
+    if (active_ == AudioStream::None) return plan;
+    Add(&plan, AudioVerb::Stop, active_, active_token_);
+    active_ = AudioStream::None;
+    active_token_ = 0;
+    paused_story_ = 0;
+    return plan;
+}
+
 }  // namespace kid_app

@@ -27,6 +27,7 @@ idf_component_register(
          "src/pet_ledger_migration.cc"
          "src/mini_game.cc" "src/game_pack_reader.cc" "src/game_course_loader.cc" "src/motion_game.cc"
          "src/mic_envelope.cc" "src/mic_game.cc"
+         "src/parrot_session.cc" "src/song_player.cc" "src/routine_timer.cc"
          "src/json_lite.cc" "src/server_sync.cc" "src/parent_requests.cc"
          "src/pet_command_apply.cc" "src/freertos_server_sync_worker.cc"
     INCLUDE_DIRS "include"
