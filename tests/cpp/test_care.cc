@@ -224,9 +224,13 @@ void TestTodayRollAndSaturation() {
     c.Apply(Ev(id++, CareEventKind::Bathed, MemorySource::Device, d2));
     assert(c.GetToday().day == CareDay(d2) && c.GetToday().feeds == 0 && c.GetToday().baths == 1);
     assert(c.TodayOn(CareDay(d1)).Cares() == 0);  // a stale day is empty
-    // Late (older) events still count in the totals, not in today.
+    // The clock corrected backwards (it once ran ahead): today starts
+    // again on the earlier date instead of freezing; totals keep counting.
     c.Apply(Ev(id++, CareEventKind::Bathed, MemorySource::Device, d1));
-    assert(c.GetToday().baths == 1 && c.GetTotals().baths == 2);
+    assert(c.GetToday().day == CareDay(d1) && c.GetToday().baths == 1 &&
+           c.GetToday().feeds == 0 && c.GetTotals().baths == 2);
+    c.Apply(Ev(id++, CareEventKind::Bathed, MemorySource::Device, d2));
+    assert(c.GetToday().day == CareDay(d2) && c.GetToday().baths == 1);
     // Saturation: today counters stop at 250, totals at 65535.
     for (int i = 0; i < 300; ++i)
         c.Apply(Ev(id++, CareEventKind::Tickled, MemorySource::Device, d2));
@@ -263,13 +267,19 @@ void TestHabits() {
     assert(c.Apply(Ev(id++, CareEventKind::HabitDone, MemorySource::Button, d1 + 5 * 1440)) ==
            CareResult::Applied);
     assert(c.GetHabit().streak == 1 && c.GetHabit().best == 3 && c.GetHabit().total == 4);
-    // Clock went back: refused.
-    assert(c.Apply(Ev(id++, CareEventKind::HabitDone, MemorySource::Button, d1)) ==
-           CareResult::Rejected);
+    // The clock was set ahead and then corrected back: ticks go on (a
+    // quiet new streak of 1, best and total kept) instead of being refused
+    // until the clock catches up again.
+    assert(c.Apply(Ev(id++, CareEventKind::HabitDone, MemorySource::Button, d1 + 4 * 1440)) ==
+           CareResult::Applied);
+    assert(c.GetHabit().streak == 1 && c.GetHabit().best == 3 && c.GetHabit().total == 5 &&
+           c.GetHabit().last_day == CareDay(d1 + 4 * 1440) && c.GetToday().habit_done);
+    assert(c.Apply(Ev(id++, CareEventKind::HabitDone, MemorySource::Button, d1 + 4 * 1440 + 60)) ==
+           CareResult::Rejected);  // still once a day
     // Stickers for 3 / 7 / 14 days in a row.
     MemoryStore::Growth g{};
     assert(c.EarnStickers(g) & StickerBit(Sticker::Habit3));
-    for (int d = 6; d < 6 + 14; ++d)
+    for (int d = 5; d < 5 + 14; ++d)
         c.Apply(Ev(id++, CareEventKind::HabitDone, MemorySource::DialChoice, d1 + d * 1440));
     assert(c.GetHabit().streak == 15);
     const uint32_t got = c.EarnStickers(g);
@@ -709,8 +719,28 @@ void TestDressHabitAlbum() {
     h.habit = Habit::DrinkWater;
     s.Start(CareKind::Habit, h, 0, &out);
     assert(out.clip == 1134 && s.View().options[0] == HabitArt(Habit::DrinkWater));
+    // The tick is posted first; praise only follows the ledger's answer.
     out = s.Input(GameInput::Press, 2);
-    assert(out.record && out.event.kind == CareEventKind::HabitDone && out.clip == 1141);
+    assert(out.record && out.event.kind == CareEventKind::HabitDone && !out.clip &&
+           s.View().hearts == 0 && s.View().phase == 0);
+    assert(!s.Input(GameInput::Press, 3).record);  // waiting: no second tick
+    out = s.Confirm(true, 10);
+    assert(out.clip == 1141 && out.redraw && s.View().hearts == 3 && s.View().phase == 1);
+    assert(s.Tick(10 + CareSession::kReactMs).finished);
+    // Refused by the ledger (already ticked, e.g. on another path): no praise.
+    s.Start(CareKind::Habit, h, 0, &out);
+    s.Input(GameInput::Press, 2);
+    out = s.Confirm(false, 20);
+    assert(out.finished && out.clip == 1142 && !out.record);
+    // No answer at all: home quietly after kConfirmMs.
+    s.Start(CareKind::Habit, h, 0, &out);
+    s.Input(GameInput::Press, 2);
+    assert(!s.Tick(2 + CareSession::kConfirmMs - 1).finished);
+    out = s.Tick(2 + CareSession::kConfirmMs);
+    assert(out.finished && !out.clip);
+    // Other sessions ignore a stray answer.
+    s.Start(CareKind::Brush, Ctx(), 0, &out);
+    assert(!s.Confirm(true, 1).redraw && s.Active());
     h.habit_done_today = true;
     s.Start(CareKind::Habit, h, 0, &out);
     assert(s.View().phase == 1);

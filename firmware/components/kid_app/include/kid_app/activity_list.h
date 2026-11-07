@@ -42,9 +42,10 @@ enum class ActivityNeeds : uint8_t { None, Motion, Mic };
 
 // Picture id ranges (one per session, docs/V8_CARE_AND_GROWTH.md §5):
 //   1..99 GameArt (KPG1 catalogue)   101..199 MicArt (V4-08)
-//   400..599 and 0x2000..0x3FFF PlayArt (session 2, mini games)
-//   600..699 CareArt (session 1)     700..799 session 3   800..899 session 4
-//   0x4000.. never: tone clip ids (GameArtTone)
+//   401..513 (block 400..599) and 0x2000..0x3FFF PlayArt (session 2, game_view.h)
+//   601..660 (block 600..699) CareArt (session 1, below)
+//   701.. (block 700..799) session 3 (sound)   801.. (block 800..899) session 4
+//   200..399 free; 0x4000.. never: tone clip ids (GameArtTone)
 // V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
 enum class CareArt : uint16_t {
     Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,

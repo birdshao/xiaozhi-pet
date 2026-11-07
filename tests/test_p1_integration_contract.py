@@ -1468,6 +1468,9 @@ class DisplayOverlayTest(unittest.TestCase):
         update = self._body(patched, 'void UpdateGame(DeviceState state)')
         self.assertIn('care_.OnGesture(', update)
         self.assertIn('care_.OnWindow(window == 1, NowMs())', update)
+        # A habit tick is praised only after the ledger committed it.
+        self.assertIn('care_.Confirm(answer == 1, NowMs())', update)
+        self.assertIn('habit_answer_.store(result == kid_app::CommitResult::Committed ? 1 : 2)', patched)
         self.assertLess(update.index('EndGame("voice")'), update.index('care_.OnGesture('))
         end = self._body(patched, 'void EndGame(const char* reason, bool publish_home = true)')
         self.assertIn('care_motion_.store(false)', end)

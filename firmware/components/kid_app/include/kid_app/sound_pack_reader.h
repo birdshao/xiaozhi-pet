@@ -51,6 +51,10 @@ private:
     uint16_t count_ = 0;
     uint32_t revision_ = 0;
     std::array<SoundClipInfo, kMaxClips> clips_{};
+    // Open() builds the table here before it replaces clips_ (a failed open
+    // changes nothing). A member, not a local: 192 x 16 B = 3 KiB would sit
+    // on the 6 KiB pet_prompt stack next to the PCM chunk and CRC buffers.
+    std::array<SoundClipInfo, kMaxClips> candidate_{};
 };
 
 // Read-only adapter for <mounted dir>/<pack_id>.kps on an already mounted

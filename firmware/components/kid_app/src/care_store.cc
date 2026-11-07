@@ -181,7 +181,10 @@ void CareStore::RollTo(uint32_t day) {
         today_.day = day;
         return;
     }
-    if (day <= today_.day) return;  // same day, or the clock went back
+    if (day == today_.day) return;
+    // A new day, or the clock was corrected backwards (it once ran ahead):
+    // either way today starts again, so counts never freeze on a date that
+    // the clock will not reach for a while.
     today_ = Today{};
     today_.day = day;
 }
@@ -248,9 +251,12 @@ CareResult CareStore::Apply(const CareEvent& e) {
         case CareEventKind::HabitDone: {
             // A tick needs a known date (streaks are days) and a chosen habit.
             if (e.slot || e.option || !dated || next.habit_.habit == Habit::None ||
-                day <= next.habit_.last_day)
-                return CareResult::Rejected;  // already ticked today / clock went back
+                day == next.habit_.last_day)
+                return CareResult::Rejected;  // already ticked today
             auto& h = next.habit_;
+            // The day after: the streak goes on. Later, or earlier (the clock
+            // was corrected backwards after running ahead): a quiet new
+            // streak of 1; best and total are kept.
             if (h.last_day && h.last_day + 1 == day) Saturate(&h.streak);
             else h.streak = 1;
             if (h.streak > h.best) h.best = h.streak;

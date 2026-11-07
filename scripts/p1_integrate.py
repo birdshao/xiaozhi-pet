@@ -608,6 +608,8 @@ BOARD_WORKER = r'''
         auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
         if (!self) return;
         if (result == kid_app::CommitResult::Committed) self->rhythm_refresh_.store(true);
+        if (event.kind == kid_app::CareEventKind::HabitDone)  // the session waits for it
+            self->habit_answer_.store(result == kid_app::CommitResult::Committed ? 1 : 2);
         if (new_stickers && event.kind != kid_app::CareEventKind::FestivalSeen)
             self->sticker_news_.store(true);
         if ((event.kind == kid_app::CareEventKind::HabitSet ||
@@ -3607,6 +3609,8 @@ BOARD_WORKER = r'''
                 const uint8_t pending = care_gesture_.exchange(0);
                 if (pending)
                     ApplyCareOutput(care_.OnGesture(static_cast<kid_app::Gesture>(pending), NowMs()));
+                const uint8_t answer = habit_answer_.exchange(0);  // the habit tick's result
+                if (answer) ApplyCareOutput(care_.Confirm(answer == 1, NowMs()));
                 const uint8_t window = care_window_.exchange(0);
                 if (window && game_active_.load() && game_mode_ == GameMode::Care)
                     ApplyCareOutput(care_.OnWindow(window == 1, NowMs()));
@@ -3711,6 +3715,7 @@ BOARD_WORKER = r'''
     std::atomic<uint8_t> festival_{0};            // today's kid_app::Festival
     std::atomic<bool> sticker_news_{false};       // a care commit earned a sticker
     std::atomic<bool> feed_sticker_{false};       // announce it after the next yummy line
+    std::atomic<uint8_t> habit_answer_{0};        // Pet worker: 1 tick committed, 2 refused
     std::atomic<bool> parent_care_failed_{false}; // Pet worker: page 2 save refused
     uint32_t look_failed_ms_ = 0;                 // kid_epd: last failed look refresh
     std::atomic<uint32_t> care_tokens_{0};
@@ -3924,6 +3929,7 @@ BOARD_WORKER = r'''
             pet_mailbox_.game_only.store(true);
             care_gesture_.store(0);
             care_window_.store(0);
+            habit_answer_.store(0);
             care_motion_.store(care_.WantsMotion());
             {
                 SceneStateLock anim_lock(anim_mutex_);

@@ -80,7 +80,8 @@ bool SoundPackReader::Open(StoryPackFile& file) {
         total != file.Size() || total < data_offset)
         return false;
 
-    std::array<SoundClipInfo, kMaxClips> candidate{};
+    auto& candidate = candidate_;  // member: see sound_pack_reader.h
+    candidate.fill(SoundClipInfo{});
     uint32_t table_crc = 0, previous_end = data_offset;
     for (uint32_t i = 0; i < count; ++i) {
         std::array<uint8_t, kRecordBytes> r{};

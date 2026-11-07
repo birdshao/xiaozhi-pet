@@ -242,6 +242,15 @@ class StateSync:
             ledger["stickers"] = snap.stickers
         canonical = json.dumps(ledger, sort_keys=True, separators=(",", ":"))
         state_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        # V8 firmware update: the first ledger-v4 snapshot repeats the last
+        # v3 generation (loading never commits) with an empty sticker list.
+        # Its v3 view hashes like the stored row: same state, new schema.
+        upgrade_sha = None
+        if snap.ledger_schema == 4 and snap.stickers == []:
+            v3 = {k: v for k, v in ledger.items() if k != "stickers"}
+            v3["ledger_schema"] = 3
+            upgrade_sha = hashlib.sha256(json.dumps(v3, sort_keys=True, separators=(",", ":"))
+                                         .encode("utf-8")).hexdigest()
         full = json.dumps(snap.model_dump(), sort_keys=True, separators=(",", ":"))
         upload_sha = hashlib.sha256(full.encode("utf-8")).hexdigest()
 
@@ -265,6 +274,15 @@ class StateSync:
                     result = "duplicate"
                     acked = self._accept(db, device_id, snap, memory, settings, state_sha, now,
                                          project=False, upload_sha=upload_sha)
+                elif (upgrade_sha is not None and row["ledger_schema"] == 3 and
+                      hmac.compare_digest(row["state_sha"], upgrade_sha)):
+                    # Schema upgrade of the same generation (V8 OTA): not a
+                    # conflict; store the v4 hash and the (empty) stickers.
+                    result = "duplicate"
+                    acked = self._accept(db, device_id, snap, memory, settings, state_sha, now,
+                                         upload_sha=upload_sha)
+                    commands.audit(db, now, "device", "state.schema_upgrade", device_id, "accepted",
+                                   collapse=AUDIT_COLLAPSE_SECONDS)
                 else:
                     result = "generation_conflict"
                     db.execute("UPDATE device_state SET conflict_at=? WHERE device_id=?", (now, device_id))

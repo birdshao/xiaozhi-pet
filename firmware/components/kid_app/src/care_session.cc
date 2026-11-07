@@ -60,6 +60,7 @@ bool CareSession::Start(CareKind kind, const CareContext& context, uint32_t now_
     reacting_ = false;
     last_input_ms_ = now_ms;
     index_ = progress_ = phase_ = hearts_ = page_ = 0;
+    awaiting_ = false;
     last_dir_ = 0;
     after_ = CareKind::None;
     const Temperament t = ctx_.temperament;
@@ -137,7 +138,7 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
     CareOutput out{};
     if (!active_) return out;
     last_input_ms_ = now_ms;
-    if (reacting_) return out;  // the reaction picture plays to its end
+    if (reacting_ || awaiting_) return out;  // the reaction plays to its end
     const Temperament t = ctx_.temperament;
     if (input == GameInput::Long) return Finish(0, now_ms);  // home, nothing lost
 
@@ -218,13 +219,11 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
         if (ctx_.habit_done_today) return Finish(CarePhraseId(CareLine::HabitAlready, 0, t), now_ms);
         // Streaks are days: without a clock the tick would be refused.
         if (!ctx_.clock_known) return Finish(kGameTonePrompt, now_ms);
-        ctx_.habit_done_today = true;
-        phase_ = 1;
-        hearts_ = 3;
-        reacting_ = true;
-        react_until_ms_ = now_ms + SelfTestClock::Scaled(kReactMs);
+        // Ask the ledger first; the check appears with its answer (Confirm).
+        awaiting_ = true;
+        awaiting_since_ms_ = now_ms;
         out = Record(CareEventKind::HabitDone, MemorySource::DialChoice, 0, 0);
-        out.clip = CarePhraseId(CareLine::HabitTicked, 0, t);
+        out.redraw = false;
         return out;
     }
     if (kind_ == CareKind::Dress) {
@@ -318,9 +317,30 @@ CareOutput CareSession::OnWindow(bool still, uint32_t now_ms) {
     return out;
 }
 
+CareOutput CareSession::Confirm(bool committed, uint32_t now_ms) {
+    CareOutput out{};
+    if (!active_ || !awaiting_ || kind_ != CareKind::Habit) return out;
+    awaiting_ = false;
+    const Temperament t = ctx_.temperament;
+    if (!committed) return Finish(CarePhraseId(CareLine::HabitAlready, 0, t), now_ms);
+    ctx_.habit_done_today = true;
+    phase_ = 1;
+    hearts_ = 3;
+    reacting_ = true;
+    react_until_ms_ = now_ms + SelfTestClock::Scaled(kReactMs);
+    out.redraw = true;
+    out.clip = CarePhraseId(CareLine::HabitTicked, 0, t);
+    return out;
+}
+
 CareOutput CareSession::Tick(uint32_t now_ms) {
     CareOutput out{};
     if (!active_) return out;
+    if (awaiting_) {  // the ledger never answered: no praise, back home
+        if (static_cast<int32_t>(now_ms - (awaiting_since_ms_ + kConfirmMs)) < 0) return out;
+        awaiting_ = false;
+        return Finish(0, now_ms);
+    }
     if (reacting_) {
         if (static_cast<int32_t>(now_ms - react_until_ms_) < 0) return out;
         out = Finish(0, now_ms);

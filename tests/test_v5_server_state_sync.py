@@ -490,6 +490,29 @@ class StateSyncTests(unittest.TestCase):
                 self.assertEqual(client.get("/v1/voice/pet-001/summary", headers={
                     "Authorization": f"Bearer {VOICE_TOKEN}"}).status_code, expected, peer)
 
+    def test_v8_ota_schema_upgrade_same_generation(self):
+        """After the V8 OTA the device re-sends its last v3 generation as ledger v4
+        (loading never commits): same state, no conflict, receipts acked."""
+        self.login()
+        v3 = self.snapshot(generation=40)
+        self.assertEqual(self.put(v3).json()["result"], "accepted")
+        upgraded = dict(v3, ledger_schema=4, stickers=[], battery={"pct": 50, "charging": True})
+        reply = self.put(upgraded).json()
+        self.assertEqual((reply["result"], reply["generation"]), ("duplicate", 40))
+        self.assertEqual(self.table("SELECT ledger_schema FROM device_state")[0][0], 4)
+        self.assertEqual(self.memories()["memory"]["stickers"], [])
+        self.assertNotIn("GENERATION_CONFLICT", self.memories()["warnings"])
+        # Now stored as v4: the same upload again is a plain duplicate.
+        self.assertEqual(self.put(upgraded).json()["result"], "duplicate")
+        # Only an empty sticker list and identical ledger content qualify.
+        other = self.snapshot(generation=41)
+        self.assertEqual(self.put(other).json()["result"], "accepted")
+        with_stickers = dict(other, ledger_schema=4, stickers=[0])
+        self.assertEqual(self.put(with_stickers).json()["result"], "generation_conflict")
+        changed = self.snapshot(memory_with(20761, feeds=7), generation=41, ledger_schema=4,
+                                stickers=[])
+        self.assertEqual(self.put(changed).json()["result"], "generation_conflict")
+
     def test_v8_stickers_ledger_v4(self):
         """V8: ledger schema 4 appends the earned sticker ids; nothing else changes."""
         self.login()

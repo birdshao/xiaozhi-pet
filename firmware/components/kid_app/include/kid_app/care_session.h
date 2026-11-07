@@ -66,6 +66,11 @@ public:
     // lullaby listens; every other session ignores resting windows.
     CareOutput OnWindow(bool still, uint32_t now_ms);
     CareOutput Tick(uint32_t now_ms);
+    // The ledger's answer to the habit tick this session asked for: the
+    // check and the praise only follow a committed tick (refused: "already
+    // ticked" and back home). Other sessions ignore it.
+    CareOutput Confirm(bool committed, uint32_t now_ms);
+    static constexpr uint32_t kConfirmMs = 3000;  // no answer: home, quietly
     void Interrupt() { active_ = false; }
 
     bool Active() const { return active_; }
@@ -93,6 +98,8 @@ private:
     uint8_t index_ = 0;
     uint8_t progress_ = 0;
     uint8_t phase_ = 0;
+    bool awaiting_ = false;  // habit tick posted, ledger answer pending
+    uint32_t awaiting_since_ms_ = 0;
     uint8_t hearts_ = 0;
     int8_t last_dir_ = 0;
     uint8_t page_ = 0;
