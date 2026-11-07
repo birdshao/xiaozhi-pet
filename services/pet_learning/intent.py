@@ -80,8 +80,9 @@ ACTIONS = frozenset({
 })
 # Spoken as a question on purpose ("团团饿了吗？"): the question mark is allowed.
 QUESTION_OK = frozenset({"ASK_NEEDS"})
-# Bedtime talk is welcome in quiet hours (the device runs its one sleep flow).
-QUIET_OK = frozenset({"SLEEP_REQUEST"})
+# Bedtime talk is welcome in quiet hours (the device runs its one sleep flow); "唱首歌"
+# then opens the player with lullabies only, quietly (the device filters).
+QUIET_OK = frozenset({"SLEEP_REQUEST", "PLAY_SONG"})
 
 
 @dataclass(frozen=True)

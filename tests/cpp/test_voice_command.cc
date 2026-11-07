@@ -165,13 +165,17 @@ int main() {
         assert(Proposal("TELL_JOKE", home) == VoiceProposal::TellJoke);
 
         // Game menu / songs: home only, not at night, not on a low battery.
+        // Songs: at night the player still opens (lullabies only, quietly).
+        assert(Proposal("PLAY_SONG", night) == VoiceProposal::PlaySong && Run("PLAY_SONG", night).silent);
         for (const char* n : {"OPEN_GAME", "PLAY_SONG"}) {
             const VoiceProposal want =
                 std::strcmp(n, "OPEN_GAME") == 0 ? VoiceProposal::OpenGame : VoiceProposal::PlaySong;
             assert(Is(Run(n, home), VoiceAction::None, VoiceHint::None, "done"));
             assert(Proposal(n, home) == want);
-            assert(Is(Run(n, night), VoiceAction::None, VoiceHint::QuietHours, "quiet"));
-            assert(Run(n, night).proposal == VoiceProposal::None);
+            if (std::strcmp(n, "OPEN_GAME") == 0) {
+                assert(Is(Run(n, night), VoiceAction::None, VoiceHint::QuietHours, "quiet"));
+                assert(Run(n, night).proposal == VoiceProposal::None);
+            }
             auto low = home;
             low.low_battery = true;
             assert(Is(Run(n, low), VoiceAction::None, VoiceHint::LowBattery, "low_battery"));

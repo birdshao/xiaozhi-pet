@@ -1132,6 +1132,29 @@ BOARD_WORKER = r'''
                          battery_.External() ? 1 : 0, kid_app::BatteryStateName(battery_.State()));
                 break;
         }
+        // V8: proposals only; the activity decides for itself and the dial
+        // confirms whatever needs confirming (routines wait for a press).
+        switch (decision.proposal) {
+            case kid_app::VoiceProposal::None:
+                break;
+            case kid_app::VoiceProposal::OpenGame:
+                OpenGameMenu(0);
+                break;
+            case kid_app::VoiceProposal::PlaySong:
+                StartSound(SoundKind::Songs);  // quiet hours: lullabies only, quietly
+                break;
+            case kid_app::VoiceProposal::StartBrush:
+                StartSound(SoundKind::Brush);
+                break;
+            case kid_app::VoiceProposal::StartWash:
+                StartSound(SoundKind::Wash);
+                break;
+            case kid_app::VoiceProposal::AskNeeds:  // wired with the care state (V8-01)
+            case kid_app::VoiceProposal::TellJoke:  // the server's TTS speaks it
+                ESP_LOGI(TAG, "PET_VOICE_PROPOSAL name=%s generic=%d",
+                         kid_app::VoiceProposalName(decision.proposal), decision.generic ? 1 : 0);
+                break;
+        }
         ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=%s action=%s hint=%s scene=%s",
                  kid_app::VoiceCommandName(command), result,
                  kid_app::VoiceActionName(decision.action),
@@ -1205,6 +1228,12 @@ BOARD_WORKER = r'''
             UpdateVoiceFace(state);
             while (xQueueReceive(pet_input_queue_, &edge, pdMS_TO_TICKS(20)) == pdTRUE) {
                 const auto key = static_cast<kid_app::InputKey>(edge.key);
+                // V8 parrot: holding the dial centre records; InputHub never sees
+                // that key meanwhile (no 1 s long press, no parent combo).
+                if (key == kid_app::InputKey::DialPress && parrot_holding_.load()) {
+                    HandleParrotEdge(edge.down);
+                    continue;
+                }
                 if (edge.down) input_hub_.Press(key, edge.at_ms);
                 else input_hub_.Release(key, edge.at_ms);
             }
@@ -2895,7 +2924,7 @@ BOARD_WORKER = r'''
     // V4-07: the Game rail item first opens game_menu_ (quiz / tilt ball /
     // peekaboo); the quiz is game_, the other two are motion_. game_mode_
     // says which one owns the dial and the screen.
-    enum class GameMode : uint8_t { None, Menu, Quiz, Motion };
+    enum class GameMode : uint8_t { None, Menu, Quiz, Motion, Sound };
     kid_app::GameMenu game_menu_;              // pet_input only
     kid_app::MotionGameSession motion_;        // pet_input only
     GameMode game_mode_ = GameMode::None;      // pet_input only
@@ -2971,6 +3000,7 @@ BOARD_WORKER = r'''
         scene.kind = kid_app::SceneKind::Game;
         scene.game = game_mode_ == GameMode::Menu     ? game_menu_.View()
                      : game_mode_ == GameMode::Motion ? motion_.View()
+                     : game_mode_ == GameMode::Sound  ? PublishableSoundView()  // V8
                      : mic_session_                   ? mic_game_.View()  // V4-08
                                                       : game_.View();
         pet_mailbox_.Publish(scene);
@@ -3039,6 +3069,14 @@ BOARD_WORKER = r'''
                                     ? kid_app::MotionKind::Ball
                                     : kid_app::MotionKind::Peekaboo);
                 }
+            } else if (out.chosen == kid_app::GameChoice::Parrot) {  // V8 sound
+                StartSound(SoundKind::Parrot);
+            } else if (out.chosen == kid_app::GameChoice::Songs) {
+                StartSound(SoundKind::Songs);
+            } else if (out.chosen == kid_app::GameChoice::ToothBrush) {
+                StartSound(SoundKind::Brush);
+            } else if (out.chosen == kid_app::GameChoice::HandWash) {
+                StartSound(SoundKind::Wash);
             // V8 activity list (activity_list.h): sessions that append a row
             // add their dispatch branch here, before this fallback.
             } else {
@@ -3188,6 +3226,7 @@ BOARD_WORKER = r'''
         }
         if (game_mode_ == GameMode::Menu) HandleMenuOutput(game_menu_.Input(input, NowMs()));
         else if (game_mode_ == GameMode::Motion) ApplyMotionOutput(motion_.Input(input, NowMs()));
+        else if (game_mode_ == GameMode::Sound) HandleSoundInput(input);  // V8
     }
 
     void HandleQuizInput(kid_app::InputKind kind) {
@@ -3248,6 +3287,9 @@ BOARD_WORKER = r'''
                 if (game_active_.load()) ApplyMotionOutput(motion_.Tick(NowMs()));
                 break;
             }
+            case GameMode::Sound:
+                UpdateSound();  // V8
+                break;
             case GameMode::None:
                 break;
         }
@@ -3272,6 +3314,10 @@ BOARD_WORKER = r'''
                 motion_.Interrupt();
                 result = motion_.Result();
                 mode = kid_app::MotionKindName(motion_.Kind());
+                break;
+            case GameMode::Sound:
+                StopSound();  // V8: wipes the parrot recording, stops songs
+                mode = "sound";
                 break;
             case GameMode::Quiz:
             case GameMode::None:
@@ -3314,6 +3360,488 @@ BOARD_WORKER = r'''
                  mode, kid_app::GameEndName(result.end), reason, static_cast<unsigned>(result.played),
                  static_cast<unsigned>(result.rounds), static_cast<unsigned>(result.correct),
                  static_cast<unsigned>(result.game_id), growth ? 1 : 0, posted ? 1 : 0);
+    }
+
+    // ---- V8 sound activities: parrot, songs, tooth brushing, hand washing ----
+    // Inside the V4-06 game frame like the mic games: the same SceneKind::Game
+    // scene (GameView `sound` subtype, kid_app/sound_view.h), the same
+    // GameActive() guards, no new SceneKind. The rules live in kid_app
+    // (parrot_session / song_player / routine_timer, host-tested); this is
+    // only the wiring. Opened from the activity list (GameChoice::Parrot /
+    // Songs / ToothBrush / HandWash) or by the voice proposals; BOOT (talk)
+    // and PWR (sleep) end them like any game (UpdateGame / HandleSleepAction).
+    //
+    // PRIVACY (parrot): the child's voice exists only in parrot_buffer_ (RAM,
+    // PSRAM, allocated when the parrot opens, wiped and freed when it ends)
+    // and in the 20 ms staging block of the playback task (scrubbed after
+    // every hand-over). The raw frame tap (scripts/v8_mic_frame_tap_patch.py)
+    // is armed only while the child holds the dial centre; nothing is written
+    // to flash or TF, logged or sent (only sample COUNTS are logged).
+    enum class SoundKind : uint8_t { None, Parrot, Songs, Brush, Wash };
+    SoundKind sound_kind_ = SoundKind::None;          // pet_input
+    kid_app::ParrotSession parrot_;                   // under parrot_mutex_
+    kid_app::SongPlayer songs_;                       // pet_input only
+    kid_app::RoutineTimer routine_;                   // pet_input only
+    kid_app::FreertosSongWorker song_worker_;
+    kid_app::GameView sound_published_{};             // pet_input
+    std::mutex parrot_mutex_;
+    int16_t* parrot_buffer_ = nullptr;                // pet_input (alloc / free)
+    std::atomic<bool> parrot_holding_{false};         // the dial centre edges belong to the parrot
+    std::atomic<uint32_t> parrot_play_gen_{0};
+    bool parrot_up_pending_ = false;                  // pet_input: debounce of the release
+    uint32_t parrot_up_at_ms_ = 0;
+    uint32_t parrot_takes_ = 0;
+    std::atomic<uint8_t> song_volume_{100};
+
+    static bool SongAudioBegin(uint64_t token, void* context) {
+        return StoryAudioBegin(token, context);
+    }
+    static bool SongAudioPush(uint64_t token, const int16_t* pcm, size_t count, void* context) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        if (!self || !self->pet_mode_.load() || self->sleep_active_.load() ||
+            Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
+            return false;
+        // Parent cap and quiet ceiling, then the player's own volume (fade-out,
+        // low volume for lullabies in quiet hours).
+        const uint32_t pct = static_cast<uint32_t>(self->StoryVolumePct()) * self->song_volume_.load() / 100;
+        if (count > self->story_scaled_.size()) return false;
+        for (size_t i = 0; i < count; ++i) self->story_scaled_[i] = pcm[i];
+        kid_app::ScalePcm(self->story_scaled_.data(), count, static_cast<uint8_t>(pct));
+        return Application::GetInstance().GetAudioService().TryQueueLocalStoryPcm(
+            token, self->story_scaled_.data(), count);
+    }
+    static void SongAudioCancel(void*) {
+        Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+    }
+    static void ParrotFrameSink(void* context, const int16_t* mono, size_t samples) {
+        auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+        std::lock_guard<std::mutex> lock(self->parrot_mutex_);
+        self->parrot_.Feed(mono, samples);
+    }
+
+    kid_app::ParrotContext ParrotCtx() {
+        kid_app::ParrotContext c;
+        c.quiet_hours = quiet_hours_.load();
+        c.low_battery = battery_.LowPower();
+        c.voice_active = Application::GetInstance().GetDeviceState() != kDeviceStateIdle;
+        return c;
+    }
+
+    kid_app::GameView SoundViewNow() {
+        const uint32_t now = NowMs();
+        switch (sound_kind_) {
+            case SoundKind::Parrot: {
+                std::lock_guard<std::mutex> lock(parrot_mutex_);
+                return kid_app::ParrotGameView(parrot_.View());
+            }
+            case SoundKind::Songs: return kid_app::SongGameView(songs_.View(now));
+            case SoundKind::Brush:
+            case SoundKind::Wash: return kid_app::RoutineGameView(routine_.View(now));
+            case SoundKind::None: break;
+        }
+        return kid_app::GameView{};
+    }
+
+    // Caller holds scene_state_mutex_ (PublishGameSceneLocked).
+    kid_app::GameView PublishableSoundView() {
+        sound_published_ = SoundViewNow();
+        return sound_published_;
+    }
+
+    // pet_input, every loop while a sound activity runs: publish when the
+    // picture really changed (the planner then budgets the partial refresh).
+    void PublishSoundIfChanged() {
+        if (!game_active_.load() || game_mode_ != GameMode::Sound) return;
+        const kid_app::GameView now_view = SoundViewNow();
+        if (now_view == sound_published_) return;
+        SceneStateLock lock(scene_state_mutex_);
+        if (game_active_.load()) PublishGameSceneLocked();
+    }
+
+    // The tones the routine cues use until the `routines` voice pack is read
+    // by pet_prompt (tools/sound_extras.py; docs/V8_SOUND_AND_ROUTINES.md).
+    static uint16_t RoutineCueTone(kid_app::RoutineCue cue) {
+        return cue == kid_app::RoutineCue::Start    ? kid_app::kGameTonePrompt
+               : cue == kid_app::RoutineCue::Middle ? kid_app::kMicClipBeat
+                                                    : kid_app::GameArtTone(static_cast<uint16_t>(kid_app::GameArt::Star));
+    }
+
+    // pet_input. Songs on the card: every /sdcard/books/song_*.kpb and lullaby_*.kpb.
+    void ScanSongs(kid_app::SongCatalog* catalog) {
+        catalog->Clear();
+        DIR* dir = opendir("/sdcard/books");
+        if (!dir) return;
+        while (const dirent* entry = readdir(dir)) {
+            const size_t n = std::strlen(entry->d_name);
+            if (n < 5 || n >= kid_app::kSongIdBytes + 4) continue;
+            const char* ext = entry->d_name + n - 4;
+            if (!(ext[0] == '.' && (ext[1] | 0x20) == 'k' && (ext[2] | 0x20) == 'p' && (ext[3] | 0x20) == 'b'))
+                continue;
+            char stem[kid_app::kSongIdBytes + 1] = {};
+            for (size_t i = 0; i + 4 < n; ++i) {
+                const char c = entry->d_name[i];
+                stem[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;  // FAT may shout
+            }
+            catalog->Offer(stem);
+        }
+        closedir(dir);
+    }
+
+    void StartSound(SoundKind kind) {
+        const uint32_t now = NowMs();
+        kid_app::SongOutput song_out{};
+        kid_app::ParrotOutput parrot_out{};
+        kid_app::RoutineOutput routine_out{};
+        bool ok = false;
+        const char* name = "none";
+        switch (kind) {
+            case SoundKind::Parrot: {
+                name = "parrot";
+                // PSRAM only: 160 KB is too much for internal RAM.
+                parrot_buffer_ = static_cast<int16_t*>(heap_caps_calloc(
+                    kid_app::ParrotSession::kMaxSamples, sizeof(int16_t),
+                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (!parrot_buffer_) {
+                    ESP_LOGW(TAG, "PET_SOUND_REFUSED kind=parrot reason=no_psram");
+                    break;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(parrot_mutex_);
+                    parrot_.Bind(parrot_buffer_, kid_app::ParrotSession::kMaxSamples);
+                    ok = parrot_.Open(now, ParrotCtx(), &parrot_out);
+                    if (!ok) parrot_.Bind(nullptr, 0);
+                }
+                if (!ok) {
+                    heap_caps_free(parrot_buffer_);
+                    parrot_buffer_ = nullptr;
+                    ESP_LOGI(TAG, "PET_SOUND_REFUSED kind=parrot reason=%s",
+                             kid_app::ParrotHintName(parrot_out.hint));
+                } else {
+                    parrot_holding_.store(true);
+                    parrot_up_pending_ = false;
+                }
+                break;
+            }
+            case SoundKind::Songs: {
+                name = "songs";
+                kid_app::SongCatalog catalog;
+                const bool mounted = sound_sd_.load() == kSoundSdMounted;
+                if (mounted) ScanSongs(&catalog);
+                kid_app::SongContext context;
+                context.quiet_hours = quiet_hours_.load();
+                context.low_battery = battery_.LowPower();
+                context.voice_active = Application::GetInstance().GetDeviceState() != kDeviceStateIdle;
+                context.card_mounted = mounted;
+                ok = songs_.Open(now, context, catalog, &song_out);
+                if (ok && !song_worker_.Ready() &&
+                    !song_worker_.Start("/sdcard/books", {&SongAudioBegin, &SongAudioPush, &SongAudioCancel}, this))
+                    ESP_LOGW(TAG, "PET_SONG_AUDIO_UNAVAILABLE");
+                song_volume_.store(songs_.VolumePct(now));
+                if (ok)
+                    ESP_LOGI(TAG, "PET_SONGS_OPEN count=%u quiet=%d card=%d",
+                             static_cast<unsigned>(songs_.View(now).count), context.quiet_hours ? 1 : 0,
+                             mounted ? 1 : 0);
+                break;
+            }
+            case SoundKind::Brush:
+            case SoundKind::Wash:
+                name = kind == SoundKind::Brush ? "brush" : "wash";
+                if (battery_.LowPower()) {
+                    ESP_LOGI(TAG, "PET_SOUND_REFUSED kind=%s reason=low_battery", name);
+                    break;
+                }
+                ok = routine_.Open(kind == SoundKind::Brush ? kid_app::RoutineKind::Brush
+                                                            : kid_app::RoutineKind::Wash,
+                                   now, quiet_hours_.load(), &routine_out);
+                break;
+            case SoundKind::None:
+                break;
+        }
+        if (!ok) {
+            EndGame("start_failed");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            sound_kind_ = kind;
+            game_mode_ = GameMode::Sound;
+            game_active_.store(true);
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_SOUND_START kind=%s", name);
+    }
+
+    void StopSound() {
+        switch (sound_kind_) {
+            case SoundKind::Parrot: {
+                parrot_holding_.store(false);
+                parrot_play_gen_.fetch_add(1);  // the playback task stops at its next block
+                Application::GetInstance().GetAudioService().SetMicFrameTap(false, nullptr, nullptr);
+                Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+                {
+                    std::lock_guard<std::mutex> lock(parrot_mutex_);
+                    parrot_.Interrupt();
+                    parrot_.Bind(nullptr, 0);  // wipes the buffer once more
+                }
+                if (parrot_buffer_) heap_caps_free(parrot_buffer_);
+                parrot_buffer_ = nullptr;
+                parrot_up_pending_ = false;
+                break;
+            }
+            case SoundKind::Songs:
+                songs_.Interrupt();
+                if (song_worker_.Ready()) song_worker_.Close();
+                Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+                break;
+            case SoundKind::Brush:
+            case SoundKind::Wash:
+                routine_.Interrupt();
+                break;
+            case SoundKind::None:
+                break;
+        }
+        sound_kind_ = SoundKind::None;
+        sound_published_ = kid_app::GameView{};
+    }
+
+    // ---- parrot ----
+    // pet_input: the raw dial-centre edge (InputTaskLoop does not give it to
+    // InputHub while the parrot is open, so its 1 s "home" long press and the
+    // parent combo cannot fire while the child talks).
+    void HandleParrotEdge(bool down) {
+        const uint32_t now = NowMs();
+        if (down) {
+            if (parrot_up_pending_) {  // contact chatter: the same hold continues
+                parrot_up_pending_ = false;
+                return;
+            }
+            kid_app::ParrotOutput out;
+            {
+                std::lock_guard<std::mutex> lock(parrot_mutex_);
+                out = parrot_.Hold(true, now, ParrotCtx(), parrot_takes_++);
+            }
+            ApplyParrotOutput(out);
+        } else {
+            parrot_up_pending_ = true;
+            parrot_up_at_ms_ = now + 120;  // the hub's bounce window
+        }
+    }
+
+    void UpdateParrot() {
+        const uint32_t now = NowMs();
+        kid_app::ParrotOutput out;
+        if (parrot_up_pending_ && static_cast<int32_t>(now - parrot_up_at_ms_) >= 0) {
+            parrot_up_pending_ = false;
+            std::lock_guard<std::mutex> lock(parrot_mutex_);
+            out = parrot_.Hold(false, now, ParrotCtx(), 0);
+        } else {
+            std::lock_guard<std::mutex> lock(parrot_mutex_);
+            out = parrot_.Tick(now);
+        }
+        ApplyParrotOutput(out);
+    }
+
+    void ApplyParrotOutput(const kid_app::ParrotOutput& out) {
+        auto& audio = Application::GetInstance().GetAudioService();
+        if (out.start_mic) {
+            audio.SetMicFrameTap(true, &ParrotFrameSink, this);
+            ESP_LOGI(TAG, "PET_PARROT_REC armed=1");
+        }
+        if (out.stop_mic) {
+            audio.SetMicFrameTap(false, nullptr, nullptr);
+            size_t samples = 0;
+            {
+                std::lock_guard<std::mutex> lock(parrot_mutex_);
+                samples = parrot_.Recorded();
+            }
+            ESP_LOGI(TAG, "PET_PARROT_REC armed=0 samples=%u", static_cast<unsigned>(samples));
+        }
+        if (out.hint != kid_app::ParrotHint::None)
+            ESP_LOGI(TAG, "PET_PARROT_HINT hint=%s", kid_app::ParrotHintName(out.hint));
+        if (out.play) StartParrotPlayback();
+        if (out.leave) EndGame("parrot_done");
+    }
+
+    // One short task per take: Render -> software volume -> the single
+    // AudioService PCM queue (like the prompts); the staging block is
+    // scrubbed after every hand-over and at the end.
+    void StartParrotPlayback() {
+        parrot_play_gen_.fetch_add(1);
+        if (xTaskCreate([](void* context) {
+                auto* self = static_cast<WaveshareEsp32s3ePaper3inch97*>(context);
+                self->ParrotPlayLoop();
+                vTaskDelete(nullptr);
+            }, "pet_parrot", 4096, this, 2, nullptr) != pdPASS) {
+            std::lock_guard<std::mutex> lock(parrot_mutex_);
+            parrot_.PlaybackRefused();
+            ESP_LOGW(TAG, "PET_PARROT_PLAY_FAILED reason=task");
+        }
+    }
+
+    void ParrotPlayLoop() {
+        const uint32_t gen = parrot_play_gen_.load();
+        auto& audio = Application::GetInstance().GetAudioService();
+        const uint64_t session = (uint64_t{0x50415252u} << 32) | gen;  // "PARR"
+        int16_t chunk[480];
+        size_t total = 0;
+        {
+            std::lock_guard<std::mutex> lock(parrot_mutex_);
+            total = parrot_.PlaybackSamples();
+        }
+        bool started = false;
+        for (int i = 0; i < 80 && !started; ++i) {  // older audio drains first
+            if (parrot_play_gen_.load() != gen || !PromptAllowed(false)) break;
+            started = audio.BeginLocalStoryPcm(session);
+            if (!started) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        size_t offset = 0;
+        bool failed = !started;
+        while (started && offset < total) {
+            if (parrot_play_gen_.load() != gen) {
+                failed = true;
+                break;
+            }
+            size_t n = 0;
+            {
+                std::lock_guard<std::mutex> lock(parrot_mutex_);
+                n = parrot_.Render(offset, chunk, 480);  // wipes with the last block
+            }
+            if (n == 0) {
+                failed = offset < total;
+                break;
+            }
+            const uint8_t volume = PromptVolumePct();
+            kid_app::ScalePcm(chunk, n, volume);
+            int stalls = 0;
+            while (!audio.TryQueueLocalStoryPcm(session, chunk, n)) {
+                if (parrot_play_gen_.load() != gen || !PromptAllowed(false) || ++stalls > 50) {
+                    failed = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            kid_app::ParrotSession::Scrub(chunk, n);
+            if (failed) break;
+            offset += n;
+        }
+        kid_app::ParrotSession::Scrub(chunk, 480);
+        if (failed && parrot_play_gen_.load() == gen) {
+            std::lock_guard<std::mutex> lock(parrot_mutex_);
+            parrot_.PlaybackRefused();  // refused / stuck: wipe, ready again
+        }
+        ESP_LOGI(TAG, "PET_PARROT_PLAY samples=%u done=%d", static_cast<unsigned>(total), failed ? 0 : 1);
+    }
+
+    // ---- songs ----
+    void ApplySongOutput(const kid_app::SongOutput& out) {
+        if (out.hint != kid_app::SongHint::None)
+            ESP_LOGI(TAG, "PET_SONGS_HINT hint=%s", kid_app::SongHintName(out.hint));
+        if (out.stop_audio) {
+            if (song_worker_.Ready()) song_worker_.Stop();
+            Application::GetInstance().GetAudioService().CancelLocalStoryPcm();
+        }
+        if (out.load) {
+            const char* id = songs_.Chosen().id;
+            const bool opened = song_worker_.Ready() && song_worker_.Open(id);
+            ESP_LOGI(TAG, "PET_SONGS_LOAD id=%s ok=%d", id, opened ? 1 : 0);
+            if (!opened) ApplySongOutput(songs_.Loaded(0, NowMs()));
+        }
+        if (out.play_page) {
+            ESP_LOGI(TAG, "PET_SONGS_PLAY page=%u/%u bedtime=%d", static_cast<unsigned>(out.play_page),
+                     static_cast<unsigned>(songs_.Pages()), songs_.Bedtime() ? 1 : 0);
+            if (song_worker_.Ready()) song_worker_.Play(out.play_page);
+        }
+        if (out.sleep_now) {
+            ESP_LOGI(TAG, "PET_SONGS_TIMER_DONE");
+            HandleSleepAction(sleep_flow_.Request(NowMs()));  // the one sleep flow (3 s to cancel)
+        }
+        if (out.leave && game_active_.load()) EndGame("songs_done");
+    }
+
+    void UpdateSongs() {
+        const uint32_t now = NowMs();
+        if (quiet_hours_.load() != songs_.Quiet()) ApplySongOutput(songs_.SetQuiet(quiet_hours_.load(), now));
+        if (!game_active_.load() || sound_kind_ != SoundKind::Songs) return;
+        uint16_t value = 0;
+        switch (song_worker_.TakeEvent(&value)) {
+            case kid_app::FreertosSongWorker::Event::Opened:
+                ApplySongOutput(songs_.Loaded(value > 255 ? 255 : static_cast<uint8_t>(value), now));
+                break;
+            case kid_app::FreertosSongWorker::Event::OpenFailed:
+                ApplySongOutput(songs_.Loaded(0, now));
+                break;
+            case kid_app::FreertosSongWorker::Event::PageDone:
+                ApplySongOutput(songs_.PageFinished(now));
+                break;
+            case kid_app::FreertosSongWorker::Event::None:
+                break;
+        }
+        if (!game_active_.load() || sound_kind_ != SoundKind::Songs) return;
+        song_volume_.store(songs_.VolumePct(now));
+        ApplySongOutput(songs_.Tick(now));
+    }
+
+    // ---- brushing / washing ----
+    void ApplyRoutineOutput(const kid_app::RoutineOutput& out) {
+        if (out.cue != kid_app::RoutineCue::None) PostGameClip(RoutineCueTone(out.cue));
+        if (out.completed) {
+            // One Device-source care interaction (the dial press started it).
+            // The care store (V8-01) takes this record; until it is wired
+            // it is only logged. Voice / Network never produce one.
+            kid_app::RoutineCareRecord record;
+            if (routine_.TakeRecord(&record))
+                ESP_LOGI(TAG, "PET_CARE_ROUTINE kind=%s seconds=%u source=device posted=0",
+                         kid_app::RoutineKindName(record.kind),
+                         static_cast<unsigned>(record.seconds));
+        }
+        if (out.leave && game_active_.load()) EndGame("routine_done");
+    }
+
+    // pet_input: the dial while a sound activity runs.
+    void HandleSoundInput(kid_app::GameInput input) {
+        const uint32_t now = NowMs();
+        switch (sound_kind_) {
+            case SoundKind::Parrot: {
+                kid_app::ParrotOutput out;
+                {
+                    std::lock_guard<std::mutex> lock(parrot_mutex_);
+                    out = parrot_.Input(input, now);
+                }
+                ApplyParrotOutput(out);
+                break;
+            }
+            case SoundKind::Songs:
+                ApplySongOutput(songs_.Input(input, now));
+                break;
+            case SoundKind::Brush:
+            case SoundKind::Wash:
+                ApplyRoutineOutput(routine_.Input(input, now));
+                break;
+            case SoundKind::None:
+                break;
+        }
+        PublishSoundIfChanged();
+    }
+
+    // pet_input, every loop (UpdateGame has already ended the activity for a
+    // voice session or Pet mode off).
+    void UpdateSound() {
+        switch (sound_kind_) {
+            case SoundKind::Parrot: UpdateParrot(); break;
+            case SoundKind::Songs: UpdateSongs(); break;
+            case SoundKind::Brush:
+            case SoundKind::Wash:
+                ApplyRoutineOutput(routine_.Tick(NowMs()));
+                break;
+            case SoundKind::None:
+                break;
+        }
+        PublishSoundIfChanged();
     }
 
     // ---- V4-08 microphone games (blow the candles, clap the rhythm back) ----
@@ -3858,6 +4386,13 @@ def patch_board(text: str) -> str:
         '#include "kid_app/freertos_story_pcm_worker.h"\n'
         '#include "kid_app/book_reader.h"\n'
         '#include "kid_app/memory_store.h"\n'
+        '#include "kid_app/sound_view.h"\n'
+        '#include "kid_app/parrot_session.h"\n'
+        '#include "kid_app/song_player.h"\n'
+        '#include "kid_app/routine_timer.h"\n'
+        '#include "kid_app/freertos_song_worker.h"\n'
+        '#include "esp_heap_caps.h"\n'
+        '#include <dirent.h>\n'
         '#include <cstring>',
         "board headers")
     text = once(text, "    void InitializeButtons() {",
@@ -4001,6 +4536,7 @@ def run(source: Path) -> None:
         patch_audio_h, patch_audio_cc, patch_application_cc,
     )
     from scripts import v4_mic_tap_patch  # V4-08: loudness-only microphone tap
+    from scripts import v8_mic_frame_tap_patch  # V8 parrot: raw frames, RAM-only buffer
 
     cmake = source / "main/CMakeLists.txt"
     header = source / BOARD_REL / "custom_lcd_display.h"
@@ -4018,10 +4554,10 @@ def run(source: Path) -> None:
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
         board_config: patch_board_config(board_config.read_text(encoding="utf-8")),
-        audio_h: v4_mic_tap_patch.patch_audio_h(
-            patch_audio_h(audio_h.read_text(encoding="utf-8"))),
-        audio_cc: v4_mic_tap_patch.patch_audio_cc(
-            patch_audio_cc(audio_cc.read_text(encoding="utf-8"))),
+        audio_h: v8_mic_frame_tap_patch.patch_audio_h(v4_mic_tap_patch.patch_audio_h(
+            patch_audio_h(audio_h.read_text(encoding="utf-8")))),
+        audio_cc: v8_mic_frame_tap_patch.patch_audio_cc(v4_mic_tap_patch.patch_audio_cc(
+            patch_audio_cc(audio_cc.read_text(encoding="utf-8")))),
         application_cc: patch_application_cc(application_cc.read_text(encoding="utf-8")),
     }
     src = ROOT / "firmware/components/kid_app"

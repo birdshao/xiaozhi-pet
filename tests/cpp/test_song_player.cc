@@ -115,6 +115,9 @@ int main() {
         for (uint32_t t = 1000; t <= 1000 + 60000; t += 500)
             if (p.Tick(t).redraw) ++redraws;
         assert(redraws == 10);  // 60 s / 6 s
+        for (uint32_t t = 61000; t <= 61000 + 600000; t += 500)
+            if (p.Tick(t).redraw) ++redraws;
+        assert(redraws == SongPlayer::kMaxSwayFrames);  // then TuanTuan sits still
         assert(p.View(61000).sway < 4);
     }
 

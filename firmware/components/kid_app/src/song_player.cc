@@ -181,6 +181,7 @@ SongOutput SongPlayer::Loaded(uint8_t pages, uint32_t now_ms) {
     pages_ = pages;
     page_ = 1;
     sway_ = 0;
+    sway_frames_ = 0;
     sway_ms_ = now_ms;
     end_ms_ = now_ms + static_cast<uint32_t>(timer_minutes_) * 60000u;
     o.play_page = page_;
@@ -235,7 +236,8 @@ SongOutput SongPlayer::Tick(uint32_t now_ms) {
                 timer_minutes_ = 0;
                 break;
             }
-            if (static_cast<uint32_t>(now_ms - sway_ms_) >= kSwayMs) {
+            if (sway_frames_ < kMaxSwayFrames && static_cast<uint32_t>(now_ms - sway_ms_) >= kSwayMs) {
+                ++sway_frames_;
                 sway_ms_ = now_ms;
                 sway_ = static_cast<uint8_t>((sway_ + 1) % 4);
                 o.redraw = true;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kid_app/game_view.h"
+#include "kid_app/sound_view.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +32,8 @@ enum class GameChoice : uint8_t {
     // V8 play menu additions (session ①).
     Stickers = 12,
     // Other sessions: append here (13, 14, ...).
+    // V8 sound (session 3, sound_view.h): ids 31..34, pictures SoundArt 401..405.
+    Parrot = 31, Songs = 32, ToothBrush = 33, HandWash = 34,
 };
 
 enum class ActivityGroup : uint8_t { Play, Care };
@@ -67,7 +70,17 @@ constexpr Activity kActivities[] = {
      ActivityNeeds::Mic, "candle"},
     {GameChoice::Clap, ActivityGroup::Play, static_cast<uint16_t>(MicArt::Hand),
      ActivityNeeds::Mic, "clap"},
+    // V8 sound (session 3): the parrot and the song player.
+    {GameChoice::Parrot, ActivityGroup::Play, static_cast<uint16_t>(SoundArt::Parrot),
+     ActivityNeeds::Mic, "parrot"},
+    {GameChoice::Songs, ActivityGroup::Play, static_cast<uint16_t>(SoundArt::Song),
+     ActivityNeeds::None, "songs"},
     // ---- other sessions: append Play rows above this line ----
+    // V8 sound (session 3) care routines: tooth brushing (2 min), hand washing (20 s).
+    {GameChoice::ToothBrush, ActivityGroup::Care, static_cast<uint16_t>(SoundArt::ToothBrush),
+     ActivityNeeds::None, "tooth_brush"},
+    {GameChoice::HandWash, ActivityGroup::Care, static_cast<uint16_t>(SoundArt::HandWash),
+     ActivityNeeds::None, "hand_wash"},
 };
 constexpr size_t kActivityRows = sizeof(kActivities) / sizeof(kActivities[0]);
 
@@ -109,7 +122,9 @@ constexpr bool ActivityTableValid() {
     for (size_t i = 0; i < kActivityRows; ++i) {
         const Activity& a = kActivities[i];
         if (a.id == GameChoice::None || !a.name || !a.art) return false;
-        if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art)) return false;
+        if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art) &&
+            !SoundArtValid(a.art))
+            return false;
         for (size_t j = 0; j < i; ++j)
             if (kActivities[j].id == a.id) return false;
     }

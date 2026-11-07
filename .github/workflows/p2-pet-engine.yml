@@ -7,6 +7,7 @@ on:
       - 'tests/cpp/test_parrot_session.cc'
       - 'tests/cpp/test_song_player.cc'
       - 'tests/cpp/test_routine_timer.cc'
+      - 'tests/cpp/test_sound_view.cc'
       - 'tests/cpp/test_pet_controller.cc'
       - 'tests/cpp/test_sound_pack.cc'
       - 'tools/sound_pack.py'

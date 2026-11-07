@@ -148,11 +148,14 @@ VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
             if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
             if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
             return Proposed(VoiceProposal::OpenGame);
-        case VoiceCommand::PlaySong:
+        case VoiceCommand::PlaySong: {
             if (!at_home) return Refused(VoiceHint::Busy, "busy");
-            if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
             if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
-            return Proposed(VoiceProposal::PlaySong);
+            // Quiet hours: the player opens with lullabies only, at low volume.
+            VoiceDecision d = Proposed(VoiceProposal::PlaySong);
+            d.silent = c.quiet_hours;
+            return d;
+        }
         case VoiceCommand::StartBrush:
         case VoiceCommand::StartWash: {
             if (!at_home) return Refused(VoiceHint::Busy, "busy");

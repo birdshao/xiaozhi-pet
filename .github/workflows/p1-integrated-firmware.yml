@@ -28,6 +28,8 @@ on:
       - 'tests/test_v4_book_reader.py'
       - 'tests/test_v4_mic_games.py'
       - 'scripts/v4_mic_tap_patch.py'
+      - 'scripts/v8_mic_frame_tap_patch.py'
+      - 'tests/test_v8_sound_wiring.py'
       - 'tools/make_reader_test_book.py'
       - 'scripts/p4_audio_queue_patch.py'
       - 'scripts/p0_*'

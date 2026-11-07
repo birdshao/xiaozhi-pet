@@ -89,12 +89,16 @@ struct SongView {
 class SongPlayer {
 public:
     static constexpr uint32_t kSwayMs = 6000;        // one partial refresh per step
+    // The panel budgets partial refreshes per region (refresh_planner.h): after
+    // this many frames TuanTuan sits still, so a 30-minute lullaby never forces
+    // a flashing full refresh while the child falls asleep.
+    static constexpr uint8_t kMaxSwayFrames = 24;
     static constexpr uint32_t kFadeMs = 30000;       // last 30 s of a lullaby
     static constexpr uint8_t kFadeFloorPct = 35;
     static constexpr uint8_t kQuietVolumePct = 30;   // same as the quiet prompt volume
     static constexpr uint32_t kNoSongsMs = 15000;    // hint picture, then quietly home
     static constexpr uint32_t kIdleExitMs = 120000;  // list or timer left alone
-    static constexpr uint32_t kLoadTimeoutMs = 10000;
+    static constexpr uint32_t kLoadTimeoutMs = 90000;  // opening checks every CRC of the book
     static constexpr std::array<uint8_t, 3> kTimerMinutes = {10, 20, 30};
     static constexpr size_t kDefaultTimer = 1;       // 20 minutes
 
@@ -145,6 +149,7 @@ private:
     uint8_t pages_ = 0;
     uint8_t page_ = 0;
     uint8_t sway_ = 0;
+    uint8_t sway_frames_ = 0;
     uint32_t phase_ms_ = 0;     // when the phase began
     uint32_t last_input_ms_ = 0;
     uint32_t sway_ms_ = 0;

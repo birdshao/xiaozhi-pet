@@ -13,9 +13,9 @@
 | 语音固定命令 6 个新命令 + “晚安”并入 `SLEEP_REQUEST`（设备端 `voice_command` + 服务端 `intent`） | 设备分发表 + 服务端 + 测试 |
 | 笑话库 32 条 `services/pet_learning/jokes.py` | 完成，待人工审核签字 |
 | 声音包规格与打包工具 `tools/sound_extras.py` | 完成（声音文件本身是 TODO） |
-| **板级接线**（场景绘制、`pet_input` 任务里接按键/麦克风/PCM 流、首页入口） | **未做**，见 §8 |
+| **板级接线**（`p1_integrate.py`：活动列表入口、场景绘制、拨轮按住、麦克风帧 tap、PCM 播放、歌曲 worker、语音提议） | 已接，**CI 固件编译验证、真机未验证**，见 §8 |
 
-不做板级接线的原因：`SceneKind`、`home_menu` 归会话①；按硬约束，其他会话在会话①合并前不能加场景和入口。核心都是纯类，接线是机械活（§8 给了每个类的调用顺序）。
+入口全部走会话①的“活动列表”（`activity_list.h`），**没有新增 `SceneKind`**：三个活动是 `SceneKind::Game` 场景的 `GameView.sound` 子类型（`sound_view.h`，`SceneComposer` 绘制）。GameChoice id 31–34，图片 `SoundArt` 401–405（会话③段 400–499）。
 
 ## 1. 鹦鹉学舌
 
@@ -71,7 +71,7 @@
 - **画面**：团团跟着摇摆，`sway` 0→1→2→3 每 **6 秒**一帧（局刷，远低于刷新门限），只在播放中。
 - **无歌提示**：与绘本 `no_book` 同风格：`SongMissing::NoSongs`（卡里没歌）/ `NoCard`（没卡）；提示句见素材清单 `song_none`。
 - 低电量、小智会话中拒绝打开（返回 `SongHint`）。
-- **安静时段（用户已决定）**：放行**摇篮曲**，其他（儿歌、游戏、鹦鹉等）仍不开放。安静时段里列表只剩摇篮曲，音量压到 30%（`kQuietVolumePct`，定时淡出也不会超过该上限），定时结束后照常走睡觉流程；卡里只有儿歌则显示“没有歌”。播放中进入安静时段：儿歌立即停止，摇篮曲继续（更轻）；`SongPlayer::SetQuiet()` 处理这一切。音频仲裁上用 `AudioCoordinator::StartLullaby()`（安静时段下唯一放行的流，`SetQuiet(true)` 不会停它；语音优先、PWR 仍能停）。语音“唱首歌”在安静时段仍被拒绝（服务端先回安静提示），摇篮曲只能用拨轮从列表打开。
+- **安静时段（用户已决定）**：放行**摇篮曲**，其他（儿歌、游戏、鹦鹉等）仍不开放。安静时段里列表只剩摇篮曲，音量压到 30%（`kQuietVolumePct`，定时淡出也不会超过该上限），定时结束后照常走睡觉流程；卡里只有儿歌则显示“没有歌”。播放中进入安静时段：儿歌立即停止，摇篮曲继续（更轻）；`SongPlayer::SetQuiet()` 处理这一切。音频仲裁上用 `AudioCoordinator::StartLullaby()`（安静时段下唯一放行的流，`SetQuiet(true)` 不会停它；语音优先、PWR 仍能停）。语音“唱首歌”在安静时段放行：服务端 `QUIET_OK` 含 `PLAY_SONG`，设备端打开只有摇篮曲的列表（没有摇篮曲则显示“没有歌”）。注意：首页“玩”入口在安静时段本来就打不开（V4-06 规则，未改），所以安静时段的摇篮曲入口是语音“唱首歌”。
 
 ## 3. 刷牙 2 分钟 / 洗手 20 秒
 
@@ -120,7 +120,7 @@
 | `ASK_NEEDS` | 提议；`generic` = 状态未知 | `busy` 提示 | `busy` | 只显示，不出声 | 照常 | 忽略 |
 | `TELL_JOKE` | 提议（笑） | `busy` | `busy` | 只显示，不出声 | 照常 | 忽略 |
 | `OPEN_GAME` | 提议 | `busy` | 已在游戏（`already`） | 拒绝 `quiet` | 拒绝 `low_battery` | 忽略 |
-| `PLAY_SONG` | 提议 | `busy` | `busy` | 拒绝 `quiet` | 拒绝 `low_battery` | 忽略 |
+| `PLAY_SONG` | 提议 | `busy` | `busy` | **放行**（只列摇篮曲、静音量；服务端 `QUIET_OK`） | 拒绝 `low_battery` | 忽略 |
 | `START_BRUSH` / `START_WASH` | 提议 | `busy` | `busy` | **允许**，只静音 | 拒绝 `low_battery` | 忽略 |
 
 新增日志 token：`result=low_battery`；`PET_VOICE_CMD` 可附 `proposal=<name>`（接线时加）。设备端另有 `VoiceHint::LowBattery` / `VoiceProposalName()`。
@@ -199,14 +199,25 @@
 31. 小海豚说：我会顶皮球。小海龟说：我会背着壳散步。海里每个朋友都有本领。
 32. 糖果对牙齿说：我很甜。牙齿说：你太甜了，我要先去刷刷牙再和你玩。
 
-## 8. 板级接线说明（给接线的人 / 会话①合并后）
+## 8. 板级接线（`scripts/p1_integrate.py`，已接）
 
-- **鹦鹉**：进入时 `Bind(psram_buf, 80000)` + `Open(...)`；输入任务把拨轮中键边沿转给 `Hold(down, now, ctx, seed)`，不转给 `InputHub`；麦克风 tap 在 `start_mic` 时武装，把 16 kHz 样本经队列交给 `Feed()`（**不得**进小智的上传/Opus 队列）；`play` 后用 `PlayCue(token)` 取得播放权，拒绝则 `PlaybackRefused()`，成功则以 480 样本/块调用 `Render()` 送本地 PCM 通路，再乘 `PromptVolumePct()`。
-- **播放器**：`SongCatalog::Offer` 扫描 `/sdcard/books`；`load` → 打开书并 `Loaded(PageCount)`；`play_page` → `StartStory(token)` + 现有故事 PCM worker；流结束 → `PageFinished()`；`sleep_now` → `HandleSleepAction(sleep_flow_.Request(...))`；`VolumePct()` 乘在每块上。
-- **计时器**：`Open` → 画 `View()`；`Tick` 约每秒一次；`redraw` 才触发局刷并走刷新门；`cue` 对应 `routines` 包 clip，没有包走 chime；`completed` 后 `TakeRecord()` 交给会话①。
-- **BOOT / PWR**：进入新活动前后都保持原行为；BOOT → `Interrupt()` 后再让小智接管；PWR → `AudioCoordinator::StopAll()` + 各活动 `Interrupt()` + 睡觉流程。
-- 首页入口只往会话①的“活动列表”（`activity_list.h`，PR #102）追加行，不新增 `SceneKind`；#102 合并后再接（该表在 #107/#108 也被追加，等它们合并后 rebase 一次解决冲突）。
-- 接线时新增的 `PET_VOICE_CMD` 字段、`SelfTest` 步骤请同步更新 `docs/V6_VOICE_COMMANDS.md` 和 `tests/test_p1_integration_contract.py`。
+| 入口 | 位置 |
+|---|---|
+| 鹦鹉、儿歌/摇篮曲 | **玩**菜单（Play 组）：`GameChoice::Parrot = 31`、`Songs = 32` |
+| 刷牙、洗手 | **照顾**菜单（Care 组，菜单本身随 #108 合并）：`ToothBrush = 33`、`HandWash = 34`；语音“刷牙/洗手”不依赖该菜单，随时可开 |
+| 语音提议 | `UpdateVoiceCommand` 里按 `VoiceProposal` 分派：`OpenGame` → 游戏菜单；`PlaySong` → 播放器（安静时段只列摇篮曲）；`StartBrush/StartWash` → 打开“准备”界面；`AskNeeds/TellJoke` 只记日志（状态接口随会话①、笑话由服务端 TTS 播） |
+
+接线要点：
+
+- **按键**：鹦鹉打开时，`InputTaskLoop` 把拨轮中键的原始边沿交给 `HandleParrotEdge`，不交给 `InputHub`（所以 1 秒长按“回首页”和家长组合键都不会在录音时触发）；松开有 120 ms 去抖。BOOT、PWR 行为不变：BOOT → 设备状态离开 Idle → `UpdateGame` 里 `EndGame("voice")` → `StopSound()`；PWR → `HandleSleepAction` → `EndGame("sleep")`。
+- **麦克风**：`scripts/v8_mic_frame_tap_patch.py` 给固定版本的小智 `AudioService` 加一个“原始帧 tap”（排在 V4-08 的 RMS tap 之后）：一次交出一帧 10 ms 单声道，指针只在回调期间有效；语音处理开始时清除该位，所以不会和小智会话共用麦克风。只在孩子按住拨轮时武装。`tests/test_v8_sound_wiring.py` 在夹具和真实固定源码上应用该补丁并检查新增文本没有拷贝、队列、存储。
+- **录音缓冲**：打开鹦鹉时在 PSRAM 分配 160 KB（`heap_caps_calloc`），退出时先 `Bind(nullptr)`（再清零一次）后释放；任何结束原因（BOOT、PWR、拨轮离开、过久无人、Pet 模式关）都经 `EndGame → StopSound`。
+- **鹦鹉回放**：每次一个短任务 `pet_parrot`：`Render` → `PromptVolumePct()` → 小智唯一的本地 PCM 队列（与提示音同一通路），每块交出后 `Scrub`；被打断/被拒绝/卡住时 `PlaybackRefused()` 清零。
+- **歌曲**：`FreertosSongWorker`（一个任务，按请求打开/关闭 `/sdcard/books/<id>.kpb`，逐页走同一条 PCM 队列；打开时校验全书 CRC，加载界面最长等 90 秒）。扫描 `/sdcard/books` 的 `song_*`/`lullaby_*`；音量 = 家长上限 × 播放器音量（淡出、安静时段 30%）。定时到点：先停声音，再走 `sleep_flow_.Request()`。
+- **计时器**：`routine_.Tick` 每个主循环调用；`redraw` 靠画面变化比较（`GameView` 相等才不刷）；刷屏仍经刷新门与 `RefreshPlanner` 的分区预算。摇摆画面最多 24 帧后静止（见 §2），长摇篮曲不会触发整屏闪刷。
+- **计时提示音**：暂用游戏短音（`kMicClipStart`/`kMicClipBeat`/星星音）；`routines` 声音包里的语音提示句（§5）等 `pet_prompt` 读取该包后替换（TODO，素材就绪即可）。
+- **记账**：完成时日志 `PET_CARE_ROUTINE kind= seconds= source=device posted=0`；会话①的照顾存储合并后在这一行改为写账（Device 来源）。
+- 新日志：`PET_SOUND_START/REFUSED`、`PET_PARROT_REC/PLAY/HINT`（只有样本数，从不记录内容）、`PET_SONGS_OPEN/LOAD/PLAY/TIMER_DONE/HINT`、`PET_VOICE_PROPOSAL`。
 
 ## 9. 验收清单
 
@@ -220,6 +231,8 @@
 - ☑ 音频抢占：BOOT（`BeginVoice`）和 PWR（`StopAll`）能打断鹦鹉/歌曲，安静时段拒绝
 - ☑ 服务端新意图、问号规则、笑话库校验、安静时段先于命令
 - ☑ 声音包目录限制与 KPS1 往返
+- ☑ 场景：`test_sound_view`（各阶段画面不同、状态角落无墨、刷新规划看得见变化）；`test_v8_sound_wiring.py`（麦克风补丁与板端接线合约）
+- ☑ CI 固件编译（`p1-integrated-firmware`）
 
 需要真机验证：
 

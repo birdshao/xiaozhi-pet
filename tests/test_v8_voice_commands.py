@@ -89,7 +89,7 @@ class VoiceTurnNewCommands(VoiceBase):
 
     def test_quiet_hours_precede_new_commands(self):
         self.set_quiet()
-        for phrase in ("唱首歌", "讲个笑话", "刷牙", "洗手", "团团饿了吗", "玩游戏", "喂团团"):
+        for phrase in ("讲个笑话", "刷牙", "洗手", "团团饿了吗", "玩游戏", "喂团团"):
             data = self.say(phrase)
             self.assertEqual((data["kind"], data["action"], data["reason"]),
                              ("fixed", None, "quiet_hours"), phrase)
@@ -101,6 +101,9 @@ class VoiceTurnNewCommands(VoiceBase):
             self.assertEqual((data["kind"], data["action"]), ("local_command", "SLEEP_REQUEST"), phrase)
         self.assertEqual(self.say("晚安")["tts_text"], "晚安，做个好梦。")
         self.assertNotIn("GOOD_NIGHT", ACTIONS)
+        # "唱首歌" at night opens the lullaby-only player; the device filters.
+        data = self.say("唱首歌")
+        self.assertEqual((data["kind"], data["action"]), ("local_command", "PLAY_SONG"))
 
     def test_refusable_activities_get_a_neutral_confirmation(self):
         # The device may refuse (low battery, a book is open): the server never promises.

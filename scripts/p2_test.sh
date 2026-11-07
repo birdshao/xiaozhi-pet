@@ -70,6 +70,11 @@ CXX="${CXX:-g++}"
   "$ROOT/tests/cpp/test_routine_timer.cc" \
   -o "$BUILD/test_routine_timer"
 "$BUILD/test_routine_timer"
+
+# V8 sound scenes: the GameView `sound` subtype draws (no new SceneKind), the
+# activity rows, status corners stay clear, the planner sees every change.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/sound_view.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_controller.cc"   "$ROOT/tests/cpp/test_sound_view.cc"   -o "$BUILD/test_sound_view"
+"$BUILD/test_sound_view"
 "$BUILD/test_audio_coordinator"
 
 # E-paper full-refresh pacing and scene coalescing without any framebuffer heap.

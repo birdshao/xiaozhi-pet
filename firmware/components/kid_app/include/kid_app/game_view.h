@@ -64,16 +64,22 @@ struct GameView {
     uint8_t ball = 0;
     uint8_t hole = 0;
     bool hidden = false;
+    // V8 sound activities (sound_view.h): 0 = none; 1 parrot, 2 songs,
+    // 3 tooth brushing, 4 hand washing. sa..sd are their small fields.
+    uint8_t sound = 0;
+    uint8_t sa = 0, sb = 0, sc = 0, sd = 0;
 
     // Changes drawn below kGameRailTop.
     bool RailDiffers(const GameView& o) const {
         return option_count != o.option_count || highlight != o.highlight || options != o.options ||
-               motion != o.motion || ball != o.ball || hole != o.hole || hidden != o.hidden;
+               motion != o.motion || ball != o.ball || hole != o.hole || hidden != o.hidden ||
+               sound != o.sound || sa != o.sa || sb != o.sb || sc != o.sc || sd != o.sd;
     }
     // Changes drawn above it.
     bool QuestionDiffers(const GameView& o) const {
         return round != o.round || rounds != o.rounds || feedback != o.feedback ||
-               question_art != o.question_art || motion != o.motion || hidden != o.hidden;
+               question_art != o.question_art || motion != o.motion || hidden != o.hidden ||
+               sound != o.sound || sa != o.sa || sb != o.sb || sc != o.sc || sd != o.sd;
     }
     bool operator==(const GameView& o) const { return !RailDiffers(o) && !QuestionDiffers(o); }
     bool operator!=(const GameView& o) const { return !(*this == o); }
