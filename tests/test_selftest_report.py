@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tools.selftest_report import (apply_timescale, evaluate, expectations, plan, read_log,
-                                   sector_bytes)
+                                   run_order, sector_bytes)
 
 SCENARIO = """PETSELFTEST1
 # expect home_select 0,1,2
@@ -353,6 +353,28 @@ class SelfTestReportTests(unittest.TestCase):
             self.assertEqual(p["until"], "PET_SELFTEST_DONE", name)
             self.assertTrue(expectations(text), name)
             self.assertLessEqual(len(steps) - 2, 64, name)  # header and "end"
+
+    def test_scenarios_that_open_game_or_feed_pin_the_day_phase(self):
+        # Game / Feed refuse in the quiet hours (Feed then is the V7 plain feed:
+        # 2026-11-07 22:22 run, 241,242,242 and 5 commits), so they never
+        # depend on the wall clock.
+        for name in ("v2_home_rail", "v5_phrases", "v3_animations", "v7_ledger_persist",
+                     "v4_mini_game", "v4_motion_games", "v4_mic_games"):
+            _, steps = self._steps(name + ".pettest")
+            self.assertIn(["phase", "day"], steps, name)
+            self.assertLess(steps.index(["phase", "day"]), steps.index(["pet"]), name)
+
+    def test_power_off_scenarios_run_last_and_say_how_long_to_wait(self):
+        root = Path(__file__).resolve().parents[1] / "tools/selftest"
+        texts = {p.stem: p.read_text(encoding="ascii") for p in sorted(root.glob("*.pettest"))}
+        order = run_order(texts)
+        self.assertEqual(sorted(order), sorted(texts))
+        off = [name for name in order if plan(texts[name])["power_off"]]
+        self.assertTrue(off)
+        self.assertEqual(order[len(order) - len(off):], off)  # all of them at the end
+        self.assertIn("v2_sleep", off)
+        self.assertEqual(plan(texts["v2_sleep"])["wake_guard_s"], 60)
+        self.assertEqual(plan(texts["v4_book_missing"])["wake_guard_s"], 0)
 
     def test_v8_feed_is_three_presses_in_the_home_rail_scenarios(self):
         # Rail Feed -> care menu -> food picker -> the fish: the third press feeds
