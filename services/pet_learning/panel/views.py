@@ -14,6 +14,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Request
@@ -26,7 +27,7 @@ from ..auth import AuthError, CSRF_COOKIE, SESSION_COOKIE, SESSION_SECONDS
 from ..db import connect
 from ..pairing import DEVICE_RE, PAIRING_ID_RE, CODE_RE, PairingError
 # Notes are reached only through profile.py (the isolation test pins who imports notes.py).
-from ..profile import InitBody, NotesBody, NotesError, ProfileBody, ProfileError, Reauth, validate_notes
+from ..profile import InitBody, NotesError, ProfileBody, ProfileError, validate_notes
 from ..routers.parent import check_origin, client_ip
 from ..sync import SyncError, TOMBSTONED  # noqa: F401  (TOMBSTONED documents the tombstone states shown)
 from . import render
@@ -539,12 +540,6 @@ def create_router(app, database) -> APIRouter:
         return page(render.layout("家长备注", render.notes_page(device, data, panel.tz(), csrf), active="devices",
                                   csrf=csrf, notice=panel.notice(request)))
 
-    def proof_of(fields: dict[str, str]) -> Reauth:
-        return Reauth(password=fields.get("reauth_password", ""), otp=fields.get("reauth_otp", "").strip())
-
-    def step_up(request: Request, account: int, proof: Reauth) -> None:
-        request.app.state.parent_auth.reauth(account, proof.password, proof.otp, client_ip(request))
-
     @router.post("/devices/{device_id}/notes")
     async def notes_save(device_id: str, request: Request):
         got = await write(request)
@@ -570,16 +565,13 @@ def create_router(app, database) -> APIRouter:
                                       active="devices", csrf=csrf, notice=(ERRORS.get(code, "操作失败。"), "bad")),
                         status)
         try:
-            validate_notes(nickname, birthday, note)  # a malformed form never spends a TOTP step
+            validate_notes(nickname, birthday, note)
             service.require_device(device_id)
-            proof = proof_of(fields)
-            body = NotesBody(nickname=nickname, birthday=birthday, note=note, reauth=proof)
-            await run_in_threadpool(step_up, request, account, proof)
+            # The profile service reads only these three fields; the JSON API's step-up proof is not asked for here.
+            body = SimpleNamespace(nickname=nickname, birthday=birthday, note=note)
             service.put_notes(device_id, body, client_ip(request), f"parent:{account}")
-        except (NotesError, ProfileError, AuthError) as error:
+        except (NotesError, ProfileError) as error:
             return rerender(error.code, error.status)
-        except ValidationError:
-            return rerender("PARENT_REAUTH_FAILED", 401)
         return redirect(back, flash="notes_saved")
 
     @router.post("/devices/{device_id}/notes/delete")
@@ -595,12 +587,9 @@ def create_router(app, database) -> APIRouter:
         service = request.app.state.profile_service
         try:
             service.require_device(device_id, write=False)
-            await run_in_threadpool(step_up, request, account, proof_of(fields))
             service.delete_notes(device_id, client_ip(request), f"parent:{account}")
-        except (NotesError, ProfileError, AuthError) as error:
+        except (NotesError, ProfileError) as error:
             return service_error(error, back)
-        except ValidationError:
-            return service_error(AuthError(401, "PARENT_REAUTH_FAILED"), back)
         return redirect(back, flash="notes_deleted")
 
     # -- audit -----------------------------------------------------------

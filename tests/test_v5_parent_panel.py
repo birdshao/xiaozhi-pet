@@ -54,10 +54,6 @@ class PanelBase(S3Base):
             data.setdefault("csrf", self.csrf)
         return self.client.post(url, data=data, follow_redirects=False, headers=headers or {})
 
-    def proof_fields(self):
-        proof = self.proof()
-        return {"reauth_password": proof["password"], "reauth_otp": proof["otp"]}
-
     def expire_commands(self):
         self.table("SELECT 1")
         from services.pet_learning.db import connect
@@ -364,7 +360,7 @@ class PageTests(PanelBase):
 
     def test_notes_read_write_delete(self):
         self.assert_page(f"{BASE}/notes", "加密存储", "尚无备注")
-        fields = {"nickname": "小满", "birthday": "03-15", "note": "怕黑\n喜欢恐龙", **self.proof_fields()}
+        fields = {"nickname": "小满", "birthday": "03-15", "note": "怕黑\n喜欢恐龙"}
         saved = self.post(f"{BASE}/notes", fields)
         self.assertEqual(saved.status_code, 303, saved.text)
         html = self.assert_page(f"{BASE}/notes", "小满", "03-15", "怕黑", "喜欢恐龙")
@@ -372,34 +368,17 @@ class PageTests(PanelBase):
         self.assertNotIn("怕黑", raw)  # encrypted at rest
         self.assertIn("notes.update", [r[0] for r in self.table("SELECT action FROM audit_log")])
         self.assertNotIn("怕黑", str(self.table("SELECT * FROM audit_log")))
-        gone = self.post(f"{BASE}/notes/delete", self.proof_fields())
+        gone = self.post(f"{BASE}/notes/delete")
         self.assertEqual(gone.status_code, 303)
         self.assert_page(f"{BASE}/notes", "尚无备注")
         self.assertEqual(self.table("SELECT COUNT(*) FROM parent_notes"), [(0,)])
 
-    def test_notes_need_a_fresh_proof(self):
-        base = {"nickname": "小满", "birthday": "", "note": ""}
-        bad_password = self.post(f"{BASE}/notes", {**base, **self.proof_fields(), "reauth_password": "wrong-password-1"})
-        self.assertEqual(bad_password.status_code, 401)
-        self.assertIn("小满", bad_password.text)  # the typed values survive the error
-        self.assertNotIn("wrong-password-1", bad_password.text)
-        used = self.proof_fields()
-        self.assertEqual(self.post(f"{BASE}/notes", {**base, **used}).status_code, 303)
-        replay = self.post(f"{BASE}/notes", {**base, **used})
-        self.assertEqual(replay.status_code, 401)  # that TOTP step was already used
-        missing = self.post(f"{BASE}/notes", {**base, "nickname": "改过了"})
-        self.assertEqual(missing.status_code, 401)
-        self.assertEqual(self.app.state.profile_service.get_notes(DEVICE)["nickname"], "小满")
-        self.assertEqual(self.post(f"{BASE}/notes/delete", {}).status_code, 401)
-
-    def test_notes_validation_does_not_spend_a_proof(self):
-        proof = self.proof_fields()
-        bad = self.post(f"{BASE}/notes", {"nickname": "x" * 21, "birthday": "02-30", "note": "", **proof})
+    def test_notes_validation_errors_keep_the_form(self):
+        bad = self.post(f"{BASE}/notes", {"nickname": "x" * 21, "birthday": "02-30", "note": ""})
         self.assertEqual(bad.status_code, 422)
-        ok = self.post(f"{BASE}/notes", {"nickname": "小满", "birthday": "", "note": "", **proof})
-        self.assertEqual(ok.status_code, 303)
-        self.assertEqual(self.post(f"{BASE}/notes", {"nickname": "", "birthday": "", "note": "", **self.proof_fields()}
-                                   ).status_code, 422)
+        self.assertIn("备注内容不合法", bad.text)
+        self.assertEqual(self.post(f"{BASE}/notes", {"nickname": "", "birthday": "", "note": ""}).status_code, 422)
+        self.assertEqual(self.table("SELECT COUNT(*) FROM parent_notes"), [(0,)])
 
     def test_notes_without_key(self):
         self.settings = self.app.state.settings
@@ -456,7 +435,7 @@ class XssTests(PanelBase):
             db.execute("INSERT INTO audit_log(at,actor,action,target,result,ip) VALUES(?,?,?,?,?,?)",
                        (self.now, payloads[0], payloads[1], payloads[2], payloads[0], payloads[1]))
         notes = self.post(f"{BASE}/notes", {"nickname": "<b>x</b>&amp;", "birthday": "", "note": payloads[1] + payloads[2],
-                                            **self.proof_fields()})
+                                            })
         self.assertEqual(notes.status_code, 303)
         for url in ("/parent/devices", BASE, "/parent/audit", f"{BASE}/notes"):
             html = self.get(url).text
@@ -468,11 +447,10 @@ class XssTests(PanelBase):
         self.assertIn("&lt;b&gt;x&lt;/b&gt;&amp;amp;", self.get(f"{BASE}/notes").text)
 
     def test_rejected_notes_form_echoes_escaped(self):
-        bad = self.post(f"{BASE}/notes", {"nickname": "<i>a</i>", "birthday": "", "note": XSS,
-                                          "reauth_password": "nope-nope-nope", "reauth_otp": "123456"})
-        self.assertEqual(bad.status_code, 401)
+        bad = self.post(f"{BASE}/notes", {"nickname": "<i>" + "a" * 20 + "</i>", "birthday": "", "note": XSS})
+        self.assertEqual(bad.status_code, 422)
         self.assertNotIn("<script>", bad.text)
-        self.assertNotIn("<i>a</i>", bad.text)
+        self.assertNotIn("<i>a", bad.text)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", bad.text)
 
     def test_path_and_query_input_never_reflected(self):

@@ -139,14 +139,6 @@ def hidden(csrf: str, **fields: Any) -> Safe:
         f'<input type="hidden" name="{e(k)}" value="{e(v)}">' for k, v in fields.items()))
 
 
-def reauth_fields() -> Safe:
-    return Safe('<fieldset class="reauth"><legend>身份再确认</legend>'
-                '<label>密码<input name="reauth_password" type="password" required maxlength="256" '
-                'autocomplete="current-password"></label>'
-                '<label>新的动态验证码（6 位，需等到验证码刷新）<input name="reauth_otp" required maxlength="6" '
-                'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"></label></fieldset>')
-
-
 # -- devices -----------------------------------------------------------------
 
 def device_tabs(device_id: str, active: str) -> Safe:
@@ -372,15 +364,15 @@ def notes_page(device: dict, notes: dict | None, tz: str, csrf: str, values: dic
                 f'<label>孩子昵称（最多 20 字）<input name="nickname" maxlength="20" value="{e(v["nickname"])}"></label>'
                 f'<label>生日（月-日，如 03-15，不含年份）<input name="birthday" maxlength="5" value="{e(v["birthday"])}"></label>'
                 f'<label>备注（最多 500 字）<textarea name="note" rows="5" maxlength="500">{e(v["note"])}</textarea></label>'
-                f'{reauth_fields()}<button class="primary" type="submit">保存备注</button></form>')
+                f'<button class="primary" type="submit">保存备注</button></form>')
     delete = ""
     if notes["exists"]:
         delete = (f'<form method="post" action="/parent/devices/{e(device_id)}/notes/delete" '
-                  f'data-confirm="确定删除这份备注吗？">{hidden(csrf)}{reauth_fields()}'
+                  f'data-confirm="确定删除这份备注吗？">{hidden(csrf)}'
                   f'<button class="danger" type="submit">删除备注</button></form>')
     return Safe(f"""{device_tabs(device_id, 'notes')}
 <div class="card"><h2>家长备注</h2>
-<p class="hint">备注加密存储，只在家长面板里读写，不会同步给设备或语音服务。保存和删除需要再次输入密码和新的验证码。</p>
+<p class="hint">备注加密存储，只在家长面板里读写，不会同步给设备或语音服务。</p>
 <p>最近更新：{e(clock(notes['updated_at'], tz))}</p>{form}</div>
 <div class="card">{delete or '<p class="muted">尚无备注。</p>'}</div>""")
 
