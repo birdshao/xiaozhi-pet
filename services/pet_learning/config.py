@@ -83,9 +83,11 @@ class Settings:
                     or origin.password or origin.query or origin.fragment
                     or origin.path not in {"", "/"}):
                 raise ValueError("Production requires an HTTPS KID_PET_PUBLIC_ORIGIN")
+            if origin.hostname in {"localhost", "0.0.0.0"} or origin.hostname.endswith(".localhost"):
+                raise ValueError("Production KID_PET_PUBLIC_ORIGIN must not be a loopback name")
             if not self.totp_key or not self.trusted_proxy:
                 raise ValueError("Production requires TOTP key and trusted proxy")
-        # S7 extends this hook with deployment/provider checks.
+        # Deployment/provider checks live in ops.check_deployment (admin check-config).
 
     def voice_peer_networks(self):
         try:

@@ -1,0 +1,24 @@
+# Child-mode base for upstream's data/.config.yaml (deep-merged over upstream config.yaml).
+# entrypoint.py adds server.auth_key and server.websocket from the environment, applies
+# XZ_*_MODULE and XZ__* overrides, then refuses to start unless xz_checklist passes.
+server:
+  ip: 0.0.0.0
+  port: 8000
+  http_port: 8003
+  auth:
+    enabled: true            # WS requires a signed token, but at the pinned commit /xiaozhi/ota/ hands one to ANY
+                             # caller (any device-id header), so this is NOT per-device pairing: keep it rate-limited
+    allowed_devices: []      # whitelisted devices would skip the token check
+  mqtt_gateway: null
+  udp_gateway: null
+read_config_from_api: false  # no manager-api => no chat-history / audio reports
+delete_audio: true
+enable_greeting: false       # no model-generated greeting
+selected_module:
+  VAD: SileroVAD
+  ASR: SherpaParaformerASR   # local, small enough for 3 GB; child audio stays on the box
+  LLM: ChatGLMLLM
+  VLLM: ChatGLMVLLM
+  TTS: EdgeTTS
+  Memory: nomem              # no XiaoZhi memory
+  Intent: nointent           # the child guard owns intent

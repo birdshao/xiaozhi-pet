@@ -1,0 +1,10 @@
+[Unit]
+Description=pet-server daily encrypted backup and retention cleanup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pet/app/deploy
+ExecStart=/usr/bin/docker compose --env-file .env --profile ops run --rm --no-deps backup
+ExecStart=/usr/bin/docker compose --env-file .env --profile ops run --rm --no-deps cleanup
