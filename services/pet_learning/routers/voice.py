@@ -1,6 +1,8 @@
+import ipaddress
+import json
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import Field
 
 from ..models import EventBatch, QuizAnswer, StrictModel, VoiceQuery
@@ -61,11 +63,24 @@ def create_router(store, quiz, reader):
         scheme, _, token = (authorization or "").partition(" ")
         if scheme != "Bearer" or not turns.authorized(token):
             raise HTTPException(status_code=401, detail="VOICE_AUTH_REQUIRED")
-        # Internal-only: the public proxy must never carry this route (§3.3 N6).
+        # Internal-only allowlist: the public proxy must never carry this route (§3.3 N6).
+        settings = request.app.state.settings
         peer = request.client.host if request.client else ""
-        if (peer == request.app.state.settings.trusted_proxy
-                or "x-forwarded-for" in request.headers or "forwarded" in request.headers):
+        try:
+            address = ipaddress.ip_address(peer)
+        except ValueError:
+            address = None
+        if (address is None or str(address) == settings.trusted_proxy
+                or not any(address in net for net in settings.voice_peer_networks())
+                or any(name in request.headers for name in
+                       ("x-forwarded-for", "forwarded", "x-real-ip"))):
             raise HTTPException(status_code=403, detail="VOICE_INTERNAL_ONLY")
-        return turns.turn(device_id, await request.body())
+        body = await request.body()
+        content = json.dumps(turns.turn(device_id, body), ensure_ascii=False,
+                             separators=(",", ":")).encode("utf-8")
+        # The guard verifies this before speaking: a rogue host cannot make the pet talk.
+        return Response(content, media_type="application/json", headers={
+            "X-Voice-Signature": turns.sign(turns.turn_id_of(body), content),
+            "Cache-Control": "no-store"})
 
     return router

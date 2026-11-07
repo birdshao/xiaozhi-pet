@@ -7,6 +7,9 @@ never fall through to normal LLM streaming and unreviewed TTS.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import ipaddress
 import os
 import uuid
 from urllib.parse import urlsplit
@@ -22,23 +25,32 @@ def child_mode_enabled() -> bool:
     return os.getenv("KID_PET_CHILD_MODE", "").strip() == "1"
 
 
-DEFAULT_ALLOWED_HOSTS = "127.0.0.1,localhost,::1,pet-learning"
 _ALLOWED_KINDS = ("fixed", "approved_content", "fallback")
-
-
-def _allowed_hosts() -> frozenset[str]:
-    """Exact hostnames/IPs the guard may call; the compose service name is in the default."""
-    raw = os.getenv("KID_PET_API_ALLOWED_HOSTS", DEFAULT_ALLOWED_HOSTS)
-    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def _approved_local_url() -> str | None:
+    """Loopback, or a literal private/link-local IP (e.g. a pinned compose address).
+
+    No hostnames beyond loopback: a name could resolve to any LAN device, and
+    configuration must not be able to send child text or the token elsewhere.
+    """
     raw = os.getenv("KID_PET_API_URL", "http://127.0.0.1:8765").rstrip("/")
-    parsed = urlsplit(raw)
-    if (parsed.scheme != "http" or not parsed.hostname
-            or parsed.hostname.lower() not in _allowed_hosts()
-            or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or parsed.path not in ("", "/")):
+    try:
+        parsed = urlsplit(raw)
+        host = (parsed.hostname or "").lower()
+        parsed.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return None
+    if host not in _LOOPBACK_HOSTS:
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        if not (address.is_private or address.is_link_local) or address.is_unspecified:
+            return None
+    if (parsed.scheme != "http" or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
         return None
     return raw
 
@@ -59,15 +71,22 @@ async def _voice_reply(conn, text: str) -> str:
         return NOT_BOUND
     if not isinstance(text, str):
         return REVIEWED_FALLBACK
+    turn_id = uuid.uuid4().hex
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0),
                                      follow_redirects=False, trust_env=False) as client:
             response = await client.post(
                 base + "/v1/voice/" + business_id + "/turn",
                 headers={"Authorization": "Bearer " + token},
-                json={"text": text, "turn_id": uuid.uuid4().hex},
+                json={"text": text, "turn_id": turn_id},
             )
         response.raise_for_status()
+        # The reply must be signed with the shared voice token over turn_id + body,
+        # so only the real PetLearning service can make the pet speak.
+        expected = hmac.new(token.encode("utf-8"), turn_id.encode("ascii") + b"\n" + response.content,
+                            hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, response.headers.get("x-voice-signature", "")):
+            return NO_SERVICE
         data = response.json()
         if not isinstance(data, dict):
             return NO_SERVICE
@@ -77,7 +96,7 @@ async def _voice_reply(conn, text: str) -> str:
             return LOCAL_ACTION_HINT
         if kind in _ALLOWED_KINDS and isinstance(spoken, str) and 0 < len(spoken) <= 320:
             return spoken
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
         pass
     return NO_SERVICE
 

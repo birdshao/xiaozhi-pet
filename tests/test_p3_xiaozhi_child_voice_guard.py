@@ -1,6 +1,9 @@
 """Pure-mock and in-process HTTP tests. No real XiaoZhi server, secrets, child audio."""
 from __future__ import annotations
+import hashlib
+import hmac
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -105,32 +108,68 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await guard.handle_child_guard(self.conn, "喂食"))
         self.assertEqual(spoken[-1][1], guard.NOT_BOUND)
 
-    async def test_guard_forwards_text_and_speaks_returned_sentence(self):
-        sent = []
+    def signed(self, body, *, key=VOICE_TOKEN, raw=None):
+        """MockTransport handler that signs like PetLearning (or not, with a wrong key)."""
+        seen = []
 
         def handler(request):
-            sent.append((str(request.url), request.headers["authorization"], request.content))
-            return httpx.Response(200, json={"kind": "fixed", "tts_text": "现在是9点整。",
-                                             "action": None, "reason": "tell_time"})
+            turn_id = json.loads(request.content)["turn_id"]
+            content = raw if raw is not None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+            sig = hmac.new(key.encode(), turn_id.encode() + b"\n" + content, hashlib.sha256).hexdigest()
+            seen.append(request)
+            return httpx.Response(200, content=content, headers={"X-Voice-Signature": sig})
+        return handler, seen
+
+    async def speak_with(self, handler, text="几点了"):
         original_async = httpx.AsyncClient
         spoken, patched = self.fake_tts()
         with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
                 transport=httpx.MockTransport(handler))):
-            self.assertTrue(await guard.handle_child_guard(self.conn, "几点了"))
-        self.assertEqual(spoken[-1][1], "现在是9点整。")
-        self.assertEqual(sent[0][0], "http://127.0.0.1:8765/v1/voice/pet-unit-A/turn")
-        self.assertEqual(sent[0][1], "Bearer " + VOICE_TOKEN)
-        self.assertIn("几点了".encode("utf-8").decode("utf-8"), sent[0][2].decode("utf-8"))
+            self.assertTrue(await guard.handle_child_guard(self.conn, text))
+        return spoken[-1][1]
+
+    async def test_guard_forwards_text_and_speaks_returned_sentence(self):
+        handler, seen = self.signed({"kind": "fixed", "tts_text": "现在是9点整。",
+                                     "action": None, "reason": "tell_time"})
+        self.assertEqual(await self.speak_with(handler), "现在是9点整。")
+        request = seen[0]
+        self.assertEqual(str(request.url), "http://127.0.0.1:8765/v1/voice/pet-unit-A/turn")
+        self.assertEqual(request.headers["authorization"], "Bearer " + VOICE_TOKEN)
+        self.assertEqual(json.loads(request.content)["text"], "几点了")
 
     async def test_unexpected_kind_or_missing_text_is_fixed_error(self):
-        original_async = httpx.AsyncClient
         for body in ({"kind": "open_chat", "tts_text": "x"}, {"kind": "fixed"},
                      {"kind": "fixed", "tts_text": "x" * 321}, [1]):
+            handler, _ = self.signed(body)
+            self.assertEqual(await self.speak_with(handler, "你好"), guard.NO_SERVICE)
+
+    async def test_unsigned_or_wrongly_signed_reply_is_never_spoken(self):
+        body = {"kind": "fixed", "tts_text": "我是坏人说的话。", "action": None, "reason": "x"}
+        handler, _ = self.signed(body, key="another-secret-another-secret-another-1")
+        self.assertEqual(await self.speak_with(handler), guard.NO_SERVICE)
+        unsigned = lambda request: httpx.Response(200, json=body)
+        self.assertEqual(await self.speak_with(unsigned), guard.NO_SERVICE)
+        # A valid signature for a different turn_id (replay) is rejected too.
+        replay = lambda request: httpx.Response(200, content=json.dumps(body).encode(), headers={
+            "X-Voice-Signature": hmac.new(VOICE_TOKEN.encode(), b"0" * 32 + b"\n" + json.dumps(body).encode(),
+                                          hashlib.sha256).hexdigest()})
+        self.assertEqual(await self.speak_with(replay), guard.NO_SERVICE)
+
+    async def test_signed_local_command_still_says_use_the_buttons(self):
+        handler, _ = self.signed({"kind": "local_command", "tts_text": "好呀", "action": "PET_FEED",
+                                  "reason": "fixed_command"})
+        self.assertEqual(await self.speak_with(handler, "喂食"), guard.LOCAL_ACTION_HINT)
+
+    async def test_invalid_url_is_a_fixed_error_not_an_exception(self):
+        spoken, patched = self.fake_tts()
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=httpx.InvalidURL("bad")):
+            self.assertTrue(await guard.handle_child_guard(self.conn, "你好"))
+        self.assertEqual(spoken[-1][1], guard.NO_SERVICE)
+        with patch.dict(os.environ, {"KID_PET_BUSINESS_DEVICE_ID": "pet unit\n"}):
             spoken, patched = self.fake_tts()
-            with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
-                    transport=httpx.MockTransport(lambda r, b=body: httpx.Response(200, json=b)))):
+            with patched:
                 await guard.handle_child_guard(self.conn, "你好")
-            self.assertEqual(spoken[-1][1], guard.NO_SERVICE)
+        self.assertIn(spoken[-1][1], (guard.NOT_BOUND, guard.NO_SERVICE))
 
     async def test_missing_voice_token_or_device_token_only_fails_closed(self):
         spoken, patched = self.fake_tts()
@@ -138,26 +177,38 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             await guard.handle_child_guard(self.conn, "喂食")
         self.assertEqual(spoken[-1][1], guard.NOT_BOUND)
 
-    async def test_api_host_allowlist_is_configurable_and_admits_compose_service(self):
+    async def test_api_address_policy_is_fixed_in_code(self):
         self.assertEqual(guard._approved_local_url(), "http://127.0.0.1:8765")
-        with patch.dict(os.environ, {"KID_PET_API_URL": "http://pet-learning:8780"}):
-            self.assertEqual(guard._approved_local_url(), "http://pet-learning:8780")
-        with patch.dict(os.environ, {"KID_PET_API_URL": "http://pet-learning:8780",
-                                     "KID_PET_API_ALLOWED_HOSTS": "127.0.0.1"}):
-            self.assertIsNone(guard._approved_local_url())
-        with patch.dict(os.environ, {"KID_PET_API_URL": "http://other:1",
-                                     "KID_PET_API_ALLOWED_HOSTS": "OTHER"}):
-            self.assertEqual(guard._approved_local_url(), "http://other:1")
-        for bad in ("https://pet-learning", "http://u:p@pet-learning", "http://pet-learning/x",
-                    "http://pet-learning?a=1"):
+        for good in ("http://localhost:1", "http://[::1]:8780", "http://172.18.0.3:8780",
+                     "http://10.1.2.3", "http://192.168.1.9:80", "http://169.254.1.1:80"):
+            with patch.dict(os.environ, {"KID_PET_API_URL": good}):
+                self.assertEqual(guard._approved_local_url(), good, good)
+        for bad in ("https://127.0.0.1", "http://pet-learning:8780", "http://example.org",
+                    "http://8.8.8.8", "http://0.0.0.0:80", "http://127.0.0.1:99999",
+                    "http://127.0.0.1:abc", "http://u:p@127.0.0.1", "http://127.0.0.1/x",
+                    "http://127.0.0.1?a=1", "http://[::", "", "http://10.0.0.1.evil.com"):
             with patch.dict(os.environ, {"KID_PET_API_URL": bad}):
-                self.assertIsNone(guard._approved_local_url())
+                self.assertIsNone(guard._approved_local_url(), bad)
+        # The old env knob must not widen anything.
+        with patch.dict(os.environ, {"KID_PET_API_URL": "http://example.org",
+                                     "KID_PET_API_ALLOWED_HOSTS": "example.org"}):
+            self.assertIsNone(guard._approved_local_url())
+
+    def test_overlay_pin_matches_version_lock(self):
+        import json as _json
+        from scripts.p3_server_overlay import PINNED_SERVER_COMMIT
+        lock = _json.loads((ROOT / "version-lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(PINNED_SERVER_COMMIT, lock["voice_server"]["commit"])
+        doc = (ROOT / "docs" / "P3_XIAOZHI_VOICE_BRIDGE.md").read_text(encoding="utf-8")
+        self.assertIn(PINNED_SERVER_COMMIT, doc)
 
     def test_guard_module_is_thin(self):
         source = (ROOT / "integrations" / "xiaozhi_server" / "child_voice_guard.py").read_text(encoding="utf-8")
         self.assertIn("/v1/voice/", source)
         self.assertNotIn("/intent", source)
         self.assertNotIn("KID_PET_DEVICE_TOKEN", source)
+        self.assertNotIn("ALLOWED_HOSTS", source)
+        self.assertIn("compare_digest", source)
         self.assertNotRegex(source, r"(?m)^\s*(from|import)\s+(openai|anthropic|dashscope)")
 
     def test_overlay_is_strict_and_compiles(self):

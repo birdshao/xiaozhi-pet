@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import sqlite3
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from .db import connect
 from .intent import is_page_question, match_fixed
-from .store import BOOK_RE
+from .store import BOOK_RE, DEVICE_RE
 
 log = logging.getLogger("pet_learning.voice")
 
@@ -58,22 +59,26 @@ class ContextCache:
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, ttl: float = CONTEXT_TTL):
         self._clock, self._ttl, self._items = clock, ttl, {}
+        # PUT runs in a worker thread, turns on the event loop.
+        self._lock = threading.Lock()
 
     def put(self, device_id: str, context: PageContext) -> None:
-        now = self._clock()
-        self._items = {k: v for k, v in self._items.items() if v[0] > now}
-        if len(self._items) >= CONTEXT_MAX_ENTRIES and device_id not in self._items:
-            self._items.pop(min(self._items, key=lambda k: self._items[k][0]))
-        self._items[device_id] = (now + self._ttl, context)
+        with self._lock:
+            now = self._clock()
+            self._items = {k: v for k, v in self._items.items() if v[0] > now}
+            if len(self._items) >= CONTEXT_MAX_ENTRIES and device_id not in self._items:
+                self._items.pop(min(self._items, key=lambda k: self._items[k][0]))
+            self._items[device_id] = (now + self._ttl, context)
 
     def get(self, device_id: str) -> PageContext | None:
-        entry = self._items.get(device_id)
-        if entry is None:
-            return None
-        if entry[0] <= self._clock():
-            del self._items[device_id]
-            return None
-        return entry[1]
+        with self._lock:
+            entry = self._items.get(device_id)
+            if entry is None:
+                return None
+            if entry[0] <= self._clock():
+                del self._items[device_id]
+                return None
+            return entry[1]
 
 
 class LegacyPageSource:
@@ -127,7 +132,27 @@ class VoiceTurns:
         return hmac.compare_digest(hashlib.sha256(token.encode("utf-8")).digest(),
                                    hashlib.sha256(expected.encode("utf-8")).digest())
 
+    @staticmethod
+    def turn_id_of(body: bytes) -> str:
+        """The caller's turn_id if well formed, else "" (binds the response signature)."""
+        try:
+            value = json.loads(body).get("turn_id")
+        except (ValueError, AttributeError):
+            return ""
+        if isinstance(value, str) and 8 <= len(value) <= 64 and set(value) <= TURN_ID_CHARS:
+            return value
+        return ""
+
+    def sign(self, turn_id: str, payload: bytes) -> str:
+        """HMAC-SHA256 over turn_id + newline + payload, keyed by the voice token."""
+        key = self.settings.voice_token.encode("utf-8")
+        return hmac.new(key, turn_id.encode("ascii") + b"\n" + payload, hashlib.sha256).hexdigest()
+
     def turn(self, device_id: str, body: bytes) -> dict[str, Any]:
+        if not DEVICE_RE.fullmatch(device_id):
+            # No lookup and no audit row for ids that can never be a device.
+            log.info("voice_turn kind=fallback reason=unknown_device ms=0")
+            return reply("fallback", NOT_BOUND, "unknown_device")
         started = time.monotonic()
         try:
             result = self._decide(device_id, body)

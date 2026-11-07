@@ -1,7 +1,11 @@
 """S5 voice turn: fixed commands, quiet hours, page Q&A, token scope, fallbacks."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import threading
 import sqlite3
 from contextlib import closing
 import tempfile
@@ -37,7 +41,8 @@ COMMANDS = {
 NEAR_MISSES = [
     "我不想睡觉", "团团睡觉了吗", "睡觉", "下一页是什么", "不要下一页", "喂宠物吃糖", "喂鸭子",
     "我想回家", "回家吃饭", "讲故事给我听好不好", "几点了呀你说", "还有多少钱", "玩具", "梳头",
-    "next page", "ＮＥＸＴ", "", "。", "团团", "睡",
+    "喂，团团！", "喂 团团", "喂，宠物", "团团睡觉？", "团团睡觉?", "回家？", "梳毛？", "下一页？",
+    "喂团团？", "next page", "ＮＥＸＴ", "", "。", "团团", "睡",
 ]
 
 
@@ -63,7 +68,7 @@ class VoiceBase(unittest.TestCase):
         turns.clock = lambda: self.now
         turns.contexts = ContextCache(clock=lambda: self.mono)
         self.turns = turns
-        self.client = TestClient(self.app)
+        self.client = TestClient(self.app, client=("127.0.0.1", 5000))
 
     def tearDown(self):
         self.client.close()
@@ -107,6 +112,10 @@ class FixedCommandTests(VoiceBase):
                 self.assertEqual((data["kind"], data["action"]), ("local_command", action), phrase)
                 self.assertTrue(data["tts_text"])
         self.assertEqual(set(COMMANDS), set(ACTIONS))
+
+    def test_time_and_battery_questions_may_end_with_question_mark(self):
+        self.assertEqual(self.say("几点了？")["reason"], "tell_time")
+        self.assertEqual(self.say("还有多少电?")["reason"], "battery_unavailable")
 
     def test_required_sentences(self):
         self.assertEqual(self.say("团团睡觉")["tts_text"], "好的，我们准备睡觉啦。")
@@ -307,6 +316,71 @@ class TokenScopeTests(VoiceBase):
         with TestClient(app, client=("127.0.0.1", 5000)) as client:
             response = client.post(f"/v1/voice/{DEVICE}/turn", headers=VOICE, json={"text": "喂宠物"})
             self.assertEqual(response.status_code, 403)
+
+    def test_peer_allowlist_and_proxy_headers(self):
+        self.assertEqual(self.turn("喂宠物", headers={**VOICE, "X-Real-IP": "1.2.3.4"}).status_code, 403)
+        for peer, status in (("127.0.0.1", 200), ("::1", 200), ("10.0.0.5", 403), ("172.18.0.3", 403),
+                             ("8.8.8.8", 403), ("not-an-ip", 403)):
+            with TestClient(self.app, client=(peer, 5000)) as client:
+                response = client.post(f"/v1/voice/{DEVICE}/turn", headers=VOICE, json={"text": "喂宠物"})
+            self.assertEqual(response.status_code, status, peer)
+        settings = Settings(database=self.db, voice_token=VOICE_TOKEN,
+                            voice_allowed_peers="172.18.0.0/16, 127.0.0.1")
+        app = create_app(self.db, settings=settings)
+        for peer, status in (("172.18.0.3", 200), ("172.19.0.3", 403), ("127.0.0.1", 200)):
+            with TestClient(app, client=(peer, 5000)) as client:
+                response = client.post(f"/v1/voice/{DEVICE}/turn", headers=VOICE, json={"text": "喂宠物"})
+            self.assertEqual(response.status_code, status, peer)
+
+    def test_settings_reject_bad_peer_lists(self):
+        for bad in ("", " , ", "pet-learning", "10.0.0.0/99"):
+            with self.assertRaises(ValueError, msg=bad):
+                Settings(voice_allowed_peers=bad).validate()
+
+    def test_response_is_signed_over_turn_id_and_body(self):
+        turn_id = "c0ffee0123456789"
+        response = self.turn("喂宠物", turn_id=turn_id)
+        expected = hmac.new(VOICE_TOKEN.encode(), turn_id.encode() + b"\n" + response.content,
+                            hashlib.sha256).hexdigest()
+        self.assertEqual(response.headers["x-voice-signature"], expected)
+        self.assertEqual(json.loads(response.content)["action"], "PET_FEED")
+        other = self.turn("喂宠物", turn_id="deadbeef01234567")
+        self.assertNotEqual(other.headers["x-voice-signature"], response.headers["x-voice-signature"])
+        # Invalid turn_id still yields a signed (fixed) reply bound to the empty id.
+        bad = self.turn("喂宠物", turn_id="x")
+        self.assertEqual(bad.json()["reason"], "text_invalid")
+        self.assertEqual(bad.headers["x-voice-signature"], hmac.new(
+            VOICE_TOKEN.encode(), b"\n" + bad.content, hashlib.sha256).hexdigest())
+
+    def test_malformed_device_ids_never_reach_lookup_or_audit(self):
+        before = self.sql("SELECT COUNT(*) FROM audit_log")
+        for device in ("a", "..", "a b", "x" * 65, "-bad", "%00"):
+            response = self.client.post(f"/v1/voice/{device}/turn", headers=VOICE, json={"text": "喂宠物"})
+            if response.status_code == 404:
+                continue
+            self.assertEqual((response.json()["reason"], response.json()["action"]),
+                             ("unknown_device", None), device)
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM audit_log"), before)
+
+    def test_context_cache_is_thread_safe(self):
+        from services.pet_learning.voice import PageContext
+        cache = ContextCache(clock=lambda: 0.0)
+        errors = []
+
+        def worker(start):
+            try:
+                for index in range(300):
+                    cache.put(f"dev{start}-{index % 40}", PageContext("READER", 1))
+                    cache.get(f"dev{start}-{index % 40}")
+            except Exception as error:  # pragma: no cover - failure path
+                errors.append(error)
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(hasattr(cache, "_lock"))
 
     def test_settings_reject_short_voice_token_and_bad_timezone(self):
         with self.assertRaises(ValueError):

@@ -2,7 +2,7 @@
 
 This is a narrow, REVIEWABLE integration into the existing Python XiaoZhi voice server, not a replacement WebSocket/Opus/ASR/TTS server.
 
-Upstream reference: xinnan-tech/xiaozhi-esp32-server, commit f1965167cc2993556cd3e963f8657e2686006c77. The verified speech path is core/handle/receiveAudioHandle.py -> core/handle/intentHandler.py::handle_user_intent(conn,text) -> (if unhandled) ordinary LLM conversation. The existing speak_txt uses the normal XiaoZhi TTS queue. Our adapter inserts a **child-mode pre-LLM gate** in handle_user_intent; all ASR content is handled in child mode, including errors. Normal adult/non-child mode returns False and continues unchanged.
+Upstream reference: xinnan-tech/xiaozhi-esp32-server v0.9.8 (matches version-lock.json), commit 8f2dda09cf18f1c1ece0f906eee4cc2fabb7fb58. The verified speech path is core/handle/receiveAudioHandle.py -> core/handle/intentHandler.py::handle_user_intent(conn,text) -> (if unhandled) ordinary LLM conversation. The existing speak_txt uses the normal XiaoZhi TTS queue. Our adapter inserts a **child-mode pre-LLM gate** in handle_user_intent; all ASR content is handled in child mode, including errors. Normal adult/non-child mode returns False and continues unchanged.
 
 Implemented files:
 - integrations/xiaozhi_server/child_voice_guard.py: async read of local PetLearning intent API with a 3-second request timeout, exact hardware-device binding, one per-device bearer credential in environment, no raw transcript logging. Only a reviewed fixed reply or approved page reaches upstream speak_txt. Failed or unavailable API => fixed spoken error, **never fallback to LLM**.
@@ -13,7 +13,7 @@ Develop on a separate local clone of the pinned upstream commit and a separate l
 1. Set KID_PET_CHILD_MODE=1 only in the opted-in development server, else the guard returns False.
 2. Set KID_PET_UPSTREAM_DEVICE_ID to the board's actual XiaoZhi device-id header value, and KID_PET_BUSINESS_DEVICE_ID to its separately provisioned PetLearning device ID.
 3. Set KID_PET_VOICE_TOKEN securely (the voice-service token configured for PetLearning, separate from every device token; S5, see SERVER_S5.md). Keep it out of args, GitHub, device flash and logs.
-4. Set KID_PET_API_URL=http://127.0.0.1:8765. Hosts must be listed in KID_PET_API_ALLOWED_HOSTS (default: loopback and the compose service name pet-learning).
+4. Set KID_PET_API_URL=http://127.0.0.1:8765. Only loopback or a literal private/link-local IP is accepted (no hostnames); replies must carry a valid HMAC signature made with the voice token.
 5. Validate the disposable server checkout: python scripts/p3_server_overlay.py --source /path/to/xiaozhi-esp32-server/main/xiaozhi-server
 6. Only in the disposable source checkout, apply: python scripts/p3_server_overlay.py --source /path/to/xiaozhi-esp32-server/main/xiaozhi-server --apply
 7. In a controlled parent-supervised test, run the pinned upstream server with local PetLearning API.

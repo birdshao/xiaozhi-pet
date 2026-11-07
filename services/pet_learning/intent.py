@@ -121,9 +121,28 @@ PAGE_QA_PHRASES = frozenset(normalize_speech(p) for p in (
     "这一页讲了什么", "这页讲了什么", "当前页是什么", "读这一页", "这一页是什么"))
 
 
+def _is_command_shaped(text: str) -> bool:
+    """Reject utterances whose punctuation changes the meaning once stripped.
+
+    A question ("团团睡觉？") is not a command, and "喂，团团！" is a call for
+    attention, not "feed Tuantuan".
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    if "?" in folded:
+        return False
+    for index, char in enumerate(folded[:-1]):
+        if char == "喂" and unicodedata.category(folded[index + 1])[0] in "PZ":
+            return False
+    return True
+
+
 def match_fixed(text: str) -> FixedMatch | None:
     """Exact match of the normalised utterance against the reviewed whitelist."""
-    return _FIXED.get(normalize_speech(text))
+    match = _FIXED.get(normalize_speech(text))
+    # Questions about time/battery are natural ("几点了？"); only actions need the check.
+    if match is not None and match.kind == "local_command" and not _is_command_shaped(text):
+        return None
+    return match
 
 
 def is_page_question(text: str) -> bool:
