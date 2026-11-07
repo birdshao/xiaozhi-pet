@@ -6,6 +6,7 @@ on:
     paths:
       - 'services/**'
       - 'tests/test_v5_server_*.py'
+      - 'tests/s3_support.py'
       - 'tests/fixtures/memory/**'
       - 'tests/fixtures/sync/**'
       - 'tests/test_p3_pet_learning_api.py'
@@ -25,6 +26,7 @@ on:
     paths:
       - 'services/**'
       - 'tests/test_v5_server_*.py'
+      - 'tests/s3_support.py'
       - 'tests/fixtures/memory/**'
       - 'tests/fixtures/sync/**'
       - 'tests/test_p3_pet_learning_api.py'
