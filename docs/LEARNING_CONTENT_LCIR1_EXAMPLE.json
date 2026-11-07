@@ -1,0 +1,60 @@
+{
+  "schema_version": "LCIR1",
+  "item_uid": "global-asp:zh-0008:zh-Hans:local-adaptation",
+  "kind": "picture_book",
+  "title": "你在做什么？（导入结构样例）",
+  "locale": "zh-Hans",
+  "age_band": "3-5",
+  "content_id": 1001,
+  "revision": 1,
+  "skills": [
+    "language.action_verbs"
+  ],
+  "source": {
+    "provider": "global-asp",
+    "source_item_id": "zh/0008_你在做什么.md",
+    "source_url": "https://github.com/global-asp/global-asp/blob/master/zh/0008_%E4%BD%A0%E5%9C%A8%E5%81%9A%E4%BB%80%E4%B9%88.md",
+    "source_ref": "REPLACE_WITH_PINNED_GIT_SHA",
+    "license_id": "CC-BY-3.0",
+    "creators": {
+      "text": [
+        "Nina Orange"
+      ],
+      "illustration": [
+        "Wiehan de Jager"
+      ],
+      "translation": [
+        "dohliam"
+      ]
+    },
+    "source_files": [],
+    "attribution_required": true
+  },
+  "transformations": [
+    {
+      "kind": "epaper_layout",
+      "tool_version": "planned-1.0",
+      "notes": "800x480 contain; both 4-grey and 1-bit preview pending"
+    }
+  ],
+  "pages": [
+    {
+      "number": 1,
+      "text": "[原创结构占位句：待从已核实的源文本导入]",
+      "image": "UNRESOLVED_IMAGE",
+      "image_mode": "grey",
+      "audio": "UNGENERATED_AUDIO",
+      "skills": [
+        "language.action_verbs"
+      ],
+      "questions": []
+    }
+  ],
+  "review": {
+    "status": "draft",
+    "reviewer": null,
+    "checked_hash": null,
+    "checked_at": null,
+    "notes": "不可直接导出 KPB2；未取得/核验图片音频，尚未审核"
+  }
+}
