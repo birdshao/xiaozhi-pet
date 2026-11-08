@@ -8,6 +8,14 @@
 3. ``plan`` estimates how long the host has to monitor each scenario and
    which log line ends it (PET_SELFTEST_DONE, or the alarm boot after a
    power-off), so the runner need not use fixed worst-case durations.
+4. ``order`` prints the scenarios in the order a batch run must use: scenarios
+   that power off (sleep, ledger persist, morning) LAST. After an RTC-alarm
+   wake the firmware refuses to run a script for ``ALARM_WAKE_NOTE_S`` (60 s
+   of RTC time, also across a chip reset: kAlarmWakeNoteSeconds in
+   p1_integrate.py) so a trial cannot loop; the next scenario then logs
+   ``PET_SELFTEST_NONE reason=alarm_wake`` and is skipped (2026-11-07:
+   v4_book_missing after v2_sleep). If a power-off scenario cannot go last,
+   wait ``wake_guard_s`` after its alarm boot before flashing the next sector.
 
 ``--timescale N`` (all commands) rewrites the scenario's ``timescale`` step
 and its ``# expect timescale`` line: ``--timescale 100`` is the real-speed
@@ -95,6 +103,7 @@ CRITICAL_DEBOUNCE_MS = 6000   # 3 battery samples, 2 s apart (scaled)
 MARGIN_S = 10
 DONE_MARKER = "PET_SELFTEST_DONE"
 ALARM_BOOT_MARKER = "PET_SELFTEST_NONE reason=alarm_wake"
+ALARM_WAKE_NOTE_S = 60  # firmware: kAlarmWakeNoteSeconds (no script right after an alarm wake)
 
 
 def _scaled(ms: int, pct: int) -> int:
@@ -157,7 +166,15 @@ def plan(scenario: str) -> dict:
     return {"timescale": pct, "script_s": script_s, "power_off": power_off,
             "alarm_s": alarm_s if power_off else 0, "expect_s": expect_s,
             "monitor_s": monitor_s,
-            "until": ALARM_BOOT_MARKER if power_off else DONE_MARKER}
+            "until": ALARM_BOOT_MARKER if power_off else DONE_MARKER,
+            "wake_guard_s": ALARM_WAKE_NOTE_S if power_off else 0}
+
+
+def run_order(scenarios: dict[str, str]) -> list[str]:
+    """Names in a safe batch order: non-power-off scenarios first, the ones
+    that power off last (stable inside each group, by name)."""
+    keyed = sorted(scenarios, key=lambda name: (plan(scenarios[name])["power_off"], name))
+    return keyed
 
 
 def read_log(path: Path) -> str:
@@ -282,11 +299,20 @@ def main() -> int:
     p = sub.add_parser("plan", help="monitor seconds and end marker per scenario")
     p.add_argument("scenarios", type=Path, nargs="+")
     p.add_argument("--json", action="store_true")
+    o = sub.add_parser("order", help="safe batch run order (power-off scenarios last)")
+    o.add_argument("scenarios", type=Path, nargs="+")
     for cmd in (s, r, p):
         cmd.add_argument("--timescale", type=int, default=None,
                          help="run a time-scaled scenario at this %% (100 = real speed)")
     args = parser.parse_args()
 
+    if args.cmd == "order":
+        texts = {path.stem: path.read_text(encoding="ascii") for path in args.scenarios}
+        for name in run_order(texts):
+            row = plan(texts[name])
+            note = f"  (power-off: wait {row['wake_guard_s']} s after its alarm boot)"                 if row["power_off"] else ""
+            print(name + note)
+        return 0
     if args.cmd == "plan":
         rows = {path.stem: plan(apply_timescale(path.read_text(encoding="ascii"),
                                                 args.timescale))
