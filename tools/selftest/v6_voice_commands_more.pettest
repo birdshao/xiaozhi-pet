@@ -1,7 +1,8 @@
 PETSELFTEST1
 # V6-02 rest: PAGE_PREV, GO_HOME, PET_FEED, PET_GROOM and OPEN_GAME as
-# "vcmd" steps (the names self.pet.request passes on; XiaoZhi is idle here,
-# so nothing is deferred). Counted from "mark begin".
+# "vcmd" steps (the names self.pet.request passes on). OPEN_GAME comes while
+# a forced "listen" phase stands in for XiaoZhi talking: deferred, then
+# opened once the phase ends (later=1). Counted from "mark begin".
 # Needs: outside the quiet hours ("phase day" pins the day phase) and a
 # battery above the low level.
 # expect min:name=PAGE_PREV 2
@@ -20,7 +21,8 @@ PETSELFTEST1
 # expect min:kind=brush 1
 # expect min:PET_GAME_MENU 1
 # expect none:PET_CARE_RECORD 0
-# expect none:result=deferred 0
+# expect min:result=deferred 1
+# expect min:later=1 1
 # expect none:PET_SLEEP_REQUESTED 0
 # expect none:PET_SELFTEST_ABORT 0
 # expect selftest_done 1
@@ -56,8 +58,12 @@ vcmd PET_GROOM
 wait 6000
 vcmd GO_HOME
 wait 6000
-# Game menu opened by voice, home by voice.
+# Game menu asked for mid-chat: waits, opens after "voice off".
+voice listen
+wait 1500
 vcmd OPEN_GAME
+wait 3000
+voice off
 wait 6000
 vcmd GO_HOME
 wait 6000

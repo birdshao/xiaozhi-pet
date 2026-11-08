@@ -1128,10 +1128,9 @@ BOARD_WORKER = r'''
     // pet_input only: a screen activity (game menu, songs, routines, food
     // picker, brushing) asked for while XiaoZhi talks. UpdateGame ends any
     // game while XiaoZhi is not idle, so it is decided again once it is (the
-    // guard ends the chat after its sentence); dropped after kVoiceDeferMs.
-    kid_app::VoiceCommand voice_deferred_ = kid_app::VoiceCommand::Unknown;
-    uint32_t voice_deferred_at_ms_ = 0;
-    static constexpr uint32_t kVoiceDeferMs = 20000;
+    // guard ends the chat after its sentence); dropped after
+    // VoiceDeferral::kHoldMs (kid_app/voice_command.h, host-tested).
+    kid_app::VoiceDeferral voice_deferred_;
     // The MCP tool runs on XiaoZhi's main task: wait for pet_input briefly
     // (its loop turns every ~20 ms), then answer "pending".
     static constexpr uint32_t kVoiceReplyWaitMs = 400;
@@ -1198,23 +1197,23 @@ BOARD_WORKER = r'''
 
     // pet_input, every loop.
     void UpdateVoiceCommand(DeviceState state) {
+        // XiaoZhi listening / speaking (or a self-test "voice" phase standing in
+        // for it, so scripts can cover the deferred path).
+        const bool chat = state != kDeviceStateIdle || selftest_voice_.load() != 0;
         uint32_t word = voice_cmd_.exchange(0);
         bool later = false;  // a deferred command, now that XiaoZhi is idle
-        if (word) {
-            voice_deferred_ = kid_app::VoiceCommand::Unknown;  // the newer one wins
-        } else if (voice_deferred_ != kid_app::VoiceCommand::Unknown) {
-            if (NowMs() - voice_deferred_at_ms_ > kVoiceDeferMs) {
+        if (!word) {
+            kid_app::VoiceCommand expired = kid_app::VoiceCommand::Unknown;
+            const auto again = voice_deferred_.Poll(chat, NowMs(), &expired);
+            if (expired != kid_app::VoiceCommand::Unknown) {
                 ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=expired",
-                         kid_app::VoiceCommandName(voice_deferred_));
-                voice_deferred_ = kid_app::VoiceCommand::Unknown;
+                         kid_app::VoiceCommandName(expired));
                 return;
             }
-            if (state != kDeviceStateIdle) return;
-            word = static_cast<uint32_t>(voice_deferred_);  // sequence 0: nobody waits
-            voice_deferred_ = kid_app::VoiceCommand::Unknown;
+            if (again == kid_app::VoiceCommand::Unknown) return;
+            word = static_cast<uint32_t>(again);  // sequence 0: nobody waits
             later = true;
         }
-        if (!word) return;
         const auto command = static_cast<kid_app::VoiceCommand>(word & 0xFF);
         const uint16_t seq = static_cast<uint16_t>(word >> 8);
         // A voice command is activity: it ends a nap or the morning window
@@ -1231,14 +1230,12 @@ BOARD_WORKER = r'''
         context.clock_known = status.hour != kid_app::StatusBar::kNoTime &&
                               status.minute != kid_app::StatusBar::kNoTime;
         context.battery_known = battery_.Percent() >= 0;
-        context.chat_active = state != kDeviceStateIdle;
+        context.chat_active = chat;
         auto decision = kid_app::DecideVoiceCommand(command, context);
         const char* result = decision.result;
-        if (decision.after_chat) {  // runs once XiaoZhi is idle, decided again then
-            voice_deferred_ = command;
-            voice_deferred_at_ms_ = NowMs();
-            decision.proposal = kid_app::VoiceProposal::None;
-        }
+        voice_deferred_.OnDecision(command, decision, NowMs());
+        // Deferred: runs once XiaoZhi is idle, decided again then.
+        if (decision.after_chat) decision.proposal = kid_app::VoiceProposal::None;
 
         switch (decision.action) {
             case kid_app::VoiceAction::None:

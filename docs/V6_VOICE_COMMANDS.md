@@ -30,7 +30,7 @@
 - 工具回调不碰记忆、照顾、账本、宠物动作（合约测试断言），只调 `RequestVoiceCommand`。
 - 日志：`PET_VOICE_MCP name=<NAME> result=<token>`；被拒的只记长度 `PET_VOICE_MCP result=refused len=<n>`。
 
-已知边界：非儿童模式（`KID_PET_CHILD_MODE` 不是 1）下小智的大模型也能看到这个工具。儿童模式下守卫吃掉每一句 ASR，大模型不运行；而且即使被调用，设备照样按同一套规则决定。
+**大模型调不到它（ADR-008）**：上游会把设备工具放进大模型的函数表（`mcp_client.get_available_tools` → `DeviceMCPExecutor.get_tools`、`intent_llm`）。服务端 overlay（`scripts/p3_server_overlay.py` 的 `overlay_mcp_client` / `overlay_mcp_executor`，镜像构建时由 `deploy/apply_overlay.py` 安装）**不论是否儿童模式**都把 `self_pet_request` 从这张表里去掉，模型凭名字硬调时 `DeviceMCPExecutor.execute` 直接回错误；守卫走 `mcp_handler.call_mcp_tool`，不经过这两处。三处补丁都是锚点唯一、先全部算好再写盘，已在 v0.9.8 源码上 dry-run 通过，合约测试断言模型列表里没有它。
 
 ## 守卫怎么播报
 
@@ -45,8 +45,10 @@
 | `low_battery` | "团团有点没电了，请大人帮忙充上电吧。" |
 | `not_in_reader` | "我们先打开绘本，再来翻页吧。" |
 | `busy`、`no_book`、`rejected`、`off`、`parent`、`ignored`、`expired`、`no_clock`、`no_battery` | "现在还不行哦，我们等一会儿再试吧。" |
-| `pending` | "好的，我们试试看。"，并设 `close_after_chat`（板子可能已把它延后） |
-| 没有 MCP / 没有这个工具 / 超时 / 报错 / 回包不对（不是 JSON、动作名不一致、未知结果词） | 原来的"我听到了，我们用设备上的按键完成这个动作吧。" |
+| `pending`，或请求已发出但守卫等回包超时 | "好的，我们试试看。"，并设 `close_after_chat`（板子可能已执行或延后，不能再说"用按键"） |
+| 没有 MCP / 没有这个工具 / 设备回错误 / 回包不对（不是 JSON、动作名不一致、未知结果词） | 原来的"我听到了，我们用设备上的按键完成这个动作吧。" |
+
+任务管理：同一连接上来了新的一句话（不论是不是命令），还没说完的上一条命令任务直接取消（不会压在新句子上播，也不会让新句子说完就断开）；播报前若上游还在播上一句（`client_is_speaking`），最多等 4 s 再换 `sentence_id`；连接已关闭（`stop_event`）就不播；任务里的任何异常只记日志。
 
 `action` 不是 `[A-Z_]{1,15}` 的签名回复按服务异常处理（`NO_SERVICE`），不会调设备。
 
@@ -75,7 +77,7 @@
 
 ### 画面类活动等对话结束（`deferred`）
 
-小智不在空闲状态时（听/说），`UpdateGame` 会立刻结束任何游戏/菜单（`PET_GAME_END reason=voice`），而语音命令必然在对话中到达。所以**打开画面的提议**——`OPEN_GAME`、`PLAY_SONG`、`START_BRUSH`、`START_WASH`、`PET_FEED`、`PET_GROOM`——在 `chat_active` 时返回 `result=deferred`：板子记下这条命令（一个槽，新命令覆盖），守卫说完那句并让小智断开会话；设备回到空闲后**按当时的情况重新判断一次**（场景、安静时段、电量都重查），通过就打开；20 s（`kVoiceDeferMs`，从判断时算起；守卫的固定句都很短）内没等到空闲则丢弃，日志 `result=expired`。重新判断若被拒（例如这期间进入安静时段或电量变低），团团照常用问好/挥手提示，但守卫那句"好呀"已经说过，不会再纠正——已知限制。拒绝（忙、安静、低电）当场就说，不延后。其他命令（翻页、回首页、讲故事、睡觉、几点、电量、笑话、饿不饿）在对话中立即执行。
+小智不在空闲状态时（听/说），`UpdateGame` 会立刻结束任何游戏/菜单（`PET_GAME_END reason=voice`），而语音命令必然在对话中到达。所以**打开画面的提议**——`OPEN_GAME`、`PLAY_SONG`、`START_BRUSH`、`START_WASH`、`PET_FEED`、`PET_GROOM`——在 `chat_active` 时返回 `result=deferred`：板子记下这条命令（`kid_app::VoiceDeferral`，一个槽：新的延后命令覆盖它，执行了的动作（`done`）取代它，被拒或忽略的命令不动它），守卫说完那句并让小智断开会话；设备回到空闲后**按当时的情况重新判断一次**（场景、安静时段、电量都重查），通过就打开；20 s（`VoiceDeferral::kHoldMs`，从判断时算起；守卫的固定句都很短）内没等到空闲则丢弃，日志 `result=expired`。重新判断若被拒（例如这期间进入安静时段或电量变低），团团照常用问好/挥手提示，但守卫那句"好呀"已经说过，不会再纠正——已知限制。拒绝（忙、安静、低电）当场就说，不延后。其他命令（翻页、回首页、讲故事、睡觉、几点、电量、笑话、饿不饿）在对话中立即执行。
 
 ## 各场景的行为
 
@@ -95,15 +97,15 @@
 | `OPEN_GAME` 等 V8 命令 | 见 [V8_SOUND_AND_ROUTINES](V8_SOUND_AND_ROUTINES.md) §4 | | | | | 画面类 `deferred` | |
 | 未知名字 | 全部场景：忽略，`result=unknown`，不动作、不提示 |
 
-"提示"= 团团问好（和首页被拒绝的"游戏"一样），不是报错；安静时段的拒绝不发声。命令到达时若正在小睡/晨间窗口，先像拨轮一样唤醒再处理。注意小智在说话时游戏已被结束（`UpdateGame` 在同一轮先跑），所以对话中说"回首页"多半得到 `already`，守卫说"我们已经在这里啦。"；游戏里的 `GO_HOME` 分支实际只有自测会走到。非儿童模式下大模型也能看到 `self_pet_request`，同一守卫任务未做并发去重（连续两句命令可能先后各说一句），记为后续。
+"提示"= 团团问好（和首页被拒绝的"游戏"一样），不是报错；安静时段的拒绝不发声。命令到达时若正在小睡/晨间窗口，先像拨轮一样唤醒再处理。注意小智在说话时游戏已被结束（`UpdateGame` 在同一轮先跑），所以对话中说"回首页"多半得到 `already`，守卫说"我们已经在这里啦。"；游戏里的 `GO_HOME` 分支实际只有自测会走到。`RequestVoiceCommand` 只有一个槽：400 ms 内连着来两条，前一条被覆盖、它的调用方得到 `pending`（守卫此时已因新的一句话取消了前一条的任务）。
 
 ## 日志与自测
 
 - 每条命令一行：`PET_VOICE_CMD name=<NAME> result=<token> action=<..> hint=<..> scene=<..> proposal=<..> later=<0|1>`。`result`：`done`、`deferred`、`unknown`、`off`、`parent`、`already`、`ignored`、`busy`、`not_in_reader`、`quiet`、`no_clock`、`no_battery`、`low_battery`、`rejected`（宠物控制器拒绝）、`no_book`；延后的命令过期时 `PET_VOICE_CMD name=<NAME> result=expired`。`later=1` 表示这是对话结束后重新判断的那一次。
 - 另有 `PET_VOICE_TIME hour= minute=`、`PET_VOICE_BATTERY pct= charging= state=`、`PET_VOICE_MCP name= result=`。
-- PETSELFTEST1 步骤 `vcmd <NAME>`：名字由 `[A-Za-z0-9_]` 组成，不超过 15 个字符，不含空格；未知名字也会被注入（用来验证被忽略）。`vcmd` 直接调 `RequestVoiceCommand`（不经 MCP 白名单），自测时小智空闲，所以不会 `deferred`。`SLEEP_REQUEST` 会启动睡觉流程，场景里必须用按键取消或先 `alarm`；`tools/selftest_report.py plan` 会把没有后续按键的 `vcmd SLEEP_REQUEST` 估算为会关机。
+- PETSELFTEST1 步骤 `vcmd <NAME>`：名字由 `[A-Za-z0-9_]` 组成，不超过 15 个字符，不含空格；未知名字也会被注入（用来验证被忽略）。`vcmd` 直接调 `RequestVoiceCommand`（不经 MCP 白名单）。自测里 `voice listen` 等强制相位也算"对话中"（`chat_active`），用来覆盖延后路径。`SLEEP_REQUEST` 会启动睡觉流程，场景里必须用按键取消或先 `alarm`；`tools/selftest_report.py plan` 会把没有后续按键的 `vcmd SLEEP_REQUEST` 估算为会关机。
 - 场景 `tools/selftest/v6_voice_commands.pettest`（约 70 s 脚本，`plan` 估算监视 93 s）：首页下一页 → 未知命令 → 几点了 → 注入电量 80 % 后问电量 → 讲故事 → 读书中问电量（`busy`）→ 下一页 → 回首页 → 先 `alarm 30` 再 `vcmd SLEEP_REQUEST`，1.5 s 后按键取消（不关机）。
-- 场景 `tools/selftest/v6_voice_commands_more.pettest`（90 s 脚本，`plan` 估算监视 113 s，`phase day`）：首页上一页（`not_in_reader`）→ 首页回首页（`already`）→ 讲故事 → 下一页 → 上一页 → 回首页 → 喂团团（选菜画面，拨轮长按离开，不喂、无照顾记录）→ 梳毛 → 回首页 → 玩游戏 → 回首页。
+- 场景 `tools/selftest/v6_voice_commands_more.pettest`（94 s 脚本，`plan` 估算监视 117 s，`phase day`）：首页上一页（`not_in_reader`）→ 首页回首页（`already`）→ 讲故事 → 下一页 → 上一页 → 回首页 → 喂团团（选菜画面，拨轮长按离开，不喂、无照顾记录）→ 梳毛 → 回首页 → `voice listen` 时玩游戏（`deferred`）→ `voice off` 后菜单打开（`later=1 result=done`）→ 回首页。
 - 真正说话、服务端意图、MCP 往返和 TTS 播报要在真机上用 voice-harness（电脑放音）回归，见 PR 描述里的真机验证计划。
 
 ## V8 增补

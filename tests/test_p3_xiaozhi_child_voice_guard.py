@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,8 @@ import httpx
 from services.pet_learning.api import create_app
 from services.pet_learning.store import PetStore
 from scripts.p3_server_overlay import overlay, ANCHOR, INSERT
+from scripts.p3_server_overlay import (overlay_mcp_client, overlay_mcp_executor, CLIENT_ANCHOR,
+                                       CLIENT_INSERT, EXECUTOR_ANCHOR, EXECUTOR_INSERT)
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -36,6 +39,10 @@ class Connection:
     device_id = "physical-board-01"
     sentence_id = None
     close_after_chat = False
+    client_is_speaking = False
+
+    def __init__(self):
+        self.stop_event = threading.Event()
 
 
 class FakeMcpClient:
@@ -253,12 +260,15 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(said, guard.LOCAL_ACTION_HINT)
             self.assertFalse(self.conn.close_after_chat)
 
-    async def test_timeout_falls_back_to_the_buttons(self):
+    async def test_timeout_after_sending_is_treated_as_pending(self):
+        # The request reached the board, which may have acted (or deferred it):
+        # never say "use the buttons" then; end the chat so a deferred screen opens.
         self.conn.mcp_client = FakeMcpClient()
 
         def slow(action):
             raise TimeoutError("工具调用请求超时")
-        self.assertEqual(await self.speak_with(self.command(), "喂食", slow), guard.LOCAL_ACTION_HINT)
+        self.assertEqual(await self.speak_with(self.command(), "喂食", slow), guard.DEVICE_PENDING)
+        self.assertTrue(self.conn.close_after_chat)
 
     async def test_malformed_action_never_reaches_the_device(self):
         self.conn.mcp_client = FakeMcpClient()
@@ -300,6 +310,146 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             await self.settle()
         self.assertEqual(spoken[-1][1], "好呀，选一样好吃的喂团团吧。")
         self.assertEqual(len(spoken[-1][0]), 32)
+
+    async def test_a_new_utterance_cancels_the_pending_command(self):
+        # "玩游戏" then "几点了" before the board answered: the first one is dropped,
+        # so it neither speaks over the second nor ends the chat after it.
+        self.conn.mcp_client = FakeMcpClient()
+        gate = asyncio.Event()
+
+        async def call_mcp_tool(conn, client, tool_name, args="{}", timeout=30):
+            await gate.wait()
+            return json.dumps({"action": args["action"], "result": "deferred"})
+        game = self.command("OPEN_GAME", "好呀，我们来玩游戏。")
+        time_reply = self.signed({"kind": "fixed", "tts_text": "现在是9点整。", "action": None,
+                                  "reason": "tell_time"})[0]
+
+        def handler(request):
+            said = json.loads(request.content)["text"]
+            return (game if said == "玩游戏" else time_reply)(request)
+        spoken, patched = self.fake_tts()
+        original_async = httpx.AsyncClient
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(handler))):
+            sys.modules["core.providers.tools.device_mcp.mcp_handler"].call_mcp_tool = call_mcp_tool
+            self.assertTrue(await guard.handle_child_guard(self.conn, "玩游戏"))
+            first = self.conn.child_guard_task
+            self.assertTrue(await guard.handle_child_guard(self.conn, "几点了"))
+            gate.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+        self.assertEqual([s for _, s in spoken], ["现在是9点整。"])
+        self.assertFalse(self.conn.close_after_chat)
+
+    async def test_closed_connection_is_not_spoken_to(self):
+        self.conn.mcp_client = FakeMcpClient()
+
+        def device(action):
+            self.conn.stop_event.set()  # the child walked away meanwhile
+            return json.dumps({"action": action, "result": "done"})
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts(device)
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(self.command()))):
+            self.assertTrue(await guard.handle_child_guard(self.conn, "喂食"))
+            await self.settle()
+        self.assertEqual(spoken, [])
+
+    async def test_waits_for_the_previous_sentence_before_speaking(self):
+        # Changing sentence_id while upstream still plays a sentence drops its audio.
+        self.conn.mcp_client = FakeMcpClient()
+        self.conn.client_is_speaking = True
+        seen = []
+
+        def device(action):
+            return json.dumps({"action": action, "result": "done"})
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts(device)
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(self.command()))), \
+                patch.object(guard, "SPEAK_WAIT_STEP_S", 0.01):
+            self.assertTrue(await guard.handle_child_guard(self.conn, "喂食"))
+            await asyncio.sleep(0.05)
+            seen.append(list(spoken))
+            self.conn.client_is_speaking = False
+            await self.settle()
+        self.assertEqual(seen, [[]])
+        self.assertEqual(spoken[-1][1], "好呀，选一样好吃的喂团团吧。")
+
+    async def test_carry_out_never_raises(self):
+        self.conn.mcp_client = FakeMcpClient()
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts(self.device("done"))
+
+        def broken(conn, text):
+            raise RuntimeError("tts gone")
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(self.command()))), \
+                self.assertLogs(guard.__name__, level="ERROR"):
+            sys.modules["core.handle.intentHandler"].speak_txt = broken
+            self.assertTrue(await guard.handle_child_guard(self.conn, "喂食"))
+            await self.settle()  # no exception escapes the task
+
+    def test_device_tool_is_hidden_from_the_model(self):
+        """ADR-008: whatever the mode, only the guard may call self_pet_request."""
+        fixture = (
+            "class MCPClient:\n"
+            "    def __init__(self):\n"
+            "        self.tools = {}\n"
+            "        self._cached_available_tools = None\n"
+            "    def get_available_tools(self) -> list:\n"
+            "        result = []\n"
+            + CLIENT_ANCHOR +
+            "            function_def = {\"name\": tool_name, \"description\": tool_data[\"description\"]}\n"
+            "            result.append({\"type\": \"function\", \"function\": function_def})\n"
+            "        return result\n"
+            "    def has_tool(self, name):\n"
+            "        return name in self.tools\n"
+        )
+        patched = overlay_mcp_client(fixture)
+        self.assertEqual(patched.replace(CLIENT_INSERT, ""), fixture)
+        scope = {}
+        exec(compile(patched, "mcp_client.py", "exec"), scope)
+        client = scope["MCPClient"]()
+        client.tools = {"self_pet_request": {"description": "x"},
+                        "self_get_device_status": {"description": "y"}}
+        names = [t["function"]["name"] for t in client.get_available_tools()]
+        self.assertEqual(names, ["self_get_device_status"])
+        self.assertTrue(client.has_tool("self_pet_request"))  # the guard still reaches it
+        with self.assertRaisesRegex(ValueError, "already"):
+            overlay_mcp_client(patched)
+        with self.assertRaisesRegex(ValueError, "anchor changed"):
+            overlay_mcp_client(fixture.replace(CLIENT_ANCHOR, "        for x in []:\n"))
+
+        executor = (
+            "class DeviceMCPExecutor:\n"
+            "    async def execute(self, conn, tool_name, arguments):\n"
+            + EXECUTOR_ANCHOR +
+            "        return ('called', tool_name)\n"
+        )
+        patched = overlay_mcp_executor(executor)
+        self.assertEqual(patched.replace(EXECUTOR_INSERT, ""), executor)
+        scope = {"ActionResponse": lambda **kw: ("refused", kw["action"]),
+                 "Action": types.SimpleNamespace(ERROR="ERROR")}
+        exec(compile(patched, "mcp_executor.py", "exec"), scope)
+        run = scope["DeviceMCPExecutor"]().execute
+        self.assertEqual(asyncio.run(run(None, "self_pet_request", {"action": "SLEEP_REQUEST"})),
+                         ("refused", "ERROR"))
+        self.assertEqual(asyncio.run(run(None, "self_get_device_status", {})),
+                         ("called", "self_get_device_status"))
+        with self.assertRaisesRegex(ValueError, "already"):
+            overlay_mcp_executor(patched)
+        self.assertIn(guard.PET_REQUEST_TOOL, CLIENT_INSERT)
+        self.assertIn(guard.PET_REQUEST_TOOL, EXECUTOR_INSERT)
+
+    def test_overlay_installs_all_three_patches(self):
+        source = (ROOT / "deploy" / "apply_overlay.py").read_text(encoding="utf-8")
+        for needle in ("overlay_mcp_client(", "overlay_mcp_executor(", "mcp_client.py",
+                       "mcp_executor.py"):
+            self.assertIn(needle, source)
+        main = (ROOT / "scripts" / "p3_server_overlay.py").read_text(encoding="utf-8")
+        self.assertIn("overlay_mcp_client(", main[main.index("def main()"):])
+        self.assertIn("overlay_mcp_executor(", main[main.index("def main()"):])
 
     def test_tool_name_matches_upstream_sanitising(self):
         # core.utils.util.sanitize_tool_name at the pinned commit.

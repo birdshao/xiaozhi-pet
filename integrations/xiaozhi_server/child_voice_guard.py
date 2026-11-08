@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import uuid
@@ -28,6 +29,11 @@ LOCAL_ACTION_HINT = "我听到了，我们用设备上的按键完成这个动�
 # device tools by their sanitised name (core.utils.util.sanitize_tool_name).
 PET_REQUEST_TOOL = "self_pet_request"
 DEVICE_TIMEOUT_S = 3
+# Upstream drops audio whose sentence_id is not the current one: wait for a
+# sentence still playing before starting ours (bounded).
+SPEAK_WAIT_S = 4.0
+SPEAK_WAIT_STEP_S = 0.1
+_log = logging.getLogger(__name__)
 _ACTION_RE = re.compile(r"[A-Z_]{1,15}")
 # What the pet answered decides the sentence: the server's reviewed sentence only
 # when the device accepted; otherwise one of these fixed sentences.
@@ -149,7 +155,10 @@ async def _device_result(conn, action: str) -> str | None:
         raw = await call_mcp_tool(conn, client, PET_REQUEST_TOOL, {"action": action},
                                   timeout=DEVICE_TIMEOUT_S)
         answer = json.loads(raw)
-    except Exception:  # noqa: BLE001 - not ready, no tool, device error, timeout, bad JSON
+    except (TimeoutError, asyncio.TimeoutError):
+        # The request went out: the board may have acted or deferred it.
+        return "pending"
+    except Exception:  # noqa: BLE001 - not ready, no tool, device error (isError), bad JSON
         return None
     if not isinstance(answer, dict) or answer.get("action") != action:
         return None
@@ -159,6 +168,18 @@ async def _device_result(conn, action: str) -> str | None:
 
 async def _carry_out(conn, command: _Command) -> None:
     """Run on its own task: the device's reply arrives on the websocket loop."""
+    try:
+        await _carry_out_unsafe(conn, command)
+    except Exception:  # noqa: BLE001 - never leave an unhandled task error behind
+        _log.exception("child guard: local_command %s failed", command.action)
+
+
+def _closed(conn) -> bool:
+    stop = getattr(conn, "stop_event", None)
+    return bool(stop is not None and stop.is_set())
+
+
+async def _carry_out_unsafe(conn, command: _Command) -> None:
     result = await _device_result(conn, command.action)
     if result in _ACCEPTED:
         answer = command.spoken or DEVICE_OK
@@ -170,6 +191,12 @@ async def _carry_out(conn, command: _Command) -> None:
         if result == "pending":
             # The board may still defer it (a busy pet_input): only an idle XiaoZhi lets it run.
             conn.close_after_chat = True
+    waited = 0.0
+    while getattr(conn, "client_is_speaking", False) and waited < SPEAK_WAIT_S and not _closed(conn):
+        await asyncio.sleep(SPEAK_WAIT_STEP_S)
+        waited += SPEAK_WAIT_STEP_S
+    if _closed(conn):
+        return
     _speak(conn, answer)
 
 
@@ -188,6 +215,12 @@ async def handle_child_guard(conn, text: str) -> bool:
     """
     if not child_mode_enabled():
         return False
+    # A newer utterance wins: the previous command's sentence must neither play
+    # over this one nor end the chat after it.
+    previous = getattr(conn, "child_guard_task", None)
+    if previous is not None and not previous.done():
+        previous.cancel()
+    conn.child_guard_task = None
     answer = await _voice_reply(conn, text)
     if isinstance(answer, _Command):
         # Manual listen mode awaits the ASR inside the websocket receive loop, which

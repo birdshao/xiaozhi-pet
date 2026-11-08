@@ -314,6 +314,75 @@ int main() {
     assert(std::strcmp(VoiceResultName(0), "pending") == 0);
     assert(std::strcmp(VoiceResultName(250), "pending") == 0);
 
+    // The board's deferral slot (pure, time passed in): a screen activity asked
+    // for mid-chat waits for XiaoZhi to go idle, at most kHoldMs.
+    {
+        auto home = Ctx(VoiceScene::Home);
+        auto chat = home;
+        chat.chat_active = true;
+        const auto deferred = Run("OPEN_GAME", chat);
+        VoiceCommand expired = VoiceCommand::Unknown;
+
+        // Nothing waiting: nothing to run, nothing expires.
+        VoiceDeferral slot;
+        assert(slot.Pending() == VoiceCommand::Unknown);
+        assert(slot.Poll(false, 1000, &expired) == VoiceCommand::Unknown);
+        assert(expired == VoiceCommand::Unknown);
+
+        // Deferred at t=1000: held while XiaoZhi talks, handed back once idle (once).
+        slot.OnDecision(VoiceCommand::OpenGame, deferred, 1000);
+        assert(slot.Pending() == VoiceCommand::OpenGame);
+        assert(slot.Poll(true, 2000, &expired) == VoiceCommand::Unknown);
+        assert(slot.Poll(true, 1000 + VoiceDeferral::kHoldMs, &expired) == VoiceCommand::Unknown);
+        assert(expired == VoiceCommand::Unknown && slot.Pending() == VoiceCommand::OpenGame);
+        assert(slot.Poll(false, 1000 + VoiceDeferral::kHoldMs, &expired) == VoiceCommand::OpenGame);
+        assert(slot.Pending() == VoiceCommand::Unknown);
+        assert(slot.Poll(false, 30000, &expired) == VoiceCommand::Unknown);
+
+        // The chat never ends: dropped after kHoldMs, reported once.
+        slot.OnDecision(VoiceCommand::PetFeed, Run("PET_FEED", chat), 5000);
+        assert(slot.Poll(true, 5001 + VoiceDeferral::kHoldMs, &expired) == VoiceCommand::Unknown);
+        assert(expired == VoiceCommand::PetFeed && slot.Pending() == VoiceCommand::Unknown);
+        expired = VoiceCommand::Unknown;
+        assert(slot.Poll(false, 5002 + VoiceDeferral::kHoldMs, &expired) == VoiceCommand::Unknown);
+        assert(expired == VoiceCommand::Unknown);
+
+        // The millisecond clock wraps: still measured as elapsed time.
+        slot.OnDecision(VoiceCommand::OpenGame, deferred, 0xFFFFFF00u);
+        assert(slot.Poll(true, 0x00000100u, &expired) == VoiceCommand::Unknown);
+        assert(expired == VoiceCommand::Unknown && slot.Pending() == VoiceCommand::OpenGame);
+        assert(slot.Poll(false, 0x00000200u, &expired) == VoiceCommand::OpenGame);
+
+        // A newer deferred command replaces the waiting one.
+        slot.OnDecision(VoiceCommand::OpenGame, deferred, 100);
+        slot.OnDecision(VoiceCommand::PetGroom, Run("PET_GROOM", chat), 200);
+        assert(slot.Pending() == VoiceCommand::PetGroom);
+        // A refused or ignored command leaves it alone (the promise still holds) ...
+        slot.OnDecision(VoiceCommand::PagePrev, Run("PAGE_PREV", chat), 300);       // not_in_reader
+        slot.OnDecision(VoiceCommand::GoHome, Run("GO_HOME", chat), 300);           // already
+        slot.OnDecision(VoiceCommand::Unknown, Run("NOPE", chat), 300);             // unknown
+        auto quiet_chat = chat;
+        quiet_chat.quiet_hours = true;
+        slot.OnDecision(VoiceCommand::OpenReader, Run("OPEN_READER", quiet_chat), 300);  // quiet
+        assert(slot.Pending() == VoiceCommand::PetGroom);
+        // ... an action that ran supersedes it (the child asked for something else).
+        slot.OnDecision(VoiceCommand::TellTime, Run("TELL_TIME", chat), 400);
+        assert(slot.Pending() == VoiceCommand::Unknown);
+        slot.OnDecision(VoiceCommand::OpenGame, deferred, 500);
+        slot.OnDecision(VoiceCommand::SleepRequest, Run("SLEEP_REQUEST", chat), 600);
+        assert(slot.Pending() == VoiceCommand::Unknown);
+
+        // Decided again once idle with the rules of that moment: e.g. quiet hours
+        // began meanwhile -> refused then, nothing opens.
+        slot.OnDecision(VoiceCommand::OpenGame, deferred, 700);
+        const VoiceCommand again = slot.Poll(false, 800, &expired);
+        auto now_quiet = home;
+        now_quiet.quiet_hours = true;
+        assert(again == VoiceCommand::OpenGame);
+        assert(std::strcmp(DecideVoiceCommand(again, now_quiet).result, "quiet") == 0);
+        assert(std::strcmp(DecideVoiceCommand(again, home).result, "done") == 0);
+    }
+
     // Names are never empty (they go into the log).
     for (VoiceAction a : {VoiceAction::None, VoiceAction::BeginSleep, VoiceAction::ShowTime,
                           VoiceAction::ShowBattery, VoiceAction::PageNext, VoiceAction::OpenReader,

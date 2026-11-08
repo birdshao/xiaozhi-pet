@@ -1679,10 +1679,15 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('return seq', post)
         run = self._body(patched, 'void UpdateVoiceCommand(')
         # XiaoZhi talking is part of the context; screen activities wait for idle.
-        self.assertIn('context.chat_active = state != kDeviceStateIdle', run)
+        self.assertIn('const bool chat = state != kDeviceStateIdle || selftest_voice_.load() != 0;',
+                      run)
+        self.assertIn('context.chat_active = chat;', run)
         self.assertIn('decision.after_chat', run)
-        self.assertIn('voice_deferred_', run)
-        self.assertIn('kVoiceDeferMs', run)
+        # The slot logic itself is kid_app::VoiceDeferral (host-tested).
+        self.assertIn('kid_app::VoiceDeferral voice_deferred_;', patched)
+        self.assertIn('voice_deferred_.Poll(chat, NowMs(), &expired)', run)
+        self.assertIn('voice_deferred_.OnDecision(command, decision, NowMs())', run)
+        self.assertLess(run.index('voice_deferred_.OnDecision('), run.index('switch (decision.proposal)'))
         self.assertIn('result=expired', run)
         # The button paths: dial up / long press in the reader, the long press
         # in a game, the care menu's Feed and Brush cards.
@@ -1706,6 +1711,11 @@ class DisplayOverlayTest(unittest.TestCase):
             self.assertIn(f'\nvcmd {name}\n', scenario)
         self.assertIn('\nphase day\n', scenario)
         self.assertIn('\nvolume 15\n', scenario)
+        # The deferred path: a forced "listen" phase stands in for XiaoZhi talking.
+        self.assertIn('voice listen\nwait 1500\nvcmd OPEN_GAME\n', scenario)
+        self.assertLess(scenario.index('vcmd OPEN_GAME'), scenario.rindex('voice off'))
+        self.assertIn('# expect min:result=deferred 1', scenario)
+        self.assertIn('# expect min:later=1 1', scenario)
 
 
 if __name__ == "__main__":

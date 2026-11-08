@@ -140,6 +140,29 @@ const char* VoiceProposalName(VoiceProposal proposal) {
     return "none";
 }
 
+void VoiceDeferral::OnDecision(VoiceCommand command, const VoiceDecision& decision,
+                               uint32_t now_ms) {
+    if (decision.after_chat) {
+        command_ = command;
+        at_ms_ = now_ms;
+    } else if (std::strcmp(decision.result, "done") == 0) {
+        command_ = VoiceCommand::Unknown;
+    }
+}
+
+VoiceCommand VoiceDeferral::Poll(bool chat_active, uint32_t now_ms, VoiceCommand* expired) {
+    if (command_ == VoiceCommand::Unknown) return VoiceCommand::Unknown;
+    const VoiceCommand command = command_;
+    if (now_ms - at_ms_ > kHoldMs) {
+        command_ = VoiceCommand::Unknown;
+        if (expired) *expired = command;
+        return VoiceCommand::Unknown;
+    }
+    if (chat_active) return VoiceCommand::Unknown;
+    command_ = VoiceCommand::Unknown;
+    return command;
+}
+
 VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
     if (command == VoiceCommand::Unknown) return Ignored("unknown");
     // With Pet mode off there is no pet; the parent menu takes every input.

@@ -136,4 +136,24 @@ const char* VoiceProposalName(VoiceProposal proposal);
 // Pure: no state, no clock, no IO.
 VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& context);
 
+// The board's one deferral slot (pet_input only; time is passed in). A
+// deferred screen activity waits until XiaoZhi is idle, at most kHoldMs from
+// the decision, and is then decided again with the rules of that moment. A
+// newer deferred command replaces it; an action that ran ("done") supersedes
+// it; a refused or ignored command leaves it waiting (the guard's sentence
+// for it still holds).
+class VoiceDeferral {
+public:
+    static constexpr uint32_t kHoldMs = 20000;
+    void OnDecision(VoiceCommand command, const VoiceDecision& decision, uint32_t now_ms);
+    // The command to decide again now (XiaoZhi idle), else Unknown. A command
+    // dropped after kHoldMs is reported once through *expired.
+    VoiceCommand Poll(bool chat_active, uint32_t now_ms, VoiceCommand* expired);
+    VoiceCommand Pending() const { return command_; }
+
+private:
+    VoiceCommand command_ = VoiceCommand::Unknown;
+    uint32_t at_ms_ = 0;
+};
+
 }  // namespace kid_app
