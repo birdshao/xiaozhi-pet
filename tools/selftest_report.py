@@ -17,6 +17,9 @@
    v4_book_missing after v2_sleep). If a power-off scenario cannot go last,
    wait ``wake_guard_s`` after its alarm boot before flashing the next sector.
 
+``sector``, ``plan`` and ``order`` refuse a scenario with a line over MAX_LINE (80)
+characters, comments included: the board parser rejects the whole script.
+
 ``--timescale N`` (all commands) rewrites the scenario's ``timescale`` step
 and its ``# expect timescale`` line: ``--timescale 100`` is the real-speed
 run of a time-scaled scenario (its ``twait`` steps then last as written).
@@ -48,6 +51,11 @@ import sys
 from pathlib import Path
 
 SECTOR = 4096
+# Longest line the board parser takes, counted like the firmware does: the bytes
+# before the newline, so a CRLF's CR, trailing blanks and '#' comments all count
+# (kMaxLine in firmware/components/kid_app/src/selftest_script.cc). A longer
+# line makes the board reject the whole script: PET_SELFTEST_NONE reason=no_script.
+MAX_LINE = 80
 # Refreshes the wall clock causes, not the script (see the module docstring).
 _CLOCK_SOURCES = ("status", "look")
 HEADER = "PETSELFTEST1"
@@ -65,7 +73,21 @@ def expectations(scenario: str) -> dict[str, str]:
     return found
 
 
+def long_lines(scenario: str, limit: int = MAX_LINE) -> list[tuple[int, int]]:
+    """(line number, length) of every line the board parser would refuse."""
+    return [(no, len(line)) for no, line in enumerate(scenario.split("\n"), 1)
+            if len(line) > limit]
+
+
+def check_line_length(scenario: str, name: str = "scenario") -> None:
+    bad = long_lines(scenario)
+    if bad:
+        where = ", ".join(f"{name}:{no} ({n} > {MAX_LINE})" for no, n in bad)
+        raise ValueError(f"line too long for the board parser (kMaxLine): {where}")
+
+
 def sector_bytes(scenario: str) -> bytes:
+    check_line_length(scenario)
     text = scenario.encode("ascii")
     if not scenario.lstrip().startswith(HEADER):
         raise ValueError("scenario must start with " + HEADER)
@@ -286,7 +308,16 @@ def evaluate(scenario: str, log: str) -> dict:
             "expected": exp, "observed": obs}
 
 
-def main() -> int:
+def _read_scenario(path: Path, check: bool = True) -> str:
+    """Scenario text as bytes on disk (newline='' keeps CR, which the board counts)."""
+    with open(path, encoding="ascii", newline="") as handle:
+        text = handle.read()
+    if check:
+        check_line_length(text, str(path))
+    return text
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -304,18 +335,25 @@ def main() -> int:
     for cmd in (s, r, p):
         cmd.add_argument("--timescale", type=int, default=None,
                          help="run a time-scaled scenario at this %% (100 = real speed)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        return _run(args)
+    except ValueError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+
+
+def _run(args: argparse.Namespace) -> int:
 
     if args.cmd == "order":
-        texts = {path.stem: path.read_text(encoding="ascii") for path in args.scenarios}
+        texts = {path.stem: _read_scenario(path) for path in args.scenarios}
         for name in run_order(texts):
             row = plan(texts[name])
             note = f"  (power-off: wait {row['wake_guard_s']} s after its alarm boot)"                 if row["power_off"] else ""
             print(name + note)
         return 0
     if args.cmd == "plan":
-        rows = {path.stem: plan(apply_timescale(path.read_text(encoding="ascii"),
-                                                args.timescale))
+        rows = {path.stem: plan(apply_timescale(_read_scenario(path), args.timescale))
                 for path in args.scenarios}
         if args.json:
             print(json.dumps(rows, indent=1))
@@ -327,7 +365,8 @@ def main() -> int:
         print(f"total expect_s={sum(row['expect_s'] for row in rows.values())} "
               f"monitor_s={sum(row['monitor_s'] for row in rows.values())}")
         return 0
-    scenario = apply_timescale(args.scenario.read_text(encoding="ascii"), args.timescale)
+    scenario = apply_timescale(_read_scenario(args.scenario, check=args.cmd == "sector"),
+                               args.timescale)
     if args.cmd == "sector":
         args.output.write_bytes(sector_bytes(scenario))
         print(f"sector image: {args.output} ({SECTOR} bytes)")

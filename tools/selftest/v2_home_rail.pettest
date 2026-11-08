@@ -9,19 +9,21 @@ PETSELFTEST1
 # expect max_full_ms 5000
 # V8 Feed = three presses: the rail opens the care menu (full), the food
 # card opens the food picker (full), the fish option feeds (reaction
-# 2.5 s: one partial for the hearts), then home (full) with the feed
-# animation (3 partials). Story then adds 2 fulls (book-missing page, back
-# home). Partials: 12 rail moves (0,1,2,3,4,3,2,1,0,1,2,3) + 1 hearts + 3
-# feed animation frames + 2 rail moves after it = 18. Fulls: care menu,
+# 2.5 s: one partial for the hearts), then home (full, neutral face), one
+# partial for the happy face (pet=1), then the feed animation (3 partials).
+# Story then adds 2 fulls (book-missing page, back home). Partials: 12 rail
+# moves (0,1,2,3,4,3,2,1,0,1,2,3) + 1 hearts + 1 happy face + 3 feed
+# animation frames + 2 rail moves after it = 19 (the 20th partial of the
+# 2026-11-08 log is src=status and counted apart). Fulls: care menu,
 # food picker, home, story page, home = 5. The hearts partial needs the
 # PetRefreshGate fix (care scenes were never compared, so the 2026-11-07
 # board logs show no refresh between picker and home); the other numbers
 # are counted from those logs.
-# expect partial_refreshes 18
+# expect partial_refreshes 19
 # expect full_refreshes 5
 # Quiet prompts while testing (RAM only, this boot).
 # The Game / Feed rail items refuse in the quiet hours (PET_GAME_REFUSED
-# reason=quiet; Feed then falls back to the V7 plain feed), so pin the day phase:
+# reason=quiet; Feed then falls back to V7 plain feed), so pin the day phase:
 # the 2026-11-07 22:22 board run showed 3 plain feeds (241,242,242) here.
 phase day
 volume 15
