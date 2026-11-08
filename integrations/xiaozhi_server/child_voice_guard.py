@@ -167,6 +167,9 @@ async def _carry_out(conn, command: _Command) -> None:
             conn.close_after_chat = True
     else:
         answer = _DEVICE_SENTENCES.get(result, LOCAL_ACTION_HINT)
+        if result == "pending":
+            # The board may still defer it (a busy pet_input): only an idle XiaoZhi lets it run.
+            conn.close_after_chat = True
     _speak(conn, answer)
 
 

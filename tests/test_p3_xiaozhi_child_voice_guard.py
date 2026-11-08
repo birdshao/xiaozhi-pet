@@ -230,7 +230,8 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             self.conn.close_after_chat = False
             said = await self.speak_with(self.command(), "喂食", self.device(result))
             self.assertEqual(said, expected, result)
-            self.assertFalse(self.conn.close_after_chat, result)
+            # pending: the board may have deferred it, so the chat ends too.
+            self.assertEqual(self.conn.close_after_chat, result == "pending", result)
         for sentence in (guard.DEVICE_ALREADY, guard.DEVICE_QUIET, guard.DEVICE_LOW_BATTERY,
                          guard.DEVICE_NOT_IN_READER, guard.DEVICE_NOT_NOW, guard.DEVICE_PENDING):
             self.assertTrue(0 < len(sentence) <= 40)
