@@ -1,0 +1,173 @@
+# 语音探针测试清单。可直接编辑；`python tools/voice_probe.py list` 查看。
+# 字段：id say group kind reason action tts_contains asr quiet notes
+#   kind     期望 PetLearning 返回的 kind：fixed | approved_content | local_command | fallback
+#   action   期望板子日志 PET_VOICE_CMD 的命令名（空 = 不要求设备动作）。当前守卫对 local_command
+#            只说“用按键”，设备不会动作，所以动作类用例在 self.pet.request 打通前预期不通过。
+#   *_quiet  在安静时段（家长设置 quiet=20:30-07:00）运行时用的期望；action_quiet="none" 表示设备不应动作
+#   quiet    any | only（只在安静时段才跑）| never（只在非安静时段才跑）
+# 安静时段由板子串口的 PET_PARENT_SETTINGS 与电脑时钟判断，不会修改任何家长设置。
+
+# ---- V6 固定命令 ----
+[[case]]
+id = "sleep"
+say = "团团睡觉"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "SLEEP_REQUEST"
+notes = "安静时段仍允许睡觉（QUIET_OK），期望不变"
+
+[[case]]
+id = "time"
+say = "几点了"
+group = "command"
+kind = "fixed"
+reason = "tell_time"
+tts_contains = "现在是"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+[[case]]
+id = "battery"
+say = "还有多少电"
+group = "command"
+kind = "fixed"
+reason = "tell_battery"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+[[case]]
+id = "story"
+say = "讲故事"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+[[case]]
+id = "page_next"
+say = "下一页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_NEXT"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+notes = "不在读书器里，设备应温和提示而不是翻页"
+
+[[case]]
+id = "page_prev"
+say = "上一页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_PREV"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+notes = "设备端还没做 PAGE_PREV（V6_VOICE_COMMANDS.md）"
+
+[[case]]
+id = "feed"
+say = "喂团团"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PET_FEED"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+notes = "会改宠物账本！设备一旦接通 PET_FEED，在孩子正式使用的板子上不要跑这一条"
+
+[[case]]
+id = "game"
+say = "玩游戏"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_GAME"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+[[case]]
+id = "home"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+# ---- 闲聊与无意义句：只能得到固定兜底，不能走 LLM，设备不动作 ----
+[[case]]
+id = "chat_weather"
+say = "今天天气怎么样"
+group = "chat"
+kind = "fallback"
+reason = "no_match"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+
+[[case]]
+id = "chat_hello"
+say = "你好呀团团你在干什么"
+group = "chat"
+kind = "fallback"
+reason = "no_match"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+
+[[case]]
+id = "chat_why"
+say = "天空为什么是蓝色的"
+group = "chat"
+kind = "fallback"
+reason = "no_match"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+
+[[case]]
+id = "chat_near_miss"
+say = "我不想睡觉"
+group = "chat"
+kind = "fallback"
+reason = "no_match"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+notes = "近似句不能误触发睡觉"
+
+[[case]]
+id = "nonsense"
+say = "啊呜啦啦咕噜噜"
+group = "nonsense"
+kind = "fallback"
+reason = "no_match"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+notes = "ASR 可能乱识别，只看后续是否安全兜底"
+
+# ---- 安静时段：只在 20:30-07:00 跑，期望一律是“安静句” ----
+[[case]]
+id = "quiet_chat"
+say = "团团我们聊聊天吧"
+group = "quiet"
+kind = "fixed"
+reason = "quiet_hours"
+quiet = "only"
+
+[[case]]
+id = "quiet_time"
+say = "现在几点钟了"
+group = "quiet"
+kind = "fixed"
+reason = "quiet_hours"
+quiet = "only"
