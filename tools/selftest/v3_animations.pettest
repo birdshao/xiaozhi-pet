@@ -15,7 +15,7 @@ PETSELFTEST1
 # expect timescale 25
 # Quiet prompts while testing (RAM only, this boot).
 # The Game / Feed rail items refuse in the quiet hours (PET_GAME_REFUSED
-# reason=quiet; Feed then falls back to the V7 plain feed), so pin the day phase:
+# reason=quiet; Feed then falls back to V7 plain feed), so pin the day phase:
 # the 2026-11-07 22:22 board run showed 3 plain feeds (241,242,242) here.
 phase day
 volume 15
@@ -35,7 +35,7 @@ mark begin
 # Chat (0): the pet says hi and waves.
 tap up 2500
 tap press 6000
-# Feed (3): V8 care menu, food picker, press the fish; back home: happy face, then hearts.
+# Feed (3): V8 care menu, food picker, press the fish; home: happy face, hearts.
 tap down 2500
 tap down 2500
 tap down 2500

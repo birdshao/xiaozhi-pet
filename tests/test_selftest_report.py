@@ -1,11 +1,13 @@
 """Host-side self-test report: expectations from a scenario vs a serial log."""
+import contextlib
+import io
 import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from tools.selftest_report import (apply_timescale, evaluate, expectations, plan, read_log,
-                                   run_order, sector_bytes)
+from tools.selftest_report import (MAX_LINE, apply_timescale, evaluate, expectations,
+                                   long_lines, main, plan, read_log, run_order, sector_bytes)
 
 SCENARIO = """PETSELFTEST1
 # expect home_select 0,1,2
@@ -386,8 +388,9 @@ class SelfTestReportTests(unittest.TestCase):
             self.assertEqual([w[0] for w in steps[at + 1:at + 2]], ["wait"], name)
             self.assertGreaterEqual(int(steps[at + 1][1]), 9000, name)
         text, _ = self._steps("v2_home_rail.pettest")
-        # 12 rail moves + 1 hearts + 3 feed animation frames + 2 moves after; 5 fulls.
-        self.assertEqual(expectations(text)["partial_refreshes"], "18")
+        # 12 rail moves + 1 hearts + 1 happy face + 3 feed animation frames + 2 moves
+        # after = 19 (2026-11-08 board log); 5 fulls.
+        self.assertEqual(expectations(text)["partial_refreshes"], "19")
         self.assertEqual(expectations(text)["full_refreshes"], "5")
         self.assertEqual(expectations(text)["home_select"], "0,1,2,3,4,3,2,1,0,1,2,3,2,1")
 
@@ -462,3 +465,48 @@ class SelfTestReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+REPO = Path(__file__).resolve().parents[1]
+FIRMWARE_PARSER = REPO / "firmware/components/kid_app/src/selftest_script.cc"
+
+
+class LineLengthTests(unittest.TestCase):
+    def test_max_line_matches_firmware(self):
+        m = re.search(r"kMaxLine\s*=\s*(\d+)\s*;", FIRMWARE_PARSER.read_text(encoding="utf-8"))
+        self.assertIsNotNone(m)
+        self.assertEqual(MAX_LINE, int(m.group(1)))
+
+    def test_every_repo_scenario_fits_the_board_parser(self):
+        paths = sorted((REPO / "tools/selftest").glob("*.pettest"))
+        self.assertTrue(paths)
+        for path in paths:
+            with open(path, encoding="ascii", newline="") as handle:
+                self.assertEqual(long_lines(handle.read()), [], path.name)
+
+    def test_80_ok_81_rejected_comments_included(self):
+        ok = "PETSELFTEST1\n# " + "x" * 78 + "\nend\n"
+        bad = "PETSELFTEST1\n# " + "x" * 79 + "\nend\n"
+        self.assertEqual(long_lines(ok), [])
+        self.assertEqual(long_lines(bad), [(2, 81)])
+        self.assertEqual(len(sector_bytes(ok)), 4096)
+        with self.assertRaisesRegex(ValueError, "scenario:2"):
+            sector_bytes(bad)
+
+    def test_cr_and_trailing_blanks_count_like_the_firmware(self):
+        # The firmware measures up to '\n' before it drops the '\r'.
+        self.assertEqual(long_lines("# " + "x" * 78 + "\r\n"), [(1, 81)])
+        self.assertEqual(long_lines("# " + "x" * 78 + " \n"), [(1, 81)])
+        self.assertEqual(long_lines("# " + "x" * 77 + "\r\n"), [])
+
+    def test_cli_sector_and_plan_name_file_and_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "long.pettest"
+            path.write_bytes(("PETSELFTEST1\n# " + "x" * 90 + "\nend\n").encode())
+            out = Path(tmp) / "out.sector"
+            for argv in (["sector", str(path), str(out)], ["plan", str(path)],
+                         ["order", str(path)]):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(main(argv), 2, argv)
+                self.assertIn("long.pettest:2", err.getvalue())
+            self.assertFalse(out.exists())
