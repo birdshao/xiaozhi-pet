@@ -9,6 +9,7 @@ plus the child's single utterance, no history.
 from __future__ import annotations
 
 import json
+from time import monotonic
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -16,7 +17,9 @@ import httpx
 
 GLM_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 TOOL_NAME = "self_pet_request"
-TIMEOUT_S = 6.0
+TIMEOUT_S = 5.0          # per connect/read phase
+TOTAL_TIMEOUT_S = 6.0    # the whole request (V5_V6 plan §6.5: LLM 6 s)
+MAX_RESPONSE_BYTES = 64 * 1024
 MAX_TOKENS = 300
 # Models with a "thinking" switch: off, a child waits for the answer.
 _THINKING_PREFIXES = ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")
@@ -36,6 +39,8 @@ class ChatReply:
     tool_action: str | None = None
     # "input": the platform refused the request; "output": it cut the reply.
     filtered: str | None = None
+    # The provider stopped at its token limit: the last sentence may be cut off.
+    truncated: bool = False
 
 
 class ChatProvider(Protocol):
@@ -58,7 +63,7 @@ class FakeChatProvider:
     def complete(self, system: str, user: str, tools: list[dict[str, Any]]) -> ChatReply:
         self.calls.append((system, user, tools))
         item = self._script.pop(0) if self._script else ChatReply(text="好呀。")
-        if isinstance(item, ProviderError):
+        if isinstance(item, Exception):
             raise item
         return item
 
@@ -89,28 +94,46 @@ class GlmProvider:
             body["tool_choice"] = "auto"
         if self.model.startswith(_THINKING_PREFIXES):
             body["thinking"] = {"type": "disabled"}
+        # httpx timeouts are per phase / per read; the deadline bounds the whole request so the
+        # guard (SERVICE_TIMEOUT_S = 9 s) always gets an answer before it gives up.
+        deadline = monotonic() + TOTAL_TIMEOUT_S
         try:
             with httpx.Client(timeout=httpx.Timeout(TIMEOUT_S, connect=2.0), follow_redirects=False,
                               trust_env=False, transport=self._transport) as client:
-                response = client.post(GLM_URL, json=body, headers={"Authorization": "Bearer " + self._key})
+                with client.stream("POST", GLM_URL, json=body,
+                                   headers={"Authorization": "Bearer " + self._key}) as response:
+                    status = response.status_code
+                    raw = bytearray()
+                    for chunk in response.iter_bytes():
+                        raw += chunk
+                        if monotonic() > deadline:
+                            raise ProviderError("timeout")
+                        if len(raw) > MAX_RESPONSE_BYTES:
+                            raise ProviderError("format")
         except httpx.TimeoutException:
             raise ProviderError("timeout") from None
         except httpx.HTTPError:
             raise ProviderError("http") from None
-        if response.status_code == 400 and _error_code(response) == "1301":
+        if monotonic() > deadline:
+            raise ProviderError("timeout")
+        try:
+            data = json.loads(bytes(raw))
+        except ValueError:
+            data = None
+        if status == 400 and _error_code(data) == "1301":
             return ChatReply(filtered="input")  # the platform's own filter refused the request
-        if response.status_code != 200:
+        if status != 200:
             raise ProviderError("http")
         try:
-            return _parse(response.json())
+            return _parse(data)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise ProviderError("format") from None
 
 
-def _error_code(response: httpx.Response) -> str | None:
+def _error_code(data: Any) -> str | None:
     try:
-        return str(response.json()["error"]["code"])
-    except (ValueError, KeyError, TypeError):
+        return str(data["error"]["code"])
+    except (KeyError, TypeError):
         return None
 
 
@@ -136,7 +159,7 @@ def _parse(data: dict[str, Any]) -> ChatReply:
     content = message.get("content")
     if not isinstance(content, str):
         raise ValueError("content")
-    return ChatReply(text=content)
+    return ChatReply(text=content, truncated=choice.get("finish_reason") == "length")
 
 
 def from_settings(settings) -> ChatProvider:

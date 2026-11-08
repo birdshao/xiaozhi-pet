@@ -98,9 +98,12 @@ class OpenChat:
 
     # -- turn -------------------------------------------------------------
 
-    def answer(self, device_id: str, text: str, page_text: str | None,
+    def answer(self, device_id: str, text: str, page_text: Callable[[], str | None],
                joke: Callable[[], str]) -> dict[str, Any] | None:
-        """None when open chat is off for this device (the caller speaks its fallback)."""
+        """None when open chat is off for this device (the caller speaks its fallback).
+
+        page_text is called only once every gate is open: an off switch never reads pages.
+        """
         if not policy.OPEN_CHAT_SELECTABLE:
             return None
         provider = self.provider
@@ -113,11 +116,13 @@ class OpenChat:
         if blocked:
             return reply("fixed", PRIVATE_INPUT if blocked in ("phone", "address") else BLOCKED,
                          "open_chat_input_blocked")
-        system = persona.system_prompt(self._summary(device_id), page_text, [LLM_ACTIONS[a] for a in actions])
+        system = persona.system_prompt(self._summary(device_id), self._page(page_text),
+                                       [LLM_ACTIONS[a] for a in actions])
         try:
             result = provider.complete(system, text, tool_schema(actions))
-        except ProviderError as error:
-            log.warning("open_chat provider_error kind=%s", error.kind)
+        except Exception as error:  # noqa: BLE001 - any provider failure counts towards the breaker
+            log.warning("open_chat provider_error kind=%s",
+                        error.kind if isinstance(error, ProviderError) else "unexpected")
             self._note(device_id, "error")
             return reply("fallback", CHAT_ERROR, "open_chat_error")
         if result.filtered == "input":
@@ -135,14 +140,24 @@ class OpenChat:
             self._note(device_id, "ok")
             spoken = joke() if action == "TELL_JOKE" else ACTION_REPLIES[action]
             return reply("local_command", spoken, "open_chat_tool", action)
-        spoken, why = chat_rules.check_output(result.text or "")
+        spoken, why = chat_rules.check_output(result.text or "", truncated=result.truncated)
         if spoken is None:
+            if why in chat_rules.FORMAT_REASONS:  # unusable output is a model error, not content
+                log.warning("open_chat bad_output rule=%s", why)
+                self._note(device_id, "error")
+                return reply("fallback", CHAT_ERROR, "open_chat_error")
             log.info("open_chat output_blocked rule=%s", why)
-            self._note(device_id, "error" if why == "empty" else "block")
-            return reply("fallback", CHAT_ERROR if why == "empty" else BLOCKED,
-                         "open_chat_error" if why == "empty" else "open_chat_output_blocked")
+            self._note(device_id, "block")
+            return reply("fallback", BLOCKED, "open_chat_output_blocked")
         self._note(device_id, "ok")
         return reply("open_chat", spoken, "open_chat")
+
+    @staticmethod
+    def _page(page_text: Callable[[], str | None]) -> str | None:
+        try:
+            return page_text()
+        except Exception:  # noqa: BLE001 - the persona works without the page
+            return None
 
     def _summary(self, device_id: str) -> dict[str, Any]:
         if self.summary is None:

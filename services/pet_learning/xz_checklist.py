@@ -85,10 +85,13 @@ def check_xiaozhi_config(cfg: dict, public_origin: str = "") -> list[str]:
     # S6 TTS egress audit (docs/SERVER_S6.md §3): no upstream text may reach TTS in child mode.
     if cfg.get("enable_greeting") is not False:
         problems.append("enable_greeting must be false (no wake-word greeting through chat)")
-    if (cfg.get("end_prompt") or {}).get("enable") is not False:
+    end_prompt = cfg.get("end_prompt")
+    if not isinstance(end_prompt, dict) or end_prompt.get("enable") is not False:
         problems.append("end_prompt.enable must be false (no model-written goodbye on timeout)")
     if cfg.get("enable_stop_tts_notify"):
         problems.append("enable_stop_tts_notify must be false")
+    if cfg.get("enable_wakeup_words_response_cache") is not False:
+        problems.append("enable_wakeup_words_response_cache must be false (no cached wake-word reply)")
     if cfg.get("system_error_response") != CHILD_ERROR_RESPONSE:
         problems.append("system_error_response must be the reviewed child sentence")
     endpoint = str(cfg.get("mcp_endpoint") or "")

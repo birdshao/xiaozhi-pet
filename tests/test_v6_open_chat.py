@@ -146,8 +146,21 @@ class AnswerTests(ChatBase):
         data = self.say("小猫喜欢什么")
         self.assertLessEqual(len(data["tts_text"]), 320)
         self.assertTrue(data["tts_text"].endswith("。"))
-        self.provider.script(ChatReply(text="哈" * 400))
-        self.assertEqual(self.say("小猫喜欢什么")["reason"], "open_chat_output_blocked")
+        self.provider.script(ChatReply(text="哈" * 400))  # unusable format: an error, not a block
+        self.assertEqual(self.say("小猫喜欢什么")["reason"], "open_chat_error")
+        self.provider.script(ChatReply(text="小猫喜欢晒太阳。它还喜欢", truncated=True))
+        self.assertEqual(self.say("小猫喜欢什么")["tts_text"], "小猫喜欢晒太阳。")
+
+    def test_unexpected_provider_exception_counts_as_an_error(self):
+        for _ in range(3):
+            self.provider.script(RuntimeError("transport bug"))
+            self.assertEqual(self.say("天上为什么有星星")["reason"], "open_chat_error")
+        self.assertEqual(self.policy_view()["open_chat_disabled_reason"], "model_errors")
+
+    def test_page_text_is_not_read_while_chat_is_off(self):
+        self.parent("PUT", f"{BASE_URL}/policy", json={"base_rev": self.policy_view()["rev"], "open_chat": False})
+        with patch.object(self.app.state.voice_turns, "_current_page", side_effect=AssertionError("read")):
+            self.assertEqual(self.say("天上为什么有星星")["reason"], "no_match")
 
     def test_markdown_and_emoji_are_stripped(self):
         self.provider.script(ChatReply(text="**小象**有长长的鼻子🐘。"))
@@ -413,6 +426,23 @@ class RulesTests(unittest.TestCase):
         for text in ("今天几号了", "我有3只小猫", "大象为什么鼻子长", "我喜欢一二三"):
             self.assertIsNone(chat_rules.check_input(text), text)
 
+    def test_normal_child_answers_are_not_blocked(self):
+        """Review M1: counting, secrets in stories, calling grandpa, a bunny's home must pass."""
+        for text in ("我们一起数：一、二、三、四、五、六、七！", "一二三四五六七八九十，数完啦。",
+                     "这是大自然的小秘密哦。", "你可以给爸爸打电话问问。", "小兔子住在森林里的小区。",
+                     "我们马上开始吧！", "一百万写作1000000。", "全家人在一起👨‍👩‍👧很开心。",
+                     "第一行。\r\n第二行。"):
+            spoken, why = chat_rules.check_output(text)
+            self.assertIsNone(why, text)
+            self.assertTrue(spoken)
+        self.assertIsNone(chat_rules.check_input("我会数一二三四五六七八九十"))
+
+    def test_rule_classes(self):
+        self.assertEqual(chat_rules.check_output("哈" * 400)[1], "length")
+        self.assertIn(chat_rules.check_output("你好\u0007")[1], chat_rules.FORMAT_REASONS)
+        self.assertEqual(chat_rules.check_output("说到一半没有句号", truncated=True)[1], "length")
+        self.assertEqual(chat_rules.check_output("第一句。说到一半", truncated=True)[0], "第一句。")
+
     def test_output_rules_keep_clean_text(self):
         self.assertEqual(chat_rules.check_output("小鸟会飞。"), ("小鸟会飞。", None))
         self.assertEqual(chat_rules.check_output("")[1], "empty")
@@ -479,6 +509,20 @@ class GlmProviderTests(unittest.TestCase):
                 "name": "other", "arguments": "{}"}}]}}]}, {"choices": [{"message": {"content": 5}}]}):
             with self.assertRaises(ProviderError):
                 self.provider(lambda r, b=bad: httpx.Response(200, json=b)).complete("S", "U", [])
+
+    def test_length_finish_marks_truncation(self):
+        cut = lambda r: httpx.Response(200, json={"choices": [{"finish_reason": "length",  # noqa: E731
+                                                               "message": {"content": "一句。半"}}]})
+        self.assertTrue(self.provider(cut).complete("S", "U", []).truncated)
+
+    def test_whole_request_has_a_deadline(self):
+        """Review M3: a server dripping bytes cannot hold the turn past TOTAL_TIMEOUT_S."""
+        clock = iter([0.0] + [9.0] * 50)
+        with patch("services.pet_learning.chat_provider.monotonic", lambda: next(clock)):
+            drip = lambda r: httpx.Response(200, content=iter([b'{"choices"', b": []}"]))  # noqa: E731
+            with self.assertRaises(ProviderError) as caught:
+                self.provider(drip).complete("S", "U", [])
+        self.assertEqual(caught.exception.kind, "timeout")
 
     def test_platform_content_filter(self):
         sensitive = lambda r: httpx.Response(200, json={"choices": [{"finish_reason": "sensitive",  # noqa: E731

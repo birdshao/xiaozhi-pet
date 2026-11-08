@@ -35,7 +35,10 @@ services:
       KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
     env_file:
-      - path: providers.env   # S6: KID_PET_GLM_API_KEY / KID_PET_GLM_MODEL for open chat (XZ__ lines are ignored here)
+      # S6: KID_PET_GLM_API_KEY / KID_PET_GLM_MODEL for open chat (the user keeps them in providers.env,
+      # ADR-015). compose cannot pick single lines from an env_file, so this container also sees the XZ__
+      # lines (ignored here) and xiaozhi-server sees the GLM key (its own chat path is off in child mode).
+      - path: providers.env
         required: false
     volumes:
       - pet-data:/data

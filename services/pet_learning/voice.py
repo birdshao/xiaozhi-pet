@@ -189,7 +189,7 @@ class VoiceTurns:
         if is_page_question(text):
             return self._page_answer(device_id)
         if self.open_chat is not None:
-            answer = self.open_chat.answer(device_id, text, self._current_page(device_id),
+            answer = self.open_chat.answer(device_id, text, lambda: self._current_page(device_id),
                                            lambda: self._joke(body))
             if answer is not None:
                 return answer
