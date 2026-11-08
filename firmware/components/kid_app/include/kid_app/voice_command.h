@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace kid_app {
@@ -33,16 +34,34 @@ namespace kid_app {
 //   START_BRUSH    2-minute tooth-brushing companion
 //   START_WASH     20-second hand-washing companion
 //
-// The server's PAGE_PREV, PET_FEED, PET_GROOM and GO_HOME are not built yet:
-// they are Unknown here.
+// The rest of the server's list (docs/V6_VOICE_COMMANDS.md):
+//
+//   PAGE_PREV      previous page, only inside the reader (the dial's "up")
+//   GO_HOME        the dial's long press: leave the reader or a game
+//   PET_FEED       open the food picker (the care menu's Feed card); the
+//                  child's dial picks and feeds, so the meal is a dial
+//                  choice and voice itself never posts a Feed
+//   PET_GROOM      open the brushing session (the care menu's Brush card)
+//
+// A screen activity (game menu, songs, routines, food picker, brushing)
+// asked for while XiaoZhi still talks is "deferred": the board ends any game
+// the moment XiaoZhi listens, so it decides again once XiaoZhi is idle.
 enum class VoiceCommand : uint8_t {
     Unknown, SleepRequest, TellTime, TellBattery, PageNext, OpenReader,
-    AskNeeds, OpenGame, PlaySong, TellJoke, StartBrush, StartWash
+    AskNeeds, OpenGame, PlaySong, TellJoke, StartBrush, StartWash,
+    PagePrev, PetFeed, PetGroom, GoHome
 };
 
 // Exact, case-sensitive wire name; nullptr or any other text is Unknown.
 VoiceCommand ParseVoiceCommand(const char* name);
 const char* VoiceCommandName(VoiceCommand command);
+
+// The MCP tool `self.pet.request(action)` accepts exactly the server's
+// fixed-command names (services/pet_learning/intent.py ACTIONS; a contract
+// test keeps the two lists equal). TELL_TIME / TELL_BATTERY stay device-only
+// (self-test), anything else is refused before it reaches the pet.
+constexpr size_t kVoiceRequestActionCount = 13;
+bool IsVoiceRequestAction(const char* name);
 
 // Where the pet is, as the board sees it right now.
 enum class VoiceScene : uint8_t {
@@ -63,16 +82,22 @@ struct VoiceContext {
     // V8-01 care state is readable (false until that session merges: the
     // ASK_NEEDS answer is then the generic line).
     bool needs_known = false;
+    // XiaoZhi is not idle (listening / speaking): a screen activity would be
+    // ended at once, so it is deferred until the chat is over.
+    bool chat_active = false;
 };
 
 enum class VoiceAction : uint8_t {
-    None, BeginSleep, ShowTime, ShowBattery, PageNext, OpenReader
+    None, BeginSleep, ShowTime, ShowBattery, PageNext, OpenReader,
+    PagePrev, GoHome
 };
 // V8-03 proposals. Kept apart from VoiceAction so the board's existing
 // switch over VoiceAction keeps compiling; the board acts on a proposal
 // only once the matching activity is wired (until then it is just logged).
 enum class VoiceProposal : uint8_t {
-    None, AskNeeds, OpenGame, PlaySong, TellJoke, StartBrush, StartWash
+    None, AskNeeds, OpenGame, PlaySong, TellJoke, StartBrush, StartWash,
+    CareFeed,  // PET_FEED: the food picker (CareKind::Feed)
+    Groom      // PET_GROOM: brushing (CareKind::Brush)
 };
 // The gentle reply for a command the pet cannot do now: it says hi instead
 // (like the rail's refused Game item); never an error.
@@ -89,11 +114,20 @@ struct VoiceDecision {
     bool generic = false;
     // Quiet hours: show only, no sound (time / battery answers).
     bool silent = false;
-    // Log token for PET_VOICE_CMD result=...: done, unknown, off, parent,
-    // already, ignored, busy, not_in_reader, quiet, no_clock, no_battery,
-    // low_battery.
+    // The proposal waits until XiaoZhi is idle (result "deferred"); the board
+    // then decides again with chat_active = false.
+    bool after_chat = false;
+    // Log token for PET_VOICE_CMD result=...: done, deferred, unknown, off,
+    // parent, already, ignored, busy, not_in_reader, quiet, no_clock,
+    // no_battery, low_battery.
     const char* result = "ignored";
 };
+
+// Result tokens as small codes (the MCP tool waits for one from pet_input).
+// The board adds "rejected", "no_book" and "expired" (a deferred command
+// whose chat never ended). Unknown tokens are 0; code 0 reads "pending".
+uint8_t VoiceResultCode(const char* token);
+const char* VoiceResultName(uint8_t code);
 
 const char* VoiceActionName(VoiceAction action);
 const char* VoiceHintName(VoiceHint hint);

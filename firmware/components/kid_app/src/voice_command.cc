@@ -15,7 +15,23 @@ constexpr Entry kCommands[] = {
     {"OPEN_READER", VoiceCommand::OpenReader},     {"ASK_NEEDS", VoiceCommand::AskNeeds},
     {"OPEN_GAME", VoiceCommand::OpenGame},         {"PLAY_SONG", VoiceCommand::PlaySong},
     {"TELL_JOKE", VoiceCommand::TellJoke},
-    {"START_BRUSH", VoiceCommand::StartBrush},     {"START_WASH", VoiceCommand::StartWash}};
+    {"START_BRUSH", VoiceCommand::StartBrush},     {"START_WASH", VoiceCommand::StartWash},
+    {"PAGE_PREV", VoiceCommand::PagePrev},         {"PET_FEED", VoiceCommand::PetFeed},
+    {"PET_GROOM", VoiceCommand::PetGroom},         {"GO_HOME", VoiceCommand::GoHome}};
+
+// self.pet.request whitelist = intent.py ACTIONS (contract-tested).
+constexpr const char* kRequestActions[] = {
+    "SLEEP_REQUEST", "PAGE_NEXT", "PAGE_PREV", "OPEN_READER", "OPEN_GAME",
+    "PET_FEED", "PET_GROOM", "GO_HOME", "ASK_NEEDS", "PLAY_SONG",
+    "TELL_JOKE", "START_BRUSH", "START_WASH"};
+static_assert(sizeof(kRequestActions) / sizeof(kRequestActions[0]) == kVoiceRequestActionCount,
+              "self.pet.request whitelist size");
+
+// Index = code; 0 is "pending" (no answer yet / unknown token).
+constexpr const char* kResults[] = {
+    "pending", "done", "deferred", "unknown", "off", "parent", "already", "ignored", "busy",
+    "not_in_reader", "quiet", "no_clock", "no_battery", "low_battery", "rejected", "no_book",
+    "expired"};
 
 VoiceDecision Done(VoiceAction action) {
     VoiceDecision d;
@@ -40,6 +56,15 @@ VoiceDecision Ignored(const char* result) {
     d.result = result;
     return d;
 }
+// A proposal that opens a screen activity: deferred while XiaoZhi talks.
+VoiceDecision Screen(VoiceProposal proposal, const VoiceContext& c) {
+    VoiceDecision d = Proposed(proposal);
+    if (c.chat_active) {
+        d.after_chat = true;
+        d.result = "deferred";
+    }
+    return d;
+}
 }  // namespace
 
 VoiceCommand ParseVoiceCommand(const char* name) {
@@ -47,6 +72,24 @@ VoiceCommand ParseVoiceCommand(const char* name) {
     for (const auto& entry : kCommands)
         if (std::strcmp(name, entry.name) == 0) return entry.command;
     return VoiceCommand::Unknown;
+}
+
+bool IsVoiceRequestAction(const char* name) {
+    if (!name) return false;
+    for (const char* allowed : kRequestActions)
+        if (std::strcmp(name, allowed) == 0) return true;
+    return false;
+}
+
+uint8_t VoiceResultCode(const char* token) {
+    if (!token) return 0;
+    for (size_t i = 1; i < sizeof(kResults) / sizeof(kResults[0]); ++i)
+        if (std::strcmp(token, kResults[i]) == 0) return static_cast<uint8_t>(i);
+    return 0;
+}
+
+const char* VoiceResultName(uint8_t code) {
+    return code < sizeof(kResults) / sizeof(kResults[0]) ? kResults[code] : kResults[0];
 }
 
 const char* VoiceCommandName(VoiceCommand command) {
@@ -63,6 +106,8 @@ const char* VoiceActionName(VoiceAction action) {
         case VoiceAction::ShowBattery: return "battery";
         case VoiceAction::PageNext: return "page_next";
         case VoiceAction::OpenReader: return "open_reader";
+        case VoiceAction::PagePrev: return "page_prev";
+        case VoiceAction::GoHome: return "go_home";
     }
     return "none";
 }
@@ -89,6 +134,8 @@ const char* VoiceProposalName(VoiceProposal proposal) {
         case VoiceProposal::TellJoke: return "tell_joke";
         case VoiceProposal::StartBrush: return "start_brush";
         case VoiceProposal::StartWash: return "start_wash";
+        case VoiceProposal::CareFeed: return "care_feed";
+        case VoiceProposal::Groom: return "groom";
     }
     return "none";
 }
@@ -147,12 +194,12 @@ VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
             if (!at_home) return Refused(VoiceHint::Busy, "busy");
             if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
             if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
-            return Proposed(VoiceProposal::OpenGame);
+            return Screen(VoiceProposal::OpenGame, c);
         case VoiceCommand::PlaySong: {
             if (!at_home) return Refused(VoiceHint::Busy, "busy");
             if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
             // Quiet hours: the player opens with lullabies only, at low volume.
-            VoiceDecision d = Proposed(VoiceProposal::PlaySong);
+            VoiceDecision d = Screen(VoiceProposal::PlaySong, c);
             d.silent = c.quiet_hours;
             return d;
         }
@@ -163,12 +210,32 @@ VoiceDecision DecideVoiceCommand(VoiceCommand command, const VoiceContext& c) {
             // hours only mute the cue sounds. The hourglass refreshes cost
             // power, so a low battery waits for a charge.
             if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
-            VoiceDecision d = Proposed(command == VoiceCommand::StartBrush
-                                           ? VoiceProposal::StartBrush
-                                           : VoiceProposal::StartWash);
+            VoiceDecision d = Screen(command == VoiceCommand::StartBrush
+                                         ? VoiceProposal::StartBrush
+                                         : VoiceProposal::StartWash,
+                                     c);
             d.silent = c.quiet_hours;
             return d;
         }
+        case VoiceCommand::PagePrev:
+            if (c.scene != VoiceScene::Reader)
+                return Refused(VoiceHint::NotInReader, "not_in_reader");
+            return Done(VoiceAction::PagePrev);
+        case VoiceCommand::GoHome:
+            // The dial's long press; always allowed (it only ever calms things).
+            if (at_home) return Ignored("already");
+            return Done(VoiceAction::GoHome);
+        case VoiceCommand::PetFeed:
+        case VoiceCommand::PetGroom:
+            // The care menu's rules (V8_CARE_AND_GROWTH §2): home only, not in
+            // quiet hours, not on a low battery. Voice opens the session only;
+            // the meal / the strokes come from the dial (ADR-012).
+            if (!at_home) return Refused(VoiceHint::Busy, "busy");
+            if (c.quiet_hours) return Refused(VoiceHint::QuietHours, "quiet");
+            if (c.low_battery) return Refused(VoiceHint::LowBattery, "low_battery");
+            return Screen(command == VoiceCommand::PetFeed ? VoiceProposal::CareFeed
+                                                           : VoiceProposal::Groom,
+                          c);
         case VoiceCommand::Unknown:
             break;
     }

@@ -1,0 +1,64 @@
+PETSELFTEST1
+# V6-02 rest: PAGE_PREV, GO_HOME, PET_FEED, PET_GROOM and OPEN_GAME as
+# "vcmd" steps (the names self.pet.request passes on; XiaoZhi is idle here,
+# so nothing is deferred). Counted from "mark begin".
+# Needs: outside the quiet hours ("phase day" pins the day phase) and a
+# battery above the low level.
+# expect min:name=PAGE_PREV 2
+# expect min:name=GO_HOME 4
+# expect min:name=PET_FEED 1
+# expect min:name=PET_GROOM 1
+# expect min:name=OPEN_GAME 1
+# At home there is no page to turn back, and home is home already.
+# expect min:result=not_in_reader 1
+# expect min:result=already 1
+# Reader, food picker, brushing, game menu, and home from each of them.
+# expect min:result=done 7
+# Feed opens the food picker and groom the brushing: voice feeds nothing,
+# the dial would (left with a long press here, so no meal, no record).
+# expect min:kind=feed 1
+# expect min:kind=brush 1
+# expect min:PET_GAME_MENU 1
+# expect none:PET_CARE_RECORD 0
+# expect none:result=deferred 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Home: no book to turn back; already home.
+vcmd PAGE_PREV
+wait 2000
+vcmd GO_HOME
+wait 2000
+# Reader (or its no-book picture): next, previous, then home by voice.
+vcmd OPEN_READER
+wait 7000
+vcmd PAGE_NEXT
+wait 4000
+vcmd PAGE_PREV
+wait 4000
+vcmd GO_HOME
+wait 6000
+# Food picker opened by voice, left with the dial's long press (no meal).
+vcmd PET_FEED
+wait 6000
+hold press 1500 6000
+# Brushing opened by voice, home by voice.
+vcmd PET_GROOM
+wait 6000
+vcmd GO_HOME
+wait 6000
+# Game menu opened by voice, home by voice.
+vcmd OPEN_GAME
+wait 6000
+vcmd GO_HOME
+wait 6000
+end

@@ -29,8 +29,8 @@ int main() {
     assert(ParseVoiceCommand("TELL_BATTERY") == VoiceCommand::TellBattery);
     assert(ParseVoiceCommand("PAGE_NEXT") == VoiceCommand::PageNext);
     assert(ParseVoiceCommand("OPEN_READER") == VoiceCommand::OpenReader);
-    for (const char* bad : {"", "sleep_request", "PAGE_PREV", "PET_FEED", "GO_HOME", "open_game", "START_BRUSH ",
-                            "SLEEP_REQUEST ", "rm -rf", "TELL_TIME\n"})
+    for (const char* bad : {"", "sleep_request", "page_prev", "PET_FEED ", "GO_HOME\n", "open_game",
+                            "START_BRUSH ", "SLEEP_REQUEST ", "rm -rf", "TELL_TIME\n", "PET_GROOMX"})
         assert(ParseVoiceCommand(bad) == VoiceCommand::Unknown);
     assert(ParseVoiceCommand(nullptr) == VoiceCommand::Unknown);
     for (VoiceCommand c : {VoiceCommand::SleepRequest, VoiceCommand::TellTime,
@@ -200,9 +200,124 @@ int main() {
         }
     }
 
+    // V6-02 rest: the server's PAGE_PREV, PET_FEED, PET_GROOM and GO_HOME.
+    for (const char* n : {"PAGE_PREV", "PET_FEED", "PET_GROOM", "GO_HOME"})
+        assert(std::strcmp(VoiceCommandName(ParseVoiceCommand(n)), n) == 0);
+    {
+        auto home = Ctx(VoiceScene::Home);
+        auto night = home;
+        night.quiet_hours = true;
+        auto low = home;
+        low.low_battery = true;
+        for (const char* n : {"PAGE_PREV", "PET_FEED", "PET_GROOM", "GO_HOME"}) {
+            assert(Is(Run(n, Ctx(VoiceScene::Off)), VoiceAction::None, VoiceHint::None, "off"));
+            assert(Is(Run(n, Ctx(VoiceScene::Parent)), VoiceAction::None, VoiceHint::None, "parent"));
+            assert(Is(Run(n, Ctx(VoiceScene::Sleeping)), VoiceAction::None, VoiceHint::None,
+                      "ignored"));
+            assert(Run(n, Ctx(VoiceScene::Sleeping)).proposal == VoiceProposal::None);
+        }
+
+        // Previous page: the dial's "up" in the reader, whatever the hour or battery.
+        assert(Is(Run("PAGE_PREV", Ctx(VoiceScene::Reader)), VoiceAction::PagePrev,
+                  VoiceHint::None, "done"));
+        auto reader_night = Ctx(VoiceScene::Reader);
+        reader_night.quiet_hours = reader_night.low_battery = true;
+        assert(Run("PAGE_PREV", reader_night).action == VoiceAction::PagePrev);
+        for (VoiceScene s : {VoiceScene::Home, VoiceScene::Game})
+            assert(Is(Run("PAGE_PREV", Ctx(s)), VoiceAction::None, VoiceHint::NotInReader,
+                      "not_in_reader"));
+
+        // Home: the dial's long press from the reader or a game; at home already.
+        for (VoiceScene s : {VoiceScene::Reader, VoiceScene::Game}) {
+            assert(Is(Run("GO_HOME", Ctx(s)), VoiceAction::GoHome, VoiceHint::None, "done"));
+            auto c = Ctx(s);
+            c.quiet_hours = c.low_battery = c.chat_active = true;  // going home is always fine
+            assert(Is(Run("GO_HOME", c), VoiceAction::GoHome, VoiceHint::None, "done"));
+        }
+        assert(Is(Run("GO_HOME", home), VoiceAction::None, VoiceHint::None, "already"));
+
+        // Feed / groom: they only open the care session the menu card opens (the
+        // food picker / the brushing); the child's dial does the rest, so voice
+        // itself never posts a Feed and never writes care or memory. Refused like
+        // the care menu: home only, not at night, not on a low battery.
+        const struct {
+            const char* name;
+            VoiceProposal want;
+        } care[] = {{"PET_FEED", VoiceProposal::CareFeed}, {"PET_GROOM", VoiceProposal::Groom}};
+        for (const auto& row : care) {
+            auto d = Run(row.name, home);
+            assert(Is(d, VoiceAction::None, VoiceHint::None, "done") && d.proposal == row.want);
+            assert(!d.after_chat);
+            assert(Is(Run(row.name, night), VoiceAction::None, VoiceHint::QuietHours, "quiet"));
+            assert(Run(row.name, night).proposal == VoiceProposal::None);
+            assert(Is(Run(row.name, low), VoiceAction::None, VoiceHint::LowBattery, "low_battery"));
+            assert(Run(row.name, low).proposal == VoiceProposal::None);
+            for (VoiceScene s : {VoiceScene::Reader, VoiceScene::Game})
+                assert(Is(Run(row.name, Ctx(s)), VoiceAction::None, VoiceHint::Busy, "busy"));
+        }
+
+        // A screen activity asked for while XiaoZhi is still talking waits for the
+        // chat to end (the board ends a game the moment XiaoZhi listens): result
+        // "deferred", the same proposal, after_chat set. The board decides again
+        // once XiaoZhi is idle, with every rule above.
+        auto chat = home;
+        chat.chat_active = true;
+        for (const char* n : {"OPEN_GAME", "PLAY_SONG", "START_BRUSH", "START_WASH", "PET_FEED",
+                              "PET_GROOM"}) {
+            const auto now = Run(n, home);
+            const auto later = Run(n, chat);
+            assert(later.after_chat && std::strcmp(later.result, "deferred") == 0);
+            assert(later.proposal == now.proposal && later.action == VoiceAction::None);
+            auto chat_low = chat;
+            chat_low.low_battery = true;  // a refusal is said now, not deferred
+            assert(!Run(n, chat_low).after_chat);
+            assert(Run(n, chat_low).proposal == VoiceProposal::None);
+        }
+        // Everything else runs at once, also mid-chat.
+        auto chat_reader = Ctx(VoiceScene::Reader);
+        chat_reader.chat_active = true;
+        assert(!Run("PAGE_NEXT", chat_reader).after_chat);
+        assert(!Run("PAGE_PREV", chat_reader).after_chat);
+        for (const char* n : {"SLEEP_REQUEST", "TELL_TIME", "ASK_NEEDS", "TELL_JOKE", "OPEN_READER"})
+            assert(!Run(n, chat).after_chat && std::strcmp(Run(n, chat).result, "deferred") != 0);
+    }
+
+    // The MCP tool self.pet.request accepts exactly the server's fixed-command
+    // names (services/pet_learning/intent.py ACTIONS); the device-only answers
+    // and anything else are refused before they reach the pet.
+    {
+        const char* allowed[] = {"SLEEP_REQUEST", "PAGE_NEXT", "PAGE_PREV", "OPEN_READER",
+                                 "OPEN_GAME",     "PET_FEED",  "PET_GROOM", "GO_HOME",
+                                 "ASK_NEEDS",     "PLAY_SONG", "TELL_JOKE", "START_BRUSH",
+                                 "START_WASH"};
+        for (const char* n : allowed) {
+            assert(IsVoiceRequestAction(n));
+            assert(ParseVoiceCommand(n) != VoiceCommand::Unknown);
+        }
+        assert(sizeof(allowed) / sizeof(allowed[0]) == kVoiceRequestActionCount);
+        for (const char* bad : {"TELL_TIME", "TELL_BATTERY", "", "pet_feed", "PET_FEED ",
+                                "UNKNOWN", "OPEN_GAME\n", "SLEEP_REQUEST;", "FLY_TO_MOON"})
+            assert(!IsVoiceRequestAction(bad));
+        assert(!IsVoiceRequestAction(nullptr));
+    }
+
+    // Result tokens travel back to the MCP caller as small codes; every token
+    // the dispatcher or the board can produce round-trips, anything else is 0.
+    for (const char* token : {"done", "deferred", "unknown", "off", "parent", "already", "ignored",
+                              "busy", "not_in_reader", "quiet", "no_clock", "no_battery",
+                              "low_battery", "rejected", "no_book", "expired"}) {
+        const uint8_t code = VoiceResultCode(token);
+        assert(code != 0);
+        assert(std::strcmp(VoiceResultName(code), token) == 0);
+    }
+    assert(VoiceResultCode("whatever") == 0 && VoiceResultCode(nullptr) == 0);
+    assert(std::strcmp(VoiceResultName(0), "pending") == 0);
+    assert(std::strcmp(VoiceResultName(250), "pending") == 0);
+
     // Names are never empty (they go into the log).
     for (VoiceAction a : {VoiceAction::None, VoiceAction::BeginSleep, VoiceAction::ShowTime,
-                          VoiceAction::ShowBattery, VoiceAction::PageNext, VoiceAction::OpenReader})
+                          VoiceAction::ShowBattery, VoiceAction::PageNext, VoiceAction::OpenReader,
+                          VoiceAction::PagePrev, VoiceAction::GoHome})
         assert(*VoiceActionName(a));
     for (VoiceHint h : {VoiceHint::None, VoiceHint::NotInReader, VoiceHint::Busy,
                         VoiceHint::QuietHours, VoiceHint::ClockUnknown, VoiceHint::BatteryUnknown,
@@ -210,7 +325,8 @@ int main() {
         assert(*VoiceHintName(h));
     for (VoiceProposal p : {VoiceProposal::None, VoiceProposal::AskNeeds, VoiceProposal::OpenGame,
                             VoiceProposal::PlaySong, VoiceProposal::TellJoke,
-                            VoiceProposal::StartBrush, VoiceProposal::StartWash})
+                            VoiceProposal::StartBrush, VoiceProposal::StartWash,
+                            VoiceProposal::CareFeed, VoiceProposal::Groom})
         assert(*VoiceProposalName(p));
     assert(std::strcmp(VoiceCommandName(VoiceCommand::Unknown), "UNKNOWN") == 0);
 

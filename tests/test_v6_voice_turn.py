@@ -124,7 +124,7 @@ class FixedCommandTests(VoiceBase):
 
     def test_required_sentences(self):
         self.assertEqual(self.say("团团睡觉")["tts_text"], "好的，我们准备睡觉啦。")
-        self.assertEqual(self.say("喂团团")["tts_text"], "好呀，我们给团团喂一口。")
+        self.assertEqual(self.say("喂团团")["tts_text"], "好呀，选一样好吃的喂团团吧。")
 
     def test_near_misses_never_produce_an_action(self):
         for phrase in NEAR_MISSES:

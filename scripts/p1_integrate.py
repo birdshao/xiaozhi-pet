@@ -1113,23 +1113,77 @@ BOARD_WORKER = r'''
 
     // ---- V6-02 fixed voice commands ----
     // The server's fixed-command matcher (S5) asks for one of a handful of
-    // wire names (kid_app/voice_command.h); any task may post one, pet_input
+    // wire names (kid_app/voice_command.h) through the MCP tool
+    // self.pet.request (InitializePetTools); any task may post one, pet_input
     // decides with the same rules as the buttons (DecideVoiceCommand) and
-    // runs the same code paths as the rail / PWR. Voice writes no memory and
-    // gives no extra reward. One slot: a newer command replaces a waiting
-    // one. Bit 0-7 the command, bits 8-23 a sequence (never 0 when posted).
+    // runs the same code paths as the rail / PWR / dial. Voice writes no
+    // memory and gives no extra reward. One slot: a newer command replaces a
+    // waiting one. Bit 0-7 the command, bits 8-23 a sequence (never 0 when
+    // posted).
     std::atomic<uint32_t> voice_cmd_{0};
     std::atomic<uint16_t> voice_cmd_seq_{0};
+    // pet_input's answer for a waiting self.pet.request call: bits 8-23 the
+    // sequence, bits 0-7 kid_app::VoiceResultCode.
+    std::atomic<uint32_t> voice_reply_{0};
+    // pet_input only: a screen activity (game menu, songs, routines, food
+    // picker, brushing) asked for while XiaoZhi talks. UpdateGame ends any
+    // game while XiaoZhi is not idle, so it is decided again once it is (the
+    // guard ends the chat after its sentence); dropped after kVoiceDeferMs.
+    kid_app::VoiceCommand voice_deferred_ = kid_app::VoiceCommand::Unknown;
+    uint32_t voice_deferred_at_ms_ = 0;
+    static constexpr uint32_t kVoiceDeferMs = 20000;
+    // The MCP tool runs on XiaoZhi's main task: wait for pet_input briefly
+    // (its loop turns every ~20 ms), then answer "pending".
+    static constexpr uint32_t kVoiceReplyWaitMs = 400;
 
-    // Any task. Unknown names are logged and dropped right here.
-    void RequestVoiceCommand(const char* name) {
+    // Any task. Unknown names are logged and dropped right here. Returns the
+    // sequence pet_input answers under (0: dropped).
+    uint16_t RequestVoiceCommand(const char* name) {
         const auto command = kid_app::ParseVoiceCommand(name);
         if (command == kid_app::VoiceCommand::Unknown) {
             ESP_LOGI(TAG, "PET_VOICE_CMD name=%.15s result=unknown", name ? name : "");
-            return;
+            return 0;
         }
-        const uint32_t seq = static_cast<uint32_t>(voice_cmd_seq_.fetch_add(1) + 1) & 0xFFFF;
-        voice_cmd_.store((seq ? seq : 1u) << 8 | static_cast<uint32_t>(command));
+        uint16_t seq = static_cast<uint16_t>(voice_cmd_seq_.fetch_add(1) + 1);
+        if (!seq) seq = 1;
+        voice_cmd_.store(static_cast<uint32_t>(seq) << 8 | static_cast<uint32_t>(command));
+        return seq;
+    }
+
+    // MCP tool (XiaoZhi's main task): pet_input's result for `seq`.
+    const char* WaitVoiceResult(uint16_t seq) {
+        for (uint32_t waited = 0; waited <= kVoiceReplyWaitMs; waited += 10) {
+            const uint32_t reply = voice_reply_.load();
+            if ((reply >> 8) == seq) return kid_app::VoiceResultName(reply & 0xFF);
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return "pending";
+    }
+
+    // S5 -> device: the child guard on the XiaoZhi server calls this on a
+    // local_command (docs/V6_VOICE_COMMANDS.md). Only the server's fixed
+    // names pass; pet_input decides like for the buttons, so MCP carries a
+    // proposal only (ADR-008). The reply is {"action":..,"result":..}.
+    void InitializePetTools() {
+        McpServer::GetInstance().AddTool("self.pet.request",
+            "Fixed child voice command chosen by the server's command matcher; "
+            "the pet decides whether to act. Not for open chat.",
+            PropertyList({Property("action", kPropertyTypeString).SetMaxLength(15)}),
+            [this](const PropertyList& properties) -> ToolResult {
+                const std::string action = properties["action"].value<std::string>();
+                if (!kid_app::IsVoiceRequestAction(action.c_str())) {
+                    ESP_LOGW(TAG, "PET_VOICE_MCP result=refused len=%u",
+                             static_cast<unsigned>(action.size()));
+                    return std::unexpected(std::string("unknown action"));
+                }
+                const uint16_t seq = RequestVoiceCommand(action.c_str());
+                const char* result = seq ? WaitVoiceResult(seq) : "unknown";
+                ESP_LOGI(TAG, "PET_VOICE_MCP name=%s result=%s", action.c_str(), result);
+                char reply[64];
+                snprintf(reply, sizeof(reply), "{\"action\":\"%s\",\"result\":\"%s\"}",
+                         action.c_str(), result);
+                return ReturnValue{std::string(reply)};
+            });
     }
 
     kid_app::VoiceScene CurrentVoiceScene() const {
@@ -1143,10 +1197,26 @@ BOARD_WORKER = r'''
     }
 
     // pet_input, every loop.
-    void UpdateVoiceCommand() {
-        const uint32_t word = voice_cmd_.exchange(0);
+    void UpdateVoiceCommand(DeviceState state) {
+        uint32_t word = voice_cmd_.exchange(0);
+        bool later = false;  // a deferred command, now that XiaoZhi is idle
+        if (word) {
+            voice_deferred_ = kid_app::VoiceCommand::Unknown;  // the newer one wins
+        } else if (voice_deferred_ != kid_app::VoiceCommand::Unknown) {
+            if (NowMs() - voice_deferred_at_ms_ > kVoiceDeferMs) {
+                ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=expired",
+                         kid_app::VoiceCommandName(voice_deferred_));
+                voice_deferred_ = kid_app::VoiceCommand::Unknown;
+                return;
+            }
+            if (state != kDeviceStateIdle) return;
+            word = static_cast<uint32_t>(voice_deferred_);  // sequence 0: nobody waits
+            voice_deferred_ = kid_app::VoiceCommand::Unknown;
+            later = true;
+        }
         if (!word) return;
         const auto command = static_cast<kid_app::VoiceCommand>(word & 0xFF);
+        const uint16_t seq = static_cast<uint16_t>(word >> 8);
         // A voice command is activity: it ends a nap or the morning window
         // like a dial touch (the command itself still runs).
         if (power_save_timer_) power_save_timer_->WakeUp();
@@ -1161,8 +1231,14 @@ BOARD_WORKER = r'''
         context.clock_known = status.hour != kid_app::StatusBar::kNoTime &&
                               status.minute != kid_app::StatusBar::kNoTime;
         context.battery_known = battery_.Percent() >= 0;
-        const auto decision = kid_app::DecideVoiceCommand(command, context);
+        context.chat_active = state != kDeviceStateIdle;
+        auto decision = kid_app::DecideVoiceCommand(command, context);
         const char* result = decision.result;
+        if (decision.after_chat) {  // runs once XiaoZhi is idle, decided again then
+            voice_deferred_ = command;
+            voice_deferred_at_ms_ = NowMs();
+            decision.proposal = kid_app::VoiceProposal::None;
+        }
 
         switch (decision.action) {
             case kid_app::VoiceAction::None:
@@ -1184,6 +1260,24 @@ BOARD_WORKER = r'''
                     ApplyBookStep(book_.OnInput(kid_app::InputKind::DialDown, NowMs()), "voice");
                 }
                 break;
+            case kid_app::VoiceAction::PagePrev:  // the dial's "up" in the reader
+                if (!book_.Active() || book_.Asking()) {
+                    result = "busy";
+                } else if (book_.Missing() != kid_app::BookMissing::None) {
+                    result = "no_book";
+                } else {
+                    ApplyBookStep(book_.OnInput(kid_app::InputKind::DialUp, NowMs()), "voice");
+                }
+                break;
+            case kid_app::VoiceAction::GoHome:  // the dial's long press
+                if (context.scene == kid_app::VoiceScene::Game) {
+                    HandleGameInput(kid_app::InputKind::DialLong);
+                } else if (book_.Active()) {
+                    ApplyBookStep(book_.OnInput(kid_app::InputKind::DialLong, NowMs()), "voice");
+                } else if (!pet_service_.PostLocal(kid_app::PetAction::StopStory)) {
+                    result = "rejected";
+                }
+                break;
             case kid_app::VoiceAction::ShowTime:
                 ESP_LOGI(TAG, "PET_VOICE_TIME hour=%u minute=%u", static_cast<unsigned>(status.hour),
                          static_cast<unsigned>(status.minute));
@@ -1194,9 +1288,16 @@ BOARD_WORKER = r'''
                 break;
         }
         // V8: proposals only; the activity decides for itself and the dial
-        // confirms whatever needs confirming (routines wait for a press).
+        // confirms whatever needs confirming (routines wait for a press, the
+        // food picker for the child's pick). A deferred one runs later.
         switch (decision.proposal) {
             case kid_app::VoiceProposal::None:
+                break;
+            case kid_app::VoiceProposal::CareFeed:  // the care menu's Feed card
+                StartCare(kid_app::CareKind::Feed);
+                break;
+            case kid_app::VoiceProposal::Groom:  // the care menu's Brush card
+                StartCare(kid_app::CareKind::Brush);
                 break;
             case kid_app::VoiceProposal::OpenGame:
                 OpenGameMenu(0);
@@ -1216,10 +1317,15 @@ BOARD_WORKER = r'''
                          kid_app::VoiceProposalName(decision.proposal), decision.generic ? 1 : 0);
                 break;
         }
-        ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=%s action=%s hint=%s scene=%s",
+        ESP_LOGI(TAG, "PET_VOICE_CMD name=%s result=%s action=%s hint=%s scene=%s proposal=%s "
+                 "later=%d",
                  kid_app::VoiceCommandName(command), result,
                  kid_app::VoiceActionName(decision.action),
-                 kid_app::VoiceHintName(decision.hint), kScene[static_cast<int>(context.scene)]);
+                 kid_app::VoiceHintName(decision.hint), kScene[static_cast<int>(context.scene)],
+                 kid_app::VoiceProposalName(decision.proposal), later ? 1 : 0);
+        if (seq)
+            voice_reply_.store(static_cast<uint32_t>(seq) << 8 |
+                               kid_app::VoiceResultCode(result));
 
         // Time / battery answers and refusals: a wave and the pet's hello
         // (the server's TTS says the digits; the status band already shows
@@ -1307,7 +1413,7 @@ BOARD_WORKER = r'''
             UpdatePower(state);
             UpdateBattery(state);
             UpdateEnvTips(state);  // V4-03
-            UpdateVoiceCommand();  // V6-02
+            UpdateVoiceCommand(state);  // V6-02
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -1891,6 +1997,7 @@ BOARD_WORKER = r'''
         boot_button_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::Boot, false); });
         pwr_button_.OnPressDown([this]() { PostKeyEdge(kid_app::InputKey::Power, true); });
         pwr_button_.OnPressUp([this]() { PostKeyEdge(kid_app::InputKey::Power, false); });
+        InitializePetTools();  // S5 voice commands reach pet_input from here on
     }
 
     // ---- V3-03 PowerManager and V3-04 good morning ----
