@@ -20,6 +20,42 @@ INSERT = """    # Child profile uses reviewed PetLearning text before any genera
 """
 
 
+# ADR-008: the device tool self.pet.request is for the child guard only. Upstream
+# lists every device MCP tool in the model's function table (mcp_client.
+# get_available_tools -> DeviceMCPExecutor.get_tools / intent_llm), so in any mode
+# the overlay hides it there and refuses it if a model names it anyway; the guard
+# calls it directly through mcp_handler.call_mcp_tool.
+GUARD_ONLY_TOOL = "self_pet_request"
+CLIENT_ANCHOR = "        for tool_name, tool_data in self.tools.items():\n"
+CLIENT_INSERT = ('            if tool_name == "self_pet_request":  # child guard only (ADR-008)\n'
+                 '                continue\n')
+EXECUTOR_ANCHOR = '        """执行设备端MCP工具"""\n'
+EXECUTOR_INSERT = ('        if tool_name == "self_pet_request":  # child guard only (ADR-008)\n'
+                   '            return ActionResponse(action=Action.ERROR, response="not available")\n')
+
+
+def _insert_after(text: str, anchor: str, insert: str, label: str) -> str:
+    if insert in text:
+        raise ValueError(label + ": guard-only filter already installed")
+    if text.count(anchor) != 1:
+        raise ValueError(label + ": upstream anchor changed; reject unsafe patch")
+    patched = text.replace(anchor, anchor + insert, 1)
+    compile(patched, label, "exec")
+    return patched
+
+
+def overlay_mcp_client(text: str) -> str:
+    """Hide self_pet_request from MCPClient.get_available_tools (the model's list)."""
+    if text.count("def get_available_tools(") != 1:
+        raise ValueError("mcp_client.py: upstream anchor changed; reject unsafe patch")
+    return _insert_after(text, CLIENT_ANCHOR, CLIENT_INSERT, "mcp_client.py")
+
+
+def overlay_mcp_executor(text: str) -> str:
+    """Refuse self_pet_request when a model calls it by name."""
+    return _insert_after(text, EXECUTOR_ANCHOR, EXECUTOR_INSERT, "mcp_executor.py")
+
+
 def overlay(text: str) -> str:
     if "from plugins_func.functions.child_voice_guard" in text:
         raise ValueError("Child guard already installed; refuse double injection")
@@ -48,9 +84,13 @@ def main() -> None:
         raise RuntimeError("Self-hosted XiaoZhi commit mismatch; no patch")
     handler = source / "core" / "handle" / "intentHandler.py"
     plugin = source / "plugins_func" / "functions" / "child_voice_guard.py"
+    device_mcp = source / "core" / "providers" / "tools" / "device_mcp"
+    client, executor = device_mcp / "mcp_client.py", device_mcp / "mcp_executor.py"
     if not handler.is_file() or plugin.exists():
         raise RuntimeError("Missing upstream intent handler or child guard already exists")
     patched = overlay(handler.read_text(encoding="utf-8"))
+    patched_client = overlay_mcp_client(client.read_text(encoding="utf-8"))
+    patched_executor = overlay_mcp_executor(executor.read_text(encoding="utf-8"))
     module = (Path(__file__).resolve().parents[1] / "integrations" /
               "xiaozhi_server" / "child_voice_guard.py").read_text(encoding="utf-8")
     compile(module, str(plugin), "exec")
@@ -59,6 +99,8 @@ def main() -> None:
         return
     # Validate all inputs before either file write. Caller owns disposable checkout.
     handler.write_text(patched, encoding="utf-8")
+    client.write_text(patched_client, encoding="utf-8")
+    executor.write_text(patched_executor, encoding="utf-8")
     plugin.write_text(module, encoding="utf-8")
     print("P3_CHILD_GUARD_INSTALLED_IN_DISPOSABLE_SERVER_CHECKOUT")
 

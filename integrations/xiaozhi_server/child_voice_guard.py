@@ -7,10 +7,14 @@ never fall through to normal LLM streaming and unreviewed TTS.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
+import json
+import logging
 import os
+import re
 import uuid
 from urllib.parse import urlsplit
 import httpx
@@ -19,6 +23,35 @@ REVIEWED_FALLBACK = "我们可以看看绘本，或者请家人一起聊聊这�
 NO_SERVICE = "现在还不能语音聊天，我们可以先用按键和小宠物玩。"
 NOT_BOUND = "请让家长帮忙连接儿童模式。"
 LOCAL_ACTION_HINT = "我听到了，我们用设备上的按键完成这个动作吧。"
+
+# local_command: the device's MCP tool self.pet.request(action) decides (ADR-008:
+# the fixed-command matcher proposes, PetCore on the board executes). Upstream keys
+# device tools by their sanitised name (core.utils.util.sanitize_tool_name).
+PET_REQUEST_TOOL = "self_pet_request"
+DEVICE_TIMEOUT_S = 3
+# Upstream drops audio whose sentence_id is not the current one: wait for a
+# sentence still playing before starting ours (bounded).
+SPEAK_WAIT_S = 4.0
+SPEAK_WAIT_STEP_S = 0.1
+_log = logging.getLogger(__name__)
+_ACTION_RE = re.compile(r"[A-Z_]{1,15}")
+# What the pet answered decides the sentence: the server's reviewed sentence only
+# when the device accepted; otherwise one of these fixed sentences.
+DEVICE_OK = "好的。"
+DEVICE_PENDING = "好的，我们试试看。"
+DEVICE_ALREADY = "我们已经在这里啦。"
+DEVICE_QUIET = "现在是安静时间，我们等一会儿再玩吧。"
+DEVICE_LOW_BATTERY = "团团有点没电了，请大人帮忙充上电吧。"
+DEVICE_NOT_IN_READER = "我们先打开绘本，再来翻页吧。"
+DEVICE_NOT_NOW = "现在还不行哦，我们等一会儿再试吧。"
+_ACCEPTED = ("done", "deferred")
+_DEVICE_SENTENCES = {
+    "pending": DEVICE_PENDING, "already": DEVICE_ALREADY, "quiet": DEVICE_QUIET,
+    "low_battery": DEVICE_LOW_BATTERY, "not_in_reader": DEVICE_NOT_IN_READER,
+    "busy": DEVICE_NOT_NOW, "no_book": DEVICE_NOT_NOW, "rejected": DEVICE_NOT_NOW,
+    "parent": DEVICE_NOT_NOW, "off": DEVICE_NOT_NOW, "ignored": DEVICE_NOT_NOW,
+    "expired": DEVICE_NOT_NOW, "no_clock": DEVICE_NOT_NOW, "no_battery": DEVICE_NOT_NOW,
+}
 
 
 def child_mode_enabled() -> bool:
@@ -55,11 +88,20 @@ def _approved_local_url() -> str | None:
     return raw
 
 
-async def _voice_reply(conn, text: str) -> str:
+class _Command:
+    """A signed local_command: the action name and the server's reviewed sentence."""
+
+    def __init__(self, action: str, spoken):
+        self.action = action
+        self.spoken = spoken if isinstance(spoken, str) and 0 < len(spoken) <= 320 else None
+
+
+async def _voice_reply(conn, text: str):
     """Forward the ASR text to PetLearning and return the sentence it chose.
 
     All decisions (commands, page Q&A, quiet hours, fallback) live server-side;
-    this function holds no intent logic and never triggers a device action.
+    this function holds no intent logic and never triggers a device action
+    itself: a local_command comes back as a _Command for _carry_out().
     """
     upstream_id = os.getenv("KID_PET_UPSTREAM_DEVICE_ID", "")
     business_id = os.getenv("KID_PET_BUSINESS_DEVICE_ID", "")
@@ -92,13 +134,77 @@ async def _voice_reply(conn, text: str) -> str:
             return NO_SERVICE
         kind, spoken = data.get("kind"), data.get("tts_text")
         if kind == "local_command":
-            # Until self.pet.request is verified on the pinned XiaoZhi, point at the buttons.
-            return LOCAL_ACTION_HINT
+            action = data.get("action")
+            if not isinstance(action, str) or not _ACTION_RE.fullmatch(action):
+                return NO_SERVICE
+            return _Command(action, spoken)
         if kind in _ALLOWED_KINDS and isinstance(spoken, str) and 0 < len(spoken) <= 320:
             return spoken
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
         pass
     return NO_SERVICE
+
+
+async def _device_result(conn, action: str) -> str | None:
+    """Ask the board's self.pet.request(action); its result token, or None."""
+    client = getattr(conn, "mcp_client", None)
+    if client is None or not client.has_tool(PET_REQUEST_TOOL):
+        return None
+    from core.providers.tools.device_mcp.mcp_handler import call_mcp_tool
+    try:
+        raw = await call_mcp_tool(conn, client, PET_REQUEST_TOOL, {"action": action},
+                                  timeout=DEVICE_TIMEOUT_S)
+        answer = json.loads(raw)
+    except (TimeoutError, asyncio.TimeoutError):
+        # The request went out: the board may have acted or deferred it.
+        return "pending"
+    except Exception:  # noqa: BLE001 - not ready, no tool, device error (isError), bad JSON
+        return None
+    if not isinstance(answer, dict) or answer.get("action") != action:
+        return None
+    result = answer.get("result")
+    return result if result in _ACCEPTED or result in _DEVICE_SENTENCES else None
+
+
+async def _carry_out(conn, command: _Command) -> None:
+    """Run on its own task: the device's reply arrives on the websocket loop."""
+    try:
+        await _carry_out_unsafe(conn, command)
+    except Exception:  # noqa: BLE001 - never leave an unhandled task error behind
+        _log.exception("child guard: local_command %s failed", command.action)
+
+
+def _closed(conn) -> bool:
+    stop = getattr(conn, "stop_event", None)
+    return bool(stop is not None and stop.is_set())
+
+
+async def _carry_out_unsafe(conn, command: _Command) -> None:
+    result = await _device_result(conn, command.action)
+    if result in _ACCEPTED:
+        answer = command.spoken or DEVICE_OK
+        if result == "deferred":
+            # A game / care screen opens once XiaoZhi is idle: end the chat after this.
+            conn.close_after_chat = True
+    else:
+        answer = _DEVICE_SENTENCES.get(result, LOCAL_ACTION_HINT)
+        if result == "pending":
+            # The board may still defer it (a busy pet_input): only an idle XiaoZhi lets it run.
+            conn.close_after_chat = True
+    waited = 0.0
+    while getattr(conn, "client_is_speaking", False) and waited < SPEAK_WAIT_S and not _closed(conn):
+        await asyncio.sleep(SPEAK_WAIT_STEP_S)
+        waited += SPEAK_WAIT_STEP_S
+    if _closed(conn):
+        return
+    _speak(conn, answer)
+
+
+def _speak(conn, answer: str) -> None:
+    # Imported lazily to avoid circular import when upstream loads the hook.
+    from core.handle.intentHandler import speak_txt
+    conn.sentence_id = uuid.uuid4().hex
+    speak_txt(conn, answer)
 
 
 async def handle_child_guard(conn, text: str) -> bool:
@@ -109,9 +215,17 @@ async def handle_child_guard(conn, text: str) -> bool:
     """
     if not child_mode_enabled():
         return False
+    # A newer utterance wins: the previous command's sentence must neither play
+    # over this one nor end the chat after it.
+    previous = getattr(conn, "child_guard_task", None)
+    if previous is not None and not previous.done():
+        previous.cancel()
+    conn.child_guard_task = None
     answer = await _voice_reply(conn, text)
-    # Imported lazily to avoid circular import when upstream loads the hook.
-    from core.handle.intentHandler import speak_txt
-    conn.sentence_id = uuid.uuid4().hex
-    speak_txt(conn, answer)
+    if isinstance(answer, _Command):
+        # Manual listen mode awaits the ASR inside the websocket receive loop, which
+        # is also where the device's tool reply arrives: never wait for it here.
+        conn.child_guard_task = asyncio.get_running_loop().create_task(_carry_out(conn, answer))
+        return True
+    _speak(conn, answer)
     return True

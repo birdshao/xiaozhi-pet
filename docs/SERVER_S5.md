@@ -36,22 +36,24 @@
 | 电量（S2 未合并） | `DeviceStateBattery` 读 §4.2 的 `device_state(device_id, battery_pct, received_at)`；表不存在/类型不对/百分比越界/快照超过 600 s（或来自未来）→ "看看屏幕右上角的电池吧。"。S2 若改了列名需同步这里 |
 | 页内容来源（S4 未合并）、设备只知道 `content_id/revision` | `context` 接受 `content_id/revision/header_crc` 并缓存，但目前只有 `book_id`（旧 `pages` 表，已审核）能解析；`PageSource.page_text()` 是 S4 替换点（按 `(content_id, revision, header_crc)` 查 `content_pages`）。解析不到 → "我们先翻到书里再问吧。" |
 | 开放问答关闭时页问答范围 | 与现有行为一致：只有白名单问句（这一页讲了什么/这页讲了什么/当前页是什么/读这一页/这一页是什么）读回该页审核原文；其他问句走固定兜底 |
-| 每条命令的回话 | §6.2 只给了睡觉/喂食的句子；其余按同样口吻写成固定句（见 `intent.py`），守卫目前对所有 `local_command` 统一说"用按键" |
+| 每条命令的回话 | §6.2 只给了睡觉/喂食的句子；其余按同样口吻写成固定句（见 `intent.py`）。守卫只在设备接受（`done`/`deferred`）时说这句，否则按设备结果说固定句（见下）。喂食句后来改为"好呀，选一样好吃的喂团团吧。"：语音只打开选菜画面（[V6_VOICE_COMMANDS](V6_VOICE_COMMANDS.md)） |
 | 同义词 | 只加了少量明显同义（喂食、讲个故事、玩个游戏…），全部列在 `intent.py`；近似句（"我不想睡觉"、"回家吃饭"）精确匹配不上 |
 | 语音限流 1 次/s（§9）、页问答的包头 CRC 校验（需 S4）、审计保留清理（S7） | 未做，记为后续 |
 | 上游钉住的提交（P3 文档/overlay 是 f196516…，`version-lock.json` 是 v0.9.8 `8f2dda09…`） | overlay 与 P3 文档改钉 `8f2dda09…`，已在该提交上对 `intentHandler.py` dry-run 通过（锚点唯一，`speak_txt` 在同文件）；测试断言 overlay 的钉与 `version-lock.json` 一致 |
 
 ## 守卫（`child_voice_guard.py`）
 
-只做：儿童模式开关、板子绑定检查、把 ASR 文本 POST 到 `/v1/voice/{business_id}/turn`、朗读返回的 `tts_text`（`kind` 只认 `fixed/approved_content/fallback`，长度 ≤320）。不再带设备 token，改用 `KID_PET_VOICE_TOKEN`。`local_command` 在设备端 MCP 工具 `self.pet.request` 于锁定的小智版本上核对前，一律说"我听到了，我们用设备上的按键完成这个动作吧。"。
+只做：儿童模式开关、板子绑定检查、把 ASR 文本 POST 到 `/v1/voice/{business_id}/turn`、朗读返回的 `tts_text`（`kind` 只认 `fixed/approved_content/fallback`，长度 ≤320），以及把 `local_command` 交给设备。不再带设备 token，改用 `KID_PET_VOICE_TOKEN`。
+
+`local_command`（已在固件 v2.5.2 / 服务端 v0.9.8 上核对调用路径）：守卫在单独的 asyncio 任务里用上游的 `call_mcp_tool(conn, conn.mcp_client, "self_pet_request", {"action": <名字>}, timeout=3)` 调设备端 MCP 工具 `self.pet.request`，按设备回的 `result` 选话术：`done`/`deferred` 说服务端的固定句（`deferred` 另设 `conn.close_after_chat`，说完断开会话，设备空闲后再开画面），拒绝类结果说对应的固定句，没有 MCP / 没有工具 / 超时 / 报错 / 回包不对时退回原来的"我听到了，我们用设备上的按键完成这个动作吧。"。`action` 必须是 `[A-Z_]{1,15}`，否则按服务异常处理、不调设备；白名单在设备上（= `intent.ACTIONS`）。不放在 ASR 协程里等，是因为手动拾音模式下 ASR 在 websocket 接收循环里被 await，设备回包也走这个循环。完整的结果→话术表见 [V6_VOICE_COMMANDS](V6_VOICE_COMMANDS.md)。`intentHandler.py` 的补丁没变（仍是一处 5 行插入）；overlay 另在 `mcp_client.py`、`mcp_executor.py` 各插一处，不论模式都让大模型看不到、调不了 `self_pet_request`（ADR-008）。
 
 `KID_PET_API_URL` 的主机在代码里固定为：回环（`127.0.0.1`/`localhost`/`::1`），或**字面**私有/链路本地 IP（compose 里给 pet-learning 固定一个 IP，例如 `http://172.20.0.10:8780`）；不接受主机名（路由器 DNS 可能把单标签名解析到局域网设备），没有放宽用的环境变量。仍要求 `http`、无账号/路径/查询，畸形 URL/端口 → 拒绝。守卫用语音 token 校验响应签名（绑定本次 `turn_id`），签名缺失/不符 → 固定句 `NO_SERVICE`。overlay 仍只有一处锚点，合约测试断言补丁只是一段 5 行插入。
 
 ## 设备端仍需要（不在本 PR）
 
 - BOOT 开始说话时 `PUT /v1/devices/{id}/context`（含 `content_id/revision/header_crc`；S4 后按它解析页）。
-- 设备端 MCP 工具 `self.pet.request(action)`，只接受上面 8 个枚举，并在锁定的小智版本上核对调用路径；之后守卫才能把 `local_command` 转为真正的调用。
-- 设备端对 `PAGE_PREV`、`OPEN_GAME`、`PET_FEED`、`PET_GROOM`、`GO_HOME` 的分发（目前被忽略，见 V6_VOICE_COMMANDS.md）。
+- ~~设备端 MCP 工具 `self.pet.request(action)`~~ 已完成：只接受 `intent.ACTIONS` 的 13 个名字，调用路径已在锁定版本上核对，守卫已改为真正调用（见上与 [V6_VOICE_COMMANDS](V6_VOICE_COMMANDS.md)）。
+- ~~设备端对 `PAGE_PREV`、`OPEN_GAME`、`PET_FEED`、`PET_GROOM`、`GO_HOME` 的分发~~ 已完成（`PET_FEED` 打开选菜画面，画面类命令在对话结束后打开）。真机上的语音往返待 voice-harness 回归。
 - S2 快照上报电量（`device_state`）。
 
 ## 部署（S7）需要

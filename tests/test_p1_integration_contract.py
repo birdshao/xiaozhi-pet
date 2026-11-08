@@ -2,6 +2,7 @@
 
 Does not need the ESP-IDF SDK; test patches on fixture snippets.
 """
+import re
 import unittest
 from pathlib import Path
 from scripts.p1_integrate import patch_display_h, patch_display_cc, patch_board
@@ -1598,12 +1599,12 @@ class DisplayOverlayTest(unittest.TestCase):
         patched = self._board()
         self.assertIn('#include "kid_app/voice_command.h"', patched)
         # Any task posts a wire name; unknown ones are dropped at the door.
-        post = self._body(patched, 'void RequestVoiceCommand(')
+        post = self._body(patched, 'uint16_t RequestVoiceCommand(')
         self.assertIn('kid_app::ParseVoiceCommand(name)', post)
         self.assertIn('result=unknown', post)
         # pet_input decides with the pure dispatcher and runs the button paths.
         loop = self._body(patched, 'void InputTaskLoop()')
-        self.assertIn('UpdateVoiceCommand();', loop)
+        self.assertIn('UpdateVoiceCommand(state);', loop)
         run = self._body(patched, 'void UpdateVoiceCommand(')
         self.assertIn('kid_app::DecideVoiceCommand(command, context)', run)
         self.assertIn('HandleSleepAction(sleep_flow_.Request(NowMs()))', run)
@@ -1628,6 +1629,93 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(scenario.index('alarm 30'), scenario.index('vcmd SLEEP_REQUEST'))
         self.assertIn('vcmd SLEEP_REQUEST\nwait 1500\ntap press', scenario)
         self.assertIn('\nvolume 15\n', scenario)
+
+
+    def test_v6_pet_request_mcp_tool(self):
+        """S5 -> device: the fixed-command matcher's name reaches RequestVoiceCommand."""
+        patched = self._board()
+        # Registered once the pet_input task runs (no task -> no tool, the
+        # guard then falls back to "use the buttons").
+        start = self._body(patched, 'void StartPetInput()')
+        self.assertLess(start.index('"pet_input"'), start.index('InitializePetTools();'))
+        tool = self._body(patched, 'void InitializePetTools()')
+        self.assertEqual(patched.count('"self.pet.request"'), 1)
+        self.assertIn('McpServer::GetInstance()', tool)
+        self.assertIn('AddTool("self.pet.request"', tool)
+        self.assertNotIn('AddUserOnlyTool', tool)  # the server lists only normal tools
+        self.assertIn('Property("action", kPropertyTypeString)', tool)
+        # Whitelist first: anything else is an error and never reaches the pet.
+        self.assertIn('kid_app::IsVoiceRequestAction(', tool)
+        self.assertLess(tool.index('kid_app::IsVoiceRequestAction('),
+                        tool.index('RequestVoiceCommand('))
+        self.assertIn('std::unexpected(', tool)
+        # The answer comes from pet_input (same rules as the buttons), bounded wait.
+        self.assertIn('WaitVoiceResult(', tool)
+        wait = self._body(patched, 'const char* WaitVoiceResult(')
+        self.assertIn('kVoiceReplyWaitMs', wait)
+        self.assertIn('vTaskDelay', wait)
+        # Voice writes no memory, care or reward, and posts no pet action here.
+        for needle in ('Memory', 'PostCare', 'PostLocal', 'PetAction', 'RecordBook', 'Sticker'):
+            self.assertNotIn(needle, tool)
+        # Only the server's names: the C++ whitelist equals intent.ACTIONS.
+        from services.pet_learning.intent import ACTIONS
+        source = (ROOT / 'firmware/components/kid_app/src/voice_command.cc').read_text(
+            encoding='utf-8')
+        table = source[source.index('kRequestActions[] = {'):]
+        table = table[:table.index('};')]
+        names = set(re.findall(r'"([A-Z_]+)"', table))
+        self.assertEqual(names, set(ACTIONS))
+        header = (ROOT / 'firmware/components/kid_app/include/kid_app/voice_command.h').read_text(
+            encoding='utf-8')
+        self.assertIn(f'kVoiceRequestActionCount = {len(ACTIONS)};', header)
+        # Every server name is a device command (none silently Unknown).
+        commands = source[source.index('kCommands[] = {'):]
+        commands = set(re.findall(r'"([A-Z_]+)"', commands[:commands.index('};')]))
+        self.assertLessEqual(set(ACTIONS), commands)
+
+    def test_v6_voice_commands_rest_and_deferral(self):
+        patched = self._board()
+        post = self._body(patched, 'uint16_t RequestVoiceCommand(')
+        self.assertIn('return seq', post)
+        run = self._body(patched, 'void UpdateVoiceCommand(')
+        # XiaoZhi talking is part of the context; screen activities wait for idle.
+        self.assertIn('const bool chat = state != kDeviceStateIdle || selftest_voice_.load() != 0;',
+                      run)
+        self.assertIn('context.chat_active = chat;', run)
+        self.assertIn('decision.after_chat', run)
+        # The slot logic itself is kid_app::VoiceDeferral (host-tested).
+        self.assertIn('kid_app::VoiceDeferral voice_deferred_;', patched)
+        self.assertIn('voice_deferred_.Poll(chat, NowMs(), &expired)', run)
+        self.assertIn('voice_deferred_.OnDecision(command, decision, NowMs())', run)
+        self.assertLess(run.index('voice_deferred_.OnDecision('), run.index('switch (decision.proposal)'))
+        self.assertIn('result=expired', run)
+        # The button paths: dial up / long press in the reader, the long press
+        # in a game, the care menu's Feed and Brush cards.
+        self.assertIn('book_.OnInput(kid_app::InputKind::DialUp, NowMs())', run)
+        self.assertIn('book_.OnInput(kid_app::InputKind::DialLong, NowMs())', run)
+        self.assertIn('HandleGameInput(kid_app::InputKind::DialLong)', run)
+        self.assertIn('StartCare(kid_app::CareKind::Feed)', run)
+        self.assertIn('StartCare(kid_app::CareKind::Brush)', run)
+        self.assertIn('pet_service_.PostLocal(kid_app::PetAction::StopStory)', run)
+        # Voice opens the food picker; the meal is the child's dial choice.
+        for needle in ('PetAction::Feed', 'PostCare', 'MemorySource', 'RecordBookMemory'):
+            self.assertNotIn(needle, run)
+        # The answer for a waiting MCP call: sequence + result code.
+        self.assertIn('voice_reply_.store(', run)
+        self.assertIn('kid_app::VoiceResultCode(result)', run)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertIn('UpdateVoiceCommand(state);', loop)
+        scenario = (ROOT / 'tools' / 'selftest' / 'v6_voice_commands_more.pettest').read_text(
+            encoding='ascii')
+        for name in ('PAGE_PREV', 'GO_HOME', 'PET_FEED', 'PET_GROOM', 'OPEN_GAME'):
+            self.assertIn(f'\nvcmd {name}\n', scenario)
+        self.assertIn('\nphase day\n', scenario)
+        self.assertIn('\nvolume 15\n', scenario)
+        # The deferred path: a forced "listen" phase stands in for XiaoZhi talking.
+        self.assertIn('voice listen\nwait 1500\nvcmd OPEN_GAME\n', scenario)
+        self.assertLess(scenario.index('vcmd OPEN_GAME'), scenario.rindex('voice off'))
+        self.assertIn('# expect min:result=deferred 1', scenario)
+        self.assertIn('# expect min:later=1 1', scenario)
 
 
 if __name__ == "__main__":
