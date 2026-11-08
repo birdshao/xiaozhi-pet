@@ -2,11 +2,15 @@
 from dataclasses import dataclass, field
 import ipaddress
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, MultiFernet
+
+GLM_KEY_RE = re.compile(r"[!-~]{16,256}")
+GLM_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,47}")
 
 
 def read_env(path):
@@ -43,6 +47,9 @@ class Settings:
     voice_allowed_peers: str = "127.0.0.1,::1"
     # Parent-configured display timezone for "几点了" until S3 stores it per device.
     timezone: str = "Asia/Shanghai"
+    # S6 open chat (ADR-015): Zhipu GLM key from providers.env; empty = open chat cannot be turned on.
+    glm_api_key: str = field(default="", repr=False)
+    glm_model: str = "glm-4.7-flash"
 
     @classmethod
     def load(cls, env_file=".env"):
@@ -61,6 +68,8 @@ class Settings:
             voice_token=env.get("KID_PET_VOICE_TOKEN", ""),
             voice_allowed_peers=env.get("KID_PET_VOICE_ALLOWED_PEERS", cls.voice_allowed_peers),
             timezone=env.get("KID_PET_TIMEZONE", cls.timezone),
+            glm_api_key=env.get("KID_PET_GLM_API_KEY", ""),
+            glm_model=env.get("KID_PET_GLM_MODEL", "") or cls.glm_model,
         )
         settings.validate()
         return settings
@@ -85,6 +94,10 @@ class Settings:
         if self.voice_token and not 32 <= len(self.voice_token) <= 256:
             raise ValueError("KID_PET_VOICE_TOKEN must contain 32-256 characters")
         self.voice_peer_networks()
+        if self.glm_api_key and not GLM_KEY_RE.fullmatch(self.glm_api_key):
+            raise ValueError("KID_PET_GLM_API_KEY must be 16-256 printable characters without spaces")
+        if not GLM_MODEL_RE.fullmatch(self.glm_model):
+            raise ValueError("KID_PET_GLM_MODEL must be a model name like glm-4.7-flash")
         try:
             ZoneInfo(self.timezone)
         except (ValueError, OSError, KeyError):

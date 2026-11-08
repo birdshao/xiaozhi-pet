@@ -23,6 +23,9 @@ REVIEWED_FALLBACK = "我们可以看看绘本，或者请家人一起聊聊这�
 NO_SERVICE = "现在还不能语音聊天，我们可以先用按键和小宠物玩。"
 NOT_BOUND = "请让家长帮忙连接儿童模式。"
 LOCAL_ACTION_HINT = "我听到了，我们用设备上的按键完成这个动作吧。"
+GOODBYE = "我们下次再聊吧，拜拜。"
+# PetLearning may wait up to 6 s for the open-chat model (S6); fixed answers come back at once.
+SERVICE_TIMEOUT_S = 9.0
 
 # local_command: the device's MCP tool self.pet.request(action) decides (ADR-008:
 # the fixed-command matcher proposes, PetCore on the board executes). Upstream keys
@@ -58,7 +61,12 @@ def child_mode_enabled() -> bool:
     return os.getenv("KID_PET_CHILD_MODE", "").strip() == "1"
 
 
-_ALLOWED_KINDS = ("fixed", "approved_content", "fallback")
+# open_chat: a GLM answer PetLearning already passed through its local hard rules (S6, ADR-015).
+_ALLOWED_KINDS = ("fixed", "approved_content", "fallback", "open_chat")
+# Upstream's no-voice timeout feeds this text to chat as if the child said it
+# (receiveAudioHandle.no_voice_close_connect). The overlay ends the chat silently in
+# child mode and the config disables it; this is the third line of defence.
+_UPSTREAM_END_PROMPT = "请你以```时间过得真快```未来头，用富有感情、依依不舍的话来结束这场对话吧。！"
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
@@ -115,7 +123,7 @@ async def _voice_reply(conn, text: str):
         return REVIEWED_FALLBACK
     turn_id = uuid.uuid4().hex
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0),
+        async with httpx.AsyncClient(timeout=httpx.Timeout(SERVICE_TIMEOUT_S, connect=1.0),
                                      follow_redirects=False, trust_env=False) as client:
             response = await client.post(
                 base + "/v1/voice/" + business_id + "/turn",
@@ -207,6 +215,15 @@ def _speak(conn, answer: str) -> None:
     speak_txt(conn, answer)
 
 
+def _is_end_prompt(conn, text) -> bool:
+    if not isinstance(text, str):
+        return False
+    config = getattr(conn, "config", None)
+    end = (config.get("end_prompt") if isinstance(config, dict) else None) or {}
+    prompts = {_UPSTREAM_END_PROMPT, str(end.get("prompt") or "").strip()} - {""}
+    return text.strip() in prompts
+
+
 async def handle_child_guard(conn, text: str) -> bool:
     """Called before normal XiaoZhi LLM intent/chat path.
 
@@ -221,6 +238,10 @@ async def handle_child_guard(conn, text: str) -> bool:
     if previous is not None and not previous.done():
         previous.cancel()
     conn.child_guard_task = None
+    if _is_end_prompt(conn, text):
+        # Not the child speaking: never forward upstream's model prompt to PetLearning.
+        _speak(conn, GOODBYE)
+        return True
     answer = await _voice_reply(conn, text)
     if isinstance(answer, _Command):
         # Manual listen mode awaits the ASR inside the websocket receive loop, which

@@ -25,9 +25,27 @@ from typing import Any
 from . import commands
 from .memory_codec import MINUTES_PER_DAY, ParentSettings
 
-# S6 flips this once the TTS egress audit is finished and a real moderation
-# provider exists (§6.5): until then open chat cannot be turned on anywhere.
-OPEN_CHAT_SELECTABLE = False
+# Code-level gate (§6.5): open chat cannot be turned on, and no turn reaches the model,
+# while this is False. S6 set it after the TTS egress audit of the pinned XiaoZhi
+# server (docs/SERVER_S6.md §3) and its overlay contract tests. ADR-016 replaced
+# "a real moderation provider" with the parent's decision of no content review; a
+# configured GLM key is checked separately (profile.py / open_chat.py).
+OPEN_CHAT_SELECTABLE = True
+# Actions the model may request, panel order (mirrors open_chat.LLM_ACTIONS; a test pins it).
+LLM_ACTIONS = ("OPEN_READER", "PAGE_PREV", "PAGE_NEXT", "OPEN_GAME", "GO_HOME", "PET_FEED", "PET_GROOM",
+               "PLAY_SONG", "START_BRUSH", "START_WASH", "SLEEP_REQUEST", "ASK_NEEDS", "TELL_JOKE")
+DEFAULT_LLM_ACTIONS = LLM_ACTIONS[:10]
+
+
+def parse_actions(raw: str | None) -> list[str]:
+    """Stored subset in panel order; NULL/corrupt -> the default subset (no SLEEP_REQUEST)."""
+    if raw is None:
+        return list(DEFAULT_LLM_ACTIONS)
+    try:
+        chosen = set(json.loads(raw))
+    except (ValueError, TypeError):
+        return list(DEFAULT_LLM_ACTIONS)
+    return [a for a in LLM_ACTIONS if a in chosen]
 ISSUED_KEPT = 8
 SETTING_FIELDS = tuple(f.name for f in fields(ParentSettings))
 NOTICE_MERGED = "MERGED_CONSERVATIVELY"
@@ -134,15 +152,18 @@ def view(db: sqlite3.Connection, device_id: str, now: int) -> dict[str, Any]:
     if row is None:
         settings = (device[0] if device else ParentSettings()).as_dict()
         return {"rev": 0, "settings": settings, "device_settings": device[0].as_dict() if device else None,
-                "open_chat": False, "open_chat_disabled_reason": None,
-                "open_chat_selectable": OPEN_CHAT_SELECTABLE, "notice": None, "command": None}
+                "open_chat": False, "open_chat_disabled_reason": None, "open_chat_disabled_at": None,
+                "open_chat_selectable": OPEN_CHAT_SELECTABLE, "llm_actions": list(DEFAULT_LLM_ACTIONS),
+                "notice": None, "command": None}
     last = db.execute("SELECT * FROM commands WHERE device_id=? AND kind='SET_PARENT_SETTINGS' "
                       "ORDER BY seq DESC LIMIT 1", (device_id,)).fetchone()
     return {"rev": row["rev"], "settings": json.loads(row["settings_json"]),
             "device_settings": device[0].as_dict() if device else None,
             "open_chat": bool(row["open_chat"]),
             "open_chat_disabled_reason": row["open_chat_disabled_reason"],
+            "open_chat_disabled_at": row["open_chat_disabled_at"],
             "open_chat_selectable": OPEN_CHAT_SELECTABLE,
+            "llm_actions": parse_actions(row["llm_actions_json"]),
             "notice": row["notice"], "notice_at": row["notice_at"],
             "command": commands.status(dict(last), awaiting) if last else None}
 
@@ -152,7 +173,8 @@ def _issued(row) -> list[ParentSettings]:
 
 
 def update(db: sqlite3.Connection, device_id: str, *, base_rev: int, changes: dict[str, Any],
-           open_chat: bool | None, now: int, ip: str | None, actor: str = "parent") -> dict[str, Any]:
+           open_chat: bool | None, now: int, ip: str | None, actor: str = "parent",
+           llm_actions: list[str] | None = None) -> dict[str, Any]:
     """Apply a panel edit inside the caller's write transaction."""
     row = _row(db, device_id)
     current_rev = row["rev"] if row else 0
@@ -188,18 +210,29 @@ def update(db: sqlite3.Connection, device_id: str, *, base_rev: int, changes: di
     new_rev = max(current_rev, device_rev) + 1
     reason = row["open_chat_disabled_reason"] if row else None
     chat = bool(row["open_chat"]) if row else False
+    disabled_at = row["open_chat_disabled_at"] if row else None
     if open_chat is not None and open_chat != chat:
         chat = open_chat
         reason = None if chat else "parent"
+        disabled_at = None if chat else now
+        if chat:  # the parent reopened: the breaker counts afresh
+            db.execute("DELETE FROM open_chat_outcomes WHERE device_id=?", (device_id,))
+    actions_json = row["llm_actions_json"] if row else None
+    if llm_actions is not None:
+        if len(set(llm_actions)) != len(llm_actions) or not set(llm_actions) <= set(LLM_ACTIONS):
+            raise PolicyError(422, "LLM_ACTIONS_INVALID")
+        actions_json = json.dumps([a for a in LLM_ACTIONS if a in llm_actions])
     db.execute("INSERT INTO policies(device_id,rev,settings_json,base_json,base_rev,open_chat,"
-               "open_chat_disabled_reason,notice,notice_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) "
+               "open_chat_disabled_reason,open_chat_disabled_at,llm_actions_json,notice,notice_at,updated_at) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
                "ON CONFLICT(device_id) DO UPDATE SET rev=excluded.rev,settings_json=excluded.settings_json,"
                "base_json=excluded.base_json,base_rev=excluded.base_rev,open_chat=excluded.open_chat,"
-               "open_chat_disabled_reason=excluded.open_chat_disabled_reason,notice=excluded.notice,"
-               "notice_at=excluded.notice_at,updated_at=excluded.updated_at",
+               "open_chat_disabled_reason=excluded.open_chat_disabled_reason,"
+               "open_chat_disabled_at=excluded.open_chat_disabled_at,llm_actions_json=excluded.llm_actions_json,"
+               "notice=excluded.notice,notice_at=excluded.notice_at,updated_at=excluded.updated_at",
                (device_id, new_rev, json.dumps(settings.as_dict(), sort_keys=True),
                 json.dumps(base_for_row.as_dict(), sort_keys=True), device_rev, int(chat), reason,
-                notice, now if notice else None, now))
+                disabled_at, actions_json, notice, now if notice else None, now))
     if issued:
         _issue(db, device_id, settings, device_rev, new_rev, now, ip, actor)
     commands.audit(db, now, actor, "policy.update", device_id, "merged" if notice else "success", ip)

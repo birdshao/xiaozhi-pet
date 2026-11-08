@@ -143,7 +143,7 @@ def hidden(csrf: str, **fields: Any) -> Safe:
 
 def device_tabs(device_id: str, active: str) -> Safe:
     tabs = (("overview", "", "概览"), ("profile", "/profile", "宠物档案"), ("memory", "/memory", "记忆"),
-            ("notes", "/notes", "家长备注"))
+            ("notes", "/notes", "家长备注"), ("chat", "/chat", "开放问答"))
     return Safe('<div class="tabs">' + "".join(
         f'<a href="/parent/devices/{e(device_id)}{e(path)}"{" class=on" if key == active else ""}>{e(label)}</a>'
         for key, path, label in tabs) + "</div>")
@@ -295,6 +295,66 @@ def profile_page(device: dict, view: dict, tz: str, csrf: str) -> Safe:
 <dt>设备上已确认的性格</dt><dd>{e(shown(view['temperament_confirmed']))}</dd>
 <dt>设备最近上报</dt><dd>{e(shown(view['device_temperament']))}</dd></dl>
 {command_line(cmd, tz)}{form}</div>""")
+
+
+# -- open chat (S6) -----------------------------------------------------------
+
+CHAT_REASONS = {"parent": "家长关闭", "model_errors": "大模型 10 分钟内连续出错 3 次，已自动关闭",
+                "output_blocked": "今天大模型的回答被本地规则拦下 5 次，已自动关闭"}
+CHAT_UNAVAILABLE = {
+    "provider_missing": "服务器上还没有配置智谱 GLM 密钥（providers.env 里的 KID_PET_GLM_API_KEY），开关不可用。",
+    "tts_audit": "小智服务端的播报出口审计还没完成，开放问答在代码里被禁用。",
+}
+CHAT_RISK = ("打开后，团团听不懂固定说法时，会把孩子的这句话发到智谱 GLM（云端大模型）生成回答，孩子的话会离开家里的服务器。"
+             "按家长的决定，这里不接内容审核服务，也不让第二个模型复查；只在本机检查长度、电话、地址、链接和敏感词，"
+             "不通过就换成固定的话。模型仍可能答错、说出不合适的话。"
+             "大模型可以请求板子做下面勾选的动作，板子照样按安静时段、低电量、睡觉和家长菜单的规则决定做不做；"
+             "语音不会写记忆、不会加奖励，“喂团团”只打开选菜画面。"
+             "大模型连续出错或一天被拦 5 次会自动关闭，需要您在这里重新打开。建议先在大人陪同下试用。")
+
+
+def chat_page(device: dict, view: dict, labels: dict[str, str], tz: str, csrf: str) -> Safe:
+    device_id = device["device_id"]
+    writable = device["status"] == "active"
+    on = view["open_chat"]
+    state = badge("已打开", "ok") if on else badge("已关闭", "muted")
+    reason = ""
+    if not on and view.get("open_chat_disabled_reason"):
+        label = CHAT_REASONS.get(view["open_chat_disabled_reason"], view["open_chat_disabled_reason"])
+        kind = "bad" if view["open_chat_disabled_reason"] != "parent" else "muted"
+        reason = (f'<dt>关闭原因</dt><dd>{badge(label, kind)}</dd>'
+                  f'<dt>关闭时间</dt><dd>{e(clock(view.get("open_chat_disabled_at"), tz))}</dd>')
+    unavailable = view.get("open_chat_unavailable")
+    action = f"/parent/devices/{e(device_id)}/chat"
+    if not writable:
+        switch = '<p class="muted">设备已撤销，不能再修改。</p>'
+    elif on:
+        switch = (f'<form method="post" action="{action}/disable">{hidden(csrf, base_rev=view["rev"])}'
+                  f'<button type="submit">关闭开放问答</button></form>')
+    else:
+        grey = " disabled" if unavailable else ""
+        why = f'<p class="flash warn">{e(CHAT_UNAVAILABLE.get(unavailable, unavailable))}</p>' if unavailable else ""
+        switch = (f'{why}<form method="post" action="{action}/enable">{hidden(csrf, base_rev=view["rev"])}'
+                  f'<fieldset{grey}><legend>打开前请重新验证</legend>'
+                  f'<label><input type="checkbox" name="ack" value="1" required> 我已阅读上面的风险说明</label>'
+                  f'<label>密码<input name="password" type="password" required maxlength="256" '
+                  f'autocomplete="current-password"></label>'
+                  f'<label>动态验证码（6 位）<input name="otp" required maxlength="6" inputmode="numeric" '
+                  f'autocomplete="one-time-code"></label>'
+                  f'<button class="primary" type="submit"{grey}>打开开放问答</button></fieldset></form>')
+    chosen = set(view["llm_actions"])
+    boxes = "".join(
+        f'<label class="check"><input type="checkbox" name="act_{e(a)}" value="1"'
+        f'{" checked" if a in chosen else ""}{"" if writable else " disabled"}> {e(text)}</label>'
+        for a, text in labels.items())
+    actions = (f'<form method="post" action="{action}/actions">{hidden(csrf, base_rev=view["rev"])}'
+               f'{boxes}'
+               + ('<button type="submit">保存动作</button>' if writable else "") + '</form>')
+    return Safe(f"""{device_tabs(device_id, 'chat')}
+<div class="card"><h2>开放问答</h2><dl><dt>状态</dt><dd>{state}</dd>{reason}</dl>
+<div class="flash warn">{e(CHAT_RISK)}</div>{switch}</div>
+<div class="card"><h2>允许大模型执行的动作</h2>
+<p class="muted">只有勾选的动作会交给大模型；默认不勾“睡觉”。板子仍按自己的规则决定是否执行。</p>{actions}</div>""")
 
 
 # -- memory ------------------------------------------------------------------

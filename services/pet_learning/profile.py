@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import Field, StrictBool, StrictInt
+from pydantic import Field, StrictBool, StrictInt, StrictStr
 
 from . import commands, policy
 from .auth import AuthError, CSRF_COOKIE, SESSION_COOKIE
@@ -76,6 +76,8 @@ class PolicyBody(StrictModel):
     base_rev: StrictInt = Field(ge=0)
     settings: SettingsChanges | None = None
     open_chat: StrictBool | None = None
+    # S6: actions the model may request (subset of policy.LLM_ACTIONS); [] = none.
+    llm_actions: list[StrictStr] | None = Field(default=None, max_length=16)
     reauth: Reauth | None = None
 
 
@@ -118,6 +120,8 @@ class ProfileService:
         self.sync = sync
         self.clock = clock
         self.notes = ParentNotes(settings)
+        # S6: is a model provider (GLM key) configured? Set by create_router from app state.
+        self.chat_ready: Callable[[], bool] = lambda: False
         migrate(filename)
 
     def _device(self, db, device_id: str, *, write: bool = False) -> None:
@@ -282,12 +286,24 @@ class ProfileService:
             self._expire(db, now, device_id)
             view = policy.view(db, device_id, now)
             db.commit()
-        return view
+        return self._chat_view(view)
+
+    def open_chat_unavailable(self) -> str | None:
+        """Why the switch is grey: the code-level gate, or no GLM key configured."""
+        if not policy.OPEN_CHAT_SELECTABLE:
+            return "tts_audit"
+        if not self.chat_ready():
+            return "provider_missing"
+        return None
+
+    def _chat_view(self, view: dict[str, Any]) -> dict[str, Any]:
+        unavailable = self.open_chat_unavailable()
+        return {**view, "open_chat_selectable": unavailable is None, "open_chat_unavailable": unavailable}
 
     def update_policy(self, device_id: str, body: PolicyBody, ip: str | None,
                       reauth: Callable[[], None], actor: str = "parent") -> dict[str, Any]:
         changes = body.settings.model_dump(exclude_none=True) if body.settings else {}
-        if not changes and body.open_chat is None:
+        if not changes and body.open_chat is None and body.llm_actions is None:
             raise ProfileError(422, "NOTHING_TO_UPDATE")
         now = int(self.clock())
         with connect(self.filename) as db:
@@ -300,18 +316,19 @@ class ProfileService:
                 db.execute("BEGIN IMMEDIATE")
                 now = int(self.clock())  # the proof may have taken a while; the device may have changed
                 self._device(db, device_id, write=True)
-                if not policy.OPEN_CHAT_SELECTABLE:
+                if self.open_chat_unavailable() is not None:
                     commands.audit(db, now, actor, "policy.update", device_id, "open_chat_unavailable", ip)
                     db.commit()
                     raise ProfileError(409, "OPEN_CHAT_UNAVAILABLE")
             try:
                 view = policy.update(db, device_id, base_rev=body.base_rev, changes=changes,
-                                     open_chat=body.open_chat, now=now, ip=ip, actor=actor)
+                                     open_chat=body.open_chat, now=now, ip=ip, actor=actor,
+                                     llm_actions=body.llm_actions)
             except policy.PolicyError as error:
-                db.commit()
+                db.rollback()
                 raise ProfileError(error.status, error.code) from None
             db.commit()
-        return view
+        return self._chat_view(view)
 
     def on_snapshot(self, db, device_id: str, settings: ParentSettings, device_rev: int, now: int) -> None:
         """Hook for S2's snapshot transaction (conservative merge, §5.4)."""
@@ -351,6 +368,7 @@ class ProfileService:
 def create_router(app, database) -> APIRouter:
     service = ProfileService(database, app.state.settings, app.state.state_sync)
     app.state.profile_service = service
+    service.chat_ready = lambda: bool(getattr(app.state.chat_provider, "configured", False))
     app.state.state_sync.hooks.append(service.on_snapshot)
     app.state.state_sync.command_hooks.append(service.on_commands)
     router = APIRouter(prefix="/v1/parent/devices/{device_id}")

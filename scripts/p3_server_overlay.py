@@ -56,6 +56,59 @@ def overlay_mcp_executor(text: str) -> str:
     return _insert_after(text, EXECUTOR_ANCHOR, EXECUTOR_INSERT, "mcp_executor.py")
 
 
+# S6 TTS egress audit (docs/SERVER_S6.md §3): every upstream source that can make the
+# device speak without going through the guard is closed in child mode. Each insert
+# is a no-op unless KID_PET_CHILD_MODE=1 (the same test as child_mode_enabled()).
+CHILD_TEST = '__import__("os").environ.get("KID_PET_CHILD_MODE", "").strip() == "1"'
+TTS_EGRESS = {
+    # receiveAudioHandle.py: daily output limit prompt (#18), bind-code audio (#19),
+    # and the no-voice timeout "end prompt" fed to chat as if the child said it (#16).
+    "receiveAudioHandle.py": (
+        ('async def max_out_size(conn: "ConnectionHandler"):\n',
+         f"    if {CHILD_TEST}:  # child mode: no upstream prompt (S6 audit #18)\n"
+         "        return\n", "after"),
+        ('async def check_bind_device(conn: "ConnectionHandler"):\n',
+         f"    if {CHILD_TEST}:  # child mode: no bind-code audio (S6 audit #19)\n"
+         "        return\n", "after"),
+        ("            await startToChat(conn, prompt)\n",
+         f"            if {CHILD_TEST}:  # child mode: end silently, no model goodbye (S6 audit #16)\n"
+         "                await conn.close()\n"
+         "                return\n", "before"),
+    ),
+    # listenMessageHandler.py: "[device_call]" text is spoken verbatim, bypassing the guard (#15).
+    "listenMessageHandler.py": (
+        ('                    call_text = original_text[len("[device_call]"):].strip()\n',
+         f"                    if {CHILD_TEST}:  # child mode: never speak client text (S6 audit #15)\n"
+         "                        return\n", "after"),
+    ),
+    # connection.py: the normal LLM chat (#1-#6: stream, tool replies, system_error_response).
+    "connection.py": (
+        ("    def chat(self, query, depth=0):\n",
+         f"        if {CHILD_TEST}:  # child mode: the guard owns every reply (S6 audit #1-#6)\n"
+         "            return None\n", "after"),
+    ),
+}
+
+
+def overlay_tts_egress(name: str, text: str) -> str:
+    """Apply the S6 child-mode patches for one upstream file; strict anchors, compile check."""
+    if "(S6 audit #" in text:
+        raise ValueError(name + ": TTS egress patch already installed")
+    for anchor, insert, where in TTS_EGRESS[name]:
+        if text.count(anchor) != 1:
+            raise ValueError(name + ": upstream anchor changed; reject unsafe patch")
+        text = text.replace(anchor, anchor + insert if where == "after" else insert + anchor, 1)
+    compile(text, name, "exec")
+    return text
+
+
+TTS_EGRESS_PATHS = {
+    "receiveAudioHandle.py": ("core", "handle", "receiveAudioHandle.py"),
+    "listenMessageHandler.py": ("core", "handle", "textHandler", "listenMessageHandler.py"),
+    "connection.py": ("core", "connection.py"),
+}
+
+
 def overlay(text: str) -> str:
     if "from plugins_func.functions.child_voice_guard" in text:
         raise ValueError("Child guard already installed; refuse double injection")
@@ -91,6 +144,8 @@ def main() -> None:
     patched = overlay(handler.read_text(encoding="utf-8"))
     patched_client = overlay_mcp_client(client.read_text(encoding="utf-8"))
     patched_executor = overlay_mcp_executor(executor.read_text(encoding="utf-8"))
+    egress = {source.joinpath(*parts): overlay_tts_egress(name, source.joinpath(*parts).read_text(encoding="utf-8"))
+              for name, parts in TTS_EGRESS_PATHS.items()}
     module = (Path(__file__).resolve().parents[1] / "integrations" /
               "xiaozhi_server" / "child_voice_guard.py").read_text(encoding="utf-8")
     compile(module, str(plugin), "exec")
@@ -101,6 +156,8 @@ def main() -> None:
     handler.write_text(patched, encoding="utf-8")
     client.write_text(patched_client, encoding="utf-8")
     executor.write_text(patched_executor, encoding="utf-8")
+    for path, patched_text in egress.items():
+        path.write_text(patched_text, encoding="utf-8")
     plugin.write_text(module, encoding="utf-8")
     print("P3_CHILD_GUARD_INSTALLED_IN_DISPOSABLE_SERVER_CHECKOUT")
 

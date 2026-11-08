@@ -8,6 +8,8 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlsplit
 
+# Reviewed sentence upstream speaks if its own LLM path ever errors (overlay keeps that path off).
+CHILD_ERROR_RESPONSE = "现在还不能语音聊天，我们可以先用按键和小宠物玩。"
 PLACEHOLDER_MARKERS = ("change-me", "changeme", "change_me", "你的", "example-secret")
 
 
@@ -80,6 +82,15 @@ def check_xiaozhi_config(cfg: dict, public_origin: str = "") -> list[str]:
         problems.append("selected_module.Memory must be nomem (no XiaoZhi memory)")
     if modules.get("Intent") != "nointent":
         problems.append("selected_module.Intent must be nointent (the child guard owns intent)")
+    # S6 TTS egress audit (docs/SERVER_S6.md §3): no upstream text may reach TTS in child mode.
+    if cfg.get("enable_greeting") is not False:
+        problems.append("enable_greeting must be false (no wake-word greeting through chat)")
+    if (cfg.get("end_prompt") or {}).get("enable") is not False:
+        problems.append("end_prompt.enable must be false (no model-written goodbye on timeout)")
+    if cfg.get("enable_stop_tts_notify"):
+        problems.append("enable_stop_tts_notify must be false")
+    if cfg.get("system_error_response") != CHILD_ERROR_RESPONSE:
+        problems.append("system_error_response must be the reviewed child sentence")
     endpoint = str(cfg.get("mcp_endpoint") or "")
     if endpoint and "你" not in endpoint:
         problems.append("mcp_endpoint must be unset")

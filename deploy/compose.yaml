@@ -34,6 +34,9 @@ services:
       # S5 voice route: only the XiaoZhi container's fixed address may call it, signed with this token.
       KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
+    env_file:
+      - path: providers.env   # S6: KID_PET_GLM_API_KEY / KID_PET_GLM_MODEL for open chat (XZ__ lines are ignored here)
+        required: false
     volumes:
       - pet-data:/data
       - pet-backups:/backups

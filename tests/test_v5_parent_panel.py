@@ -404,7 +404,8 @@ class PageTests(PanelBase):
     def test_firmware_unsupported_features_absent(self):
         for url in ("/parent/devices", BASE, f"{BASE}/profile", f"{BASE}/memory", f"{BASE}/notes", "/parent/audit"):
             text = self.get(url).text
-            for word in ("声音包", "内容包", "开放问答", "open_chat", "SELECT_VOICE_PACK", "SET_PARENT_SETTINGS"):
+            # Open chat got its own tab in S6 (/chat, tests/test_v6_open_chat.py); the rest stays absent.
+            for word in ("声音包", "内容包", "open_chat", "SELECT_VOICE_PACK", "SET_PARENT_SETTINGS"):
                 self.assertNotIn(word, text.replace("<title>", ""), (url, word))
         for url in (f"{BASE}/voice", f"{BASE}/content", f"{BASE}/settings", f"{BASE}/policy"):
             self.assertEqual(self.get(url).status_code, 404)

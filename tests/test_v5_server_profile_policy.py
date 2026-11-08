@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from s3_support import DEVICE, PASSWORD, S3Base  # noqa: E402
 from services.pet_learning import commands, policy  # noqa: E402
+from services.pet_learning.chat_provider import FakeChatProvider  # noqa: E402
 from services.pet_learning.db import MIGRATIONS, connect, migrate  # noqa: E402
 from services.pet_learning.memory_codec import ParentSettings, decode_parent_settings  # noqa: E402
 from services.pet_learning.totp import code_at  # noqa: E402
@@ -442,12 +443,14 @@ class OpenChatTests(ProfileBase):
         self.assertEqual(self.put(open_chat=True, reauth=stale).status_code, 401)
         self.assertEqual(self.table("SELECT COUNT(*) FROM policies"), [(0,)])
 
-    def test_even_with_proof_chat_stays_off_until_the_code_level_gate_opens(self):
+    def test_even_with_proof_chat_stays_off_without_a_configured_provider(self):
+        # S6: the code-level gate is open, but no GLM key is configured in these settings.
         result = self.put(open_chat=True, reauth=self.proof())
         self.assertEqual((result.status_code, result.json()["detail"]), (409, "OPEN_CHAT_UNAVAILABLE"))
         self.assertFalse(self.client.get(f"{BASE_URL}/policy").json()["open_chat"])
 
     def test_with_the_gate_open_it_works_once_per_code_and_off_needs_no_proof(self):
+        self.app.state.chat_provider = FakeChatProvider()
         with patch.object(policy, "OPEN_CHAT_SELECTABLE", True):
             proof = self.proof()
             result = self.put(open_chat=True, reauth=proof)
