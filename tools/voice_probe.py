@@ -435,6 +435,64 @@ def play_wav(path: Path) -> None:
     _run_ps(_PS_PLAY, str(path), timeout=120.0)
 
 
+DEFAULT_NOISE_MAX_DBFS = -45.0
+
+
+def wav_dbfs(path: Path) -> float:
+    """RMS level of a 16-bit PCM wav in dBFS (-120 for silence)."""
+    import array
+    import math
+    import wave
+    with wave.open(str(path), "rb") as w:
+        if w.getsampwidth() != 2:
+            raise ValueError("need 16-bit PCM")
+        samples = array.array("h")
+        samples.frombytes(w.readframes(w.getnframes()))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return -120.0
+    rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+    return max(-120.0, 20 * math.log10(rms / 32768.0)) if rms > 0 else -120.0
+
+
+def noise_verdict(dbfs: float, max_dbfs: float) -> tuple[bool, str]:
+    if dbfs > max_dbfs:
+        return False, f"环境太吵：底噪 {dbfs:.1f} dBFS，高于阈值 {max_dbfs:.1f} dBFS。请关掉电视/风扇后重试"
+    return True, f"底噪 {dbfs:.1f} dBFS（阈值 {max_dbfs:.1f}），安静，可以开跑"
+
+
+def record_wav(path: Path, seconds: float) -> None:
+    """Record the default Windows input device with winmm MCI (no extra packages)."""
+    import ctypes
+    mci = ctypes.windll.winmm.mciSendStringW
+    buf = ctypes.create_unicode_buffer(256)
+
+    def send(cmd: str) -> None:
+        rc = mci(cmd, buf, 255, 0)
+        if rc:
+            err = ctypes.create_unicode_buffer(256)
+            ctypes.windll.winmm.mciGetErrorStringW(rc, err, 255)
+            raise RuntimeError(f"mci '{cmd}': {err.value}")
+
+    send("open new type waveaudio alias vprec")
+    try:
+        send("set vprec bitspersample 16 channels 1 samplespersec 16000 alignment 2 bytespersec 32000")
+        send("record vprec")
+        time.sleep(seconds)
+        send("stop vprec")
+        send(f'save vprec "{path}"')
+    finally:
+        mci("close vprec", buf, 255, 0)
+
+
+def measure_noise(seconds: float = 2.0) -> float:
+    with tempfile.TemporaryDirectory() as d:
+        wav = Path(d) / "noise.wav"
+        record_wav(wav, seconds)
+        return wav_dbfs(wav)
+
+
 class SerialTail(threading.Thread):
     """Read-only serial capture. DTR/RTS are forced low BEFORE the port opens so the board is not reset."""
 
@@ -553,6 +611,13 @@ def cmd_listen(args) -> int:
     return 0
 
 
+def cmd_noise(args) -> int:
+    level = measure_noise(args.seconds)
+    ok, msg = noise_verdict(level, args.max_dbfs)
+    print(msg)
+    return 0 if ok else 3
+
+
 def cmd_run(args) -> int:
     cases = load_cases(Path(args.cases))
     if args.only:
@@ -573,6 +638,16 @@ def cmd_run(args) -> int:
         print(f"dry run: synthesised {len(wavs) + 1} wav files into {wavdir}")
         return 0
 
+    if not args.no_noise_check:
+        try:
+            level = measure_noise(args.noise_seconds)
+        except Exception as exc:  # no microphone, driver error ...
+            print(f"无法检测底噪（{exc}）。接好麦克风，或确认环境安静后加 --no-noise-check。", file=sys.stderr)
+            return 3
+        ok, msg = noise_verdict(level, args.noise_max_dbfs)
+        print(msg)
+        if not ok:
+            return 3
     tail = SerialTail(args.port) if args.port else None
     remote = Remote(args.ssh_host, args.ssh_key) if args.ssh_host else None
     offset = remote.clock_offset() if remote else 0.0
@@ -662,7 +737,18 @@ def main(argv=None) -> int:
     p.add_argument("--quiet-window", dest="quiet_window", default="20:30-07:00",
                    help="quiet hours HH:MM-HH:MM when the serial log has no PET_PARENT_SETTINGS line")
     p.add_argument("--dry-run", action="store_true", help="synthesise only, play nothing")
+    p.add_argument("--noise-max-dbfs", type=float, default=DEFAULT_NOISE_MAX_DBFS,
+                   help="refuse to run when the 2 s ambient level is above this (see the 'noise' command)")
+    p.add_argument("--noise-seconds", type=float, default=2.0)
+    p.add_argument("--no-noise-check", action="store_true")
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("noise", help="measure ambient level with the PC microphone and print it (calibration)")
+    p.add_argument("--seconds", type=float, default=2.0)
+    p.add_argument("--max-dbfs", type=float, default=DEFAULT_NOISE_MAX_DBFS)
+    p.set_defaults(fn=cmd_noise)
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = ap.parse_args(argv)
     if getattr(args, "quiet_window", None):
         args.quiet_window_line = f"PET_PARENT_SETTINGS quiet={args.quiet_window}"

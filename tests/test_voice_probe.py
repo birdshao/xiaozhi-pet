@@ -154,3 +154,25 @@ def test_render_report_orders_issues_by_severity():
     text = vp.render_report(rows, {"时间": "t"})
     assert text.index("完全没反应") < text.index("【慢】")
     assert "跳过：needs quiet hours" in text
+
+
+def _write_wav(path, amplitude):
+    import math
+    import struct
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"".join(struct.pack("<h", int(amplitude * math.sin(i / 5))) for i in range(16000)))
+
+
+def test_wav_dbfs_and_noise_verdict(tmp_path):
+    quiet, loud = tmp_path / "q.wav", tmp_path / "l.wav"
+    _write_wav(quiet, 30)
+    _write_wav(loud, 8000)
+    q, lo = vp.wav_dbfs(quiet), vp.wav_dbfs(loud)
+    assert q < -55 < -20 < lo
+    assert vp.noise_verdict(q, -45)[0]
+    ok, msg = vp.noise_verdict(lo, -45)
+    assert not ok and "太吵" in msg
