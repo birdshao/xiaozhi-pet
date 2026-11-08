@@ -68,6 +68,7 @@ class WaveshareSdOverlayTests(unittest.TestCase):
         self.assertIn("CONFIG_FATFS_LFN_HEAP=y", append)
         self.assertIn("CONFIG_FATFS_MAX_LFN=255", append)
         self.assertIn('CONFIG_OTA_URL="http://192.168.1.110:8780/xiaozhi/ota/"', append)
+        self.assertIn('CONFIG_KID_PET_SERVER_ORIGIN="https://pet.birdshao.cn:8443"', append)
         self.assertEqual(patched["builds"][0]["name"], "esp32-s3-epaper-3.97")
         self.assertTrue(patch_board_config(upstream).endswith("}\n"))
         # Upstream starting to set it itself must be noticed, not silently doubled.

@@ -5228,6 +5228,10 @@ SD_LONG_FILENAMES = ("CONFIG_FATFS_LFN_HEAP=y", "CONFIG_FATFS_MAX_LFN=255")
 # value saved in NVS (Wi-Fi config portal, advanced options) still overrides it.
 PET_OTA_URL = 'CONFIG_OTA_URL="http://192.168.1.110:8780/xiaozhi/ota/"'
 
+# Build-time default PetLearning server origin (https only; the firmware refuses
+# plain http). NVS kid_srv/origin still overrides it when set.
+PET_SERVER_ORIGIN = 'CONFIG_KID_PET_SERVER_ORIGIN="https://pet.birdshao.cn:8443"'
+
 
 def patch_board_config(text: str) -> str:
     """Append the Pet SD and OTA URL settings to the board's build (config.json)."""
@@ -5236,7 +5240,7 @@ def patch_board_config(text: str) -> str:
     if len(builds) != 1:
         raise RuntimeError(f"Expected one board build in config.json, found {len(builds)}")
     append = builds[0].setdefault("sdkconfig_append", [])
-    for line in (*SD_LONG_FILENAMES, PET_OTA_URL):
+    for line in (*SD_LONG_FILENAMES, PET_OTA_URL, PET_SERVER_ORIGIN):
         key = line.split("=", 1)[0]
         if any(item.split("=", 1)[0] == key for item in append):
             raise RuntimeError(f"Upstream board config already sets {key}")
