@@ -206,3 +206,20 @@ def test_skip_cases_in_shipped_file():
     cases = {c.id: c for c in vp.load_cases(vp.DEFAULT_CASES)}
     assert cases["feed"].skip and cases["groom"].skip
     assert not cases["time"].skip
+
+
+def test_session_open():
+    ev = lambda name, t: {"t": t, "ev": name, "text": ""}
+    assert not vp.session_open([], 100)
+    assert vp.session_open([ev("wake", 10), ev("tts_end", 50)], 100)
+    assert not vp.session_open([ev("wake", 10), ev("tts_end", 50)], 250)      # idle too long
+    assert not vp.session_open([ev("tts_end", 50), ev("closed", 60)], 70)    # closed after activity
+    assert vp.session_open([ev("closed", 5), ev("wake", 10)], 20)            # new session after close
+
+
+def test_last_power_from_serial():
+    ev = vp.parse_serial_line(5, "I (5749727) w: PET_POWER state=nap phase=day")
+    assert ev["ev"] == "power" and ev["text"] == "nap"
+    ev2 = vp.parse_serial_line(9, "I (1) w: PET_POWER state=active reason=wake")
+    assert vp.last_power([ev, ev2], 7) == "nap" and vp.last_power([ev, ev2], 10) == "active"
+    assert vp.last_power([], 1) == ""

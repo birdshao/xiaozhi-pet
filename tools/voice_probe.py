@@ -206,6 +206,7 @@ _SERIAL_PATTERNS = [
     ("state", re.compile(r"(?i)\bSTATE:\s*(\w+)")),
     ("wake", re.compile(r"(?i)wake ?word detected|WakeWord detected|Wake word:\s*(\S+)")),
     ("voice_cmd", re.compile(r"PET_VOICE_CMD name=(\S+) result=(\S+)(?: action=(\S+))?")),
+    ("power", re.compile(r"PET_POWER state=(\w+)")),
     ("voice_time", re.compile(r"PET_VOICE_TIME ")),
     ("voice_battery", re.compile(r"PET_VOICE_BATTERY ")),
 ]
@@ -656,6 +657,44 @@ def latest_state(ser_events: list, before: float) -> str:
     return state
 
 
+def last_power(ser_events: list, before: float) -> str:
+    """Latest PET_POWER state (active/idle/nap/...) the serial log showed before `before`; '' = none seen."""
+    state = ""
+    for ev in ser_events:
+        if ev["ev"] == "power" and ev["t"] <= before:
+            state = ev["text"]
+    return state
+
+
+SESSION_IDLE_S = 150.0   # the server closes a silent connection after ~180 s
+
+
+def session_open(xz: list, now: float) -> bool:
+    """True when the board's xiaozhi session is (probably) still open and listening."""
+    last_open = last_closed = None
+    for ev in xz:
+        if ev["ev"] in ("wake", "listen_start", "asr", "tts_first", "tts_end"):
+            last_open = ev["t"]
+        elif ev["ev"] == "closed":
+            last_closed = ev["t"]
+    if last_open is None:
+        return False
+    if last_closed is not None and last_closed >= last_open:
+        return False
+    return now - last_open < SESSION_IDLE_S
+
+
+def wait_for_event(remote, offset: float, name: str, after: float, timeout: float, poll: float = 1.2) -> bool:
+    """Poll the server log until an event `name` newer than `after` (PC clock) shows up."""
+    end = time.time() + timeout
+    while time.time() < end:
+        evs = _events_from(remote.logs("xiaozhi", after - 3), parse_xiaozhi_line, offset)
+        if any(e["ev"] == name and e["t"] >= after for e in evs):
+            return True
+        time.sleep(poll)
+    return False
+
+
 def cmd_list(args) -> int:
     for c in load_cases(Path(args.cases)):
         print(f"{c.id:18s} [{c.group}] {c.say}  -> {c.kind or '?'}{'/' + c.action if c.action else ''}  quiet={c.quiet}")
@@ -801,16 +840,25 @@ def cmd_run(args) -> int:
             if not any(r["id"] == c.id and r["status"] == "skipped" for r in results):
                 results.append({"id": c.id, "say": c.say, "status": "skipped", "skip_reason": why})
             continue
-        ser_events = _events_from(tail.snapshot(), parse_serial_line) if tail else []
-        needs_wake = latest_state(ser_events, time.time()) != "listening"
         t_begin = time.time()
+        # An open xiaozhi session keeps listening (auto mode): a wake word played then is just speech.
+        needs_wake = not session_open(
+            _events_from(remote.logs("xiaozhi", t_begin - 200), parse_xiaozhi_line, offset) if remote else [],
+            t_begin)
         if needs_wake:
+            t_w = time.time()
             play_wav(wake_wav)
-            time.sleep(args.wake_settle)
+            if remote:  # the board answers the wake word; let that reply finish before speaking
+                wait_for_event(remote, offset, "tts_end", t_w, args.wake_settle + 12)
+            time.sleep(1.5)
         t_say = time.time()
         play_wav(wavs[c.id])
         t_end = time.time()
-        time.sleep(args.window)
+        if remote:
+            wait_for_event(remote, offset, "tts_end", t_end - 0.5, args.window)
+            time.sleep(1.0)
+        else:
+            time.sleep(args.window)
         t_stop = time.time()
         time.sleep(args.gap)
         ser_events = _events_from([(t, line) for t, line in tail.snapshot()], parse_serial_line) if tail else []
@@ -823,7 +871,7 @@ def cmd_run(args) -> int:
         res = {"id": c.id, "say": c.say, "group": c.group, "status": "ran", "woke": needs_wake,
                "asr": verdict["asr"], "kind": obs.kind, "reason": obs.reason, "tts_text": obs.tts_text,
                "device_cmds": obs.device_cmds, "latency_s": latency(obs), "turn_ms": obs.turn_ms,
-               "stages": stages(obs),
+               "stages": stages(obs), "power": last_power(ser_events, t_begin),
                "passed": verdict["passed"], "issues": verdict["issues"]}
         results.append(res)
         print(f"[{'PASS' if res['passed'] else 'FAIL'}] {c.id}: asr={res['asr']!r} kind={obs.kind or '?'} "
