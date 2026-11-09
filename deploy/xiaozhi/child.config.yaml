@@ -19,6 +19,10 @@ enable_stop_tts_notify: false
 enable_wakeup_words_response_cache: false
 end_prompt:
   enable: false              # the no-voice timeout ends the chat silently (no model goodbye)
+# Silence (no VAD voice) before upstream ends the chat; upstream default 120 s is short for a
+# child who stops to think or turn a page. Noise resets this timer, so it is not what ends a
+# noisy chat: the guard's UNCLEAR_LIMIT does that (docs/SERVER_S5.md, "会话结束").
+close_connection_no_voice_time: 180
 system_error_response: 现在还不能语音聊天，我们可以先用按键和小宠物玩。
 # Texts the board sends right after a wake word (CONFIG_CUSTOM_WAKE_WORD_DISPLAY / WakeNet word).
 # Listed ones are swallowed silently (enable_greeting false); anything else would go to the LLM as

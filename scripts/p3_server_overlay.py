@@ -76,10 +76,20 @@ TTS_EGRESS = {
          "                return\n", "before"),
     ),
     # listenMessageHandler.py: "[device_call]" text is spoken verbatim, bypassing the guard (#15).
+    # A wake word "detect" (#12): with enable_greeting false upstream sends stt + tts start +
+    # tts stop at once and nothing else, so the board flips speaking -> listening in the same
+    # millisecond and the first wake gets no answer. Child mode hands the board's own wake
+    # text to the guard instead (PetLearning answers it with the fixed wake greeting), and
+    # mutes VAD for 2 s like upstream's greeting branches. Non-child mode is unchanged.
     "listenMessageHandler.py": (
         ('                    call_text = original_text[len("[device_call]"):].strip()\n',
          f"                    if {CHILD_TEST}:  # child mode: never speak client text (S6 audit #15)\n"
          "                        return\n", "after"),
+        ("                if is_wakeup_words and not enable_greeting:\n",
+         f"                if is_wakeup_words and {CHILD_TEST}:  # child mode: the guard greets (S6 audit #12)\n"
+         "                    conn.just_woken_up = True\n"
+         "                    await startToChat(conn, original_text)\n"
+         "                    return\n", "before"),
     ),
     # connection.py: the normal LLM chat (#1-#6: stream, tool replies, system_error_response).
     "connection.py": (

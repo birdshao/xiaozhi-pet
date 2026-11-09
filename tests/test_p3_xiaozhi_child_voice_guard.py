@@ -36,14 +36,37 @@ TOKEN = "dummy-voice-bridge-secret-never-use-in-production-123"
 VOICE_TOKEN = "dummy-voice-service-secret-never-use-in-production-9"
 
 
+class FakeWebSocket:
+    """Records what the server sends the board (JSON text frames, decoded)."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, data):
+        self.sent.append(json.loads(data) if isinstance(data, str) else data)
+
+
 class Connection:
     device_id = "physical-board-01"
+    session_id = "session-1"
     sentence_id = None
     close_after_chat = False
     client_is_speaking = False
+    client_abort = False
 
     def __init__(self):
         self.stop_event = threading.Event()
+        self.websocket = FakeWebSocket()
+        self.closed = 0
+
+    def clearSpeakStatus(self):
+        self.client_is_speaking = False
+
+    async def close(self):
+        self.closed += 1
+
+    def tts_states(self):
+        return [m["state"] for m in self.websocket.sent if isinstance(m, dict) and m.get("type") == "tts"]
 
 
 class FakeMcpClient:
@@ -81,7 +104,34 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         spoken = []
         self.calls = []
         module = types.ModuleType("core.handle.intentHandler")
-        module.speak_txt = lambda conn, text: spoken.append((conn.sentence_id, text))
+        send = types.ModuleType("core.handle.sendAudioHandle")
+
+        async def send_tts_message(conn, state, text=None):
+            # Upstream sendAudioHandle.send_tts_message at the pinned commit (minus audio pacing).
+            message = {"type": "tts", "state": state, "session_id": conn.session_id}
+            if text is not None:
+                message["text"] = text
+            if state == "stop":
+                conn.clearSpeakStatus()
+            await conn.websocket.send(json.dumps(message, ensure_ascii=False))
+
+        async def play(conn, sentence_id, text):
+            # Upstream TTS threads -> sendAudioMessage: FIRST sends sentence_start, LAST
+            # sends stop and then closes when close_after_chat is set. Dropped while aborted.
+            if conn.client_abort or sentence_id != conn.sentence_id:
+                return
+            await send_tts_message(conn, "sentence_start", text)
+            await conn.websocket.send(b"opus")
+            await send_tts_message(conn, "stop")
+            if conn.close_after_chat:
+                await conn.close()
+
+        def speak_txt(conn, text):
+            spoken.append((conn.sentence_id, text))
+            self.playing.append(asyncio.get_running_loop().create_task(play(conn, conn.sentence_id, text)))
+        self.playing = []
+        module.speak_txt = speak_txt
+        send.send_tts_message = send_tts_message
         mcp = types.ModuleType("core.providers.tools.device_mcp.mcp_handler")
 
         async def call_mcp_tool(conn, client, tool_name, args="{}", timeout=30):
@@ -93,6 +143,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         modules = {"core": types.ModuleType("core"),
                    "core.handle": types.ModuleType("core.handle"),
                    "core.handle.intentHandler": module,
+                   "core.handle.sendAudioHandle": send,
                    "core.providers": types.ModuleType("core.providers"),
                    "core.providers.tools": types.ModuleType("core.providers.tools"),
                    "core.providers.tools.device_mcp": types.ModuleType("core.providers.tools.device_mcp"),
@@ -163,6 +214,8 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         return handler, seen
 
     async def speak_with(self, handler, text="几点了", device=None):
+        # Each call is an independent turn; runs of unclear turns are tested on their own.
+        self.conn.child_guard_unclear = 0
         original_async = httpx.AsyncClient
         spoken, patched = self.fake_tts(device)
         with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
@@ -171,6 +224,103 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             await self.settle()
         self.assertEqual(len(spoken), 1)
         return spoken[-1][1]
+
+    async def played(self):
+        """Let the fake upstream TTS threads finish (sentence_start, audio, stop)."""
+        await asyncio.gather(*self.playing)
+
+    async def test_every_reply_is_a_full_tts_turn_on_the_wire(self):
+        """2026-11-09: replies were shown but silent; the board never left listening.
+
+        The board enters speaking (and decodes audio) only on tts start, which upstream
+        sends from send_stt_message, a path the guard skips. The guard sends it itself.
+        """
+        handler, _ = self.signed({"kind": "fixed", "tts_text": "现在是9点整。",
+                                  "action": None, "reason": "tell_time"})
+        self.conn.client_abort = True  # left over from an earlier abort
+        start = {"type": "tts", "state": "start", "session_id": "session-1"}
+        self.assertEqual(await self.speak_with(handler), "现在是9点整。")
+        sent = self.conn.websocket.sent
+        self.assertEqual(sent[0], start)
+        self.assertTrue(self.conn.client_is_speaking)
+        self.assertFalse(self.conn.client_abort)
+        await self.played()
+        self.assertEqual(self.conn.tts_states(), ["start", "sentence_start", "stop"])
+        self.assertLess(sent.index(start), sent.index(b"opus"))
+        self.assertFalse(self.conn.client_is_speaking)
+        self.assertEqual(self.conn.closed, 0)
+
+    async def test_command_and_goodbye_replies_also_start_a_tts_turn(self):
+        self.conn.mcp_client = FakeMcpClient()
+        await self.speak_with(self.command(), "喂食", self.device("done"))
+        await self.played()
+        self.assertEqual(self.conn.tts_states(), ["start", "sentence_start", "stop"])
+        self.conn.websocket.sent.clear()
+        handler, _ = self.signed({"kind": "fixed", "tts_text": "x", "action": None, "reason": "x"})
+        self.assertEqual(await self.speak_with(handler, guard._UPSTREAM_END_PROMPT), guard.GOODBYE)
+        await self.played()
+        self.assertEqual(self.conn.tts_states(), ["start", "sentence_start", "stop"])
+
+    async def turn(self, body, text="嗯嗯"):
+        """One turn without resetting the run of unclear replies."""
+        handler, _ = self.signed(body)
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts()
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(handler))):
+            self.assertTrue(await guard.handle_child_guard(self.conn, text))
+            await self.played()
+        return spoken[-1][1]
+
+    async def test_two_unclear_turns_in_a_row_say_goodbye_and_end_the_chat(self):
+        """Room noise kept the chat alive with "没听清" every few seconds for 20+ minutes."""
+        unclear = {"kind": "fallback", "tts_text": "没听清，再说一遍好吗？", "action": None, "reason": "no_match"}
+        clear = {"kind": "fixed", "tts_text": "我在呢。", "action": None, "reason": "wake_greeting"}
+        quiz = {"kind": "fallback", "tts_text": "请说选一或选二。", "action": None, "reason": "quiz"}
+        self.assertEqual(guard.UNCLEAR_LIMIT, 2)
+        # One mis-heard sentence never ends the chat; a clear turn starts the count again.
+        self.assertEqual(await self.turn(unclear), "没听清，再说一遍好吗？")
+        self.assertEqual(await self.turn(clear), "我在呢。")
+        self.assertEqual(await self.turn(unclear), "没听清，再说一遍好吗？")
+        # A quiz / story prompt is a real turn, not "no intent".
+        self.assertEqual(await self.turn(quiz), "请说选一或选二。")
+        self.assertEqual(await self.turn(unclear), "没听清，再说一遍好吗？")
+        self.assertFalse(self.conn.close_after_chat)
+        self.assertEqual(self.conn.closed, 0)
+        # The second in a row: goodbye, then upstream closes after the stop.
+        self.assertEqual(await self.turn(unclear), guard.GOODBYE)
+        self.assertTrue(self.conn.close_after_chat)
+        self.assertEqual(self.conn.closed, 1)
+        self.assertEqual(self.conn.tts_states()[-3:], ["start", "sentence_start", "stop"])
+        self.assertEqual(self.conn.child_guard_unclear, 0)
+
+    async def test_service_down_noise_also_ends_the_chat(self):
+        spoken, patched = self.fake_tts()
+        with patched, patch.object(guard.httpx, "AsyncClient",
+                                   side_effect=httpx.ConnectError("no service")):
+            for _ in range(2):
+                self.assertTrue(await guard.handle_child_guard(self.conn, "嗯"))
+            await self.played()
+        self.assertEqual([t for _, t in spoken], [guard.NO_SERVICE, guard.GOODBYE])
+        self.assertEqual(self.conn.closed, 1)
+
+    async def test_wake_text_gets_the_wake_greeting_end_to_end(self):
+        """#12: the board's own wake text reaches PetLearning and is answered, not swallowed."""
+        api = create_app(self.db.path)
+        original_async = httpx.AsyncClient
+
+        def inprocess_client(*args, **kwargs):
+            return original_async(transport=httpx.ASGITransport(app=api),
+                                  base_url="http://127.0.0.1:8765")
+        spoken, patched = self.fake_tts()
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=inprocess_client):
+            for wake in ("你好小智", "你好团团"):
+                self.assertTrue(await guard.handle_child_guard(self.conn, wake))
+            # Upstream's greeting stand-in is still not a wake word (matching is not widened).
+            self.assertTrue(await guard.handle_child_guard(self.conn, "嘿，你好呀"))
+            await self.played()
+        self.assertEqual([t for _, t in spoken[:2]], ["我在呢。", "我在呢。"])
+        self.assertNotEqual(spoken[2][1], "我在呢。")
 
     async def test_guard_forwards_text_and_speaks_returned_sentence(self):
         handler, seen = self.signed({"kind": "fixed", "tts_text": "现在是9点整。",
@@ -497,10 +647,15 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
                 "            prompt = conn.prompt\n"
                 "            await startToChat(conn, prompt)\n"),
             "listenMessageHandler.py": (
-                "async def handle(conn, original_text):\n"
-                "                if True:\n"
+                "async def startToChat(conn, text):\n    conn.chatted.append(text)\n\n"
+                "async def handle(conn, original_text, is_wakeup_words=False, enable_greeting=False):\n"
+                "    if True:\n        if True:\n            if True:\n"
+                '                if original_text.startswith("[device_call]"):\n'
                 '                    call_text = original_text[len("[device_call]"):].strip()\n'
-                "                    conn.spoke.append(call_text)\n"),
+                "                    conn.spoke.append(call_text)\n"
+                "                    return\n"
+                "                if is_wakeup_words and not enable_greeting:\n"
+                '                    conn.spoke.append("swallowed")\n'),
             "connection.py": (
                 "class ConnectionHandler:\n"
                 "    def chat(self, query, depth=0):\n"
@@ -541,6 +696,12 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
                 exec(compile(patched["listenMessageHandler.py"], "l.py", "exec"), scope)
                 asyncio.run(scope["handle"](conn, "[device_call]任何文字"))
                 self.assertEqual(conn.spoke, [] if silent else ["任何文字"], mode)
+                # #12: the board's wake text goes to the guard (startToChat) instead of
+                # upstream's instant stt + start + stop, with VAD muted like a greeting.
+                asyncio.run(scope["handle"](conn, "你好小智", True))
+                self.assertEqual((conn.spoke, conn.chatted),
+                                 ([], ["你好小智"]) if silent else (["任何文字", "swallowed"], []), mode)
+                self.assertEqual(getattr(conn, "just_woken_up", False), silent, mode)
                 scope = {}
                 exec(compile(patched["connection.py"], "c.py", "exec"), scope)
                 handler = scope["ConnectionHandler"]()
@@ -561,6 +722,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(config["enable_greeting"], False)
         self.assertIs(config["end_prompt"]["enable"], False)
         self.assertIs(config["enable_stop_tts_notify"], False)
+        self.assertEqual(config["close_connection_no_voice_time"], 180)
         self.assertEqual(config["system_error_response"], CHILD_ERROR_RESPONSE)
         self.assertEqual(guard.NO_SERVICE, CHILD_ERROR_RESPONSE)
         for key, value in (("enable_greeting", True), ("end_prompt", {"enable": True}),
@@ -584,6 +746,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         with patched, patch.object(guard.httpx, "AsyncClient", side_effect=httpx.InvalidURL("bad")):
             self.assertTrue(await guard.handle_child_guard(self.conn, "你好"))
         self.assertEqual(spoken[-1][1], guard.NO_SERVICE)
+        self.conn.child_guard_unclear = 0  # an independent case, not a second turn in a row
         with patch.dict(os.environ, {"KID_PET_BUSINESS_DEVICE_ID": "pet unit\n"}):
             spoken, patched = self.fake_tts()
             with patched:

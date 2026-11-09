@@ -50,6 +50,26 @@
 
 `KID_PET_API_URL` 的主机在代码里固定为：回环（`127.0.0.1`/`localhost`/`::1`），或**字面**私有/链路本地 IP（compose 里给 pet-learning 固定一个 IP，例如 `http://172.20.0.10:8780`）；不接受主机名（路由器 DNS 可能把单标签名解析到局域网设备），没有放宽用的环境变量。仍要求 `http`、无账号/路径/查询，畸形 URL/端口 → 拒绝。守卫用语音 token 校验响应签名（绑定本次 `turn_id`），签名缺失/不符 → 固定句 `NO_SERVICE`。overlay 仍只有一处锚点，合约测试断言补丁只是一段 5 行插入。
 
+### 有字没声、对话停不下来（2026-11-09 真机，已修）
+
+现象（串口 `human-wake2.log`，固件 e50c1e8 / 服务端 870a87a）：唤醒后 `listening -> speaking -> listening` 在同一毫秒；之后板子一直停在 listening，却不断收到 `<< 没听清` / `<< 再说一遍好吗？`，没有声音，20 多分钟不结束。
+
+根因（上游 xiaozhi-esp32-server `8f2dda09`，xiaozhi-esp32 v2.5.2 `49b4380b`）：
+
+1. **守卫的回复从不发 `tts start`。** 服务端只在 `core/handle/sendAudioHandle.py:346`（`send_stt_message` 末尾）发 `{"type":"tts","state":"start"}`；正常聊天由 `receiveAudioHandle.py:102` 调它，但守卫在 `intentHandler.py:31` 的锚点处就返回了 True，`startToChat` 在 `:97-99` 直接 return。守卫用的 `speak_txt`（`intentHandler.py:233-252`）只让 TTS 线程发 `sentence_start`（`sendAudioHandle.py:43`）、音频和 `stop`（`:53`）。板子只在收到 `start` 时进 speaking（`application.cc:624-627`），只在 speaking 时把下行音频放进解码队列（`application.cc:554-557`），`stop` 也只在 speaking 时才处理（`:631`）。所以文字照显示，音频全丢，板子一直 listening。
+2. **对话停不下来**是 1 的后果：板子一直 listening（自动拾音）就一直上传环境声，ASR 每出一段文字，PetLearning 回 `no_match` 兜底；无声超时（`receiveAudioHandle.py:110-124`）被 VAD 的"有声"不断重置，永远到不了。
+3. **第一次唤醒没回应**：板子发 `listen detect "你好小智"`，`enable_greeting: false` 时上游走 `listenMessageHandler.py:101-105`：只发 stt（`>> 你好小智`）+ start + 立即 stop，所以 speaking→listening 同一毫秒，守卫根本没收到这句。2.6 s 后的"没听清"是下一段 ASR（该分支不设 `just_woken_up`，VAD 不静音）。后面几次"我在呢"是孩子在 listening 中再说"你好小智"，走了 ASR → 守卫 → `wake_greeting`。
+4. 顺带：上游 `handleAbortMessage` 置 `client_abort = True`，只有聊天路径（`receiveAudioHandle.py:105`）会清掉；TTS 线程在它为真时丢掉一切（`tts/base.py:374,432`）。守卫路径以前从不清，所以一次打断后守卫的回复也会一直没声。
+
+修法（只改守卫和 overlay）：
+
+- `_speak` 改为一整轮：换 `sentence_id`、清 `client_abort`、`await send_tts_message(conn, "start")`、置 `client_is_speaking`，再 `speak_txt`；结束的 `stop` 仍由上游在最后一句后发。命令回复、告别句都走它。
+- **会话结束**：PetLearning 的 `kind=fallback` 且 `reason` 是 `no_match`/`text_invalid`，以及守卫本地的 `NO_SERVICE`/`NOT_BOUND`，算"没有有效意图"。连续 `UNCLEAR_LIMIT = 2` 次时，第 2 次不再说"没听清"，改说固定告别句"我们下次再聊吧，拜拜。"并置 `conn.close_after_chat`，上游在这句的 `stop` 之后断开（`sendAudioHandle.py:52-55`）。任何有效回复（固定句、命令、问答、开放聊天、测验/故事里的提示）都把计数清零。理由：孩子一次没听清还会得到"再说一遍"，有一次重说的机会；环境噪声在真机上每 2–5 s 出一段，最多两段（约 5–10 s）就结束，再唤醒即可。不做总时长上限：读书/测验可以合理地很长，证据里的长会话全是兜底句。
+- `close_connection_no_voice_time: 180`（`deploy/xiaozhi/child.config.yaml`，上游默认 120）：给孩子想一想、翻页的时间。它只管"安静"，噪声会重置它，所以结束噪声会话靠的是上一条。
+- 唤醒词（S6 审计 #12）：overlay 在 `listenMessageHandler.py` 的 `if is_wakeup_words and not enable_greeting:` 前插一段，只在儿童模式下把板子发来的唤醒词原文交给 `startToChat` → 守卫，PetLearning 的 `is_wake_only` 回"我在呢。"，并设 `just_woken_up`。匹配没有放宽：上游问候分支用的替身文本"嘿，你好呀"仍不是唤醒词；`wakeup_words` 列表和 `enable_greeting: false` 不变。
+
+真机仍需验证：唤醒后串口应是 `connecting -> listening -> speaking`（"我在呢"有声）`-> listening`；每条回复前都有 `listening -> speaking`；在嘈杂环境不说话，两句后听到"我们下次再聊吧，拜拜"并回 idle；服务端日志 `child guard: 2 unclear turns in a row`。
+
 ## 设备端仍需要（不在本 PR）
 
 - BOOT 开始说话时 `PUT /v1/devices/{id}/context`（含 `content_id/revision/header_crc`；S4 后按它解析页）。
