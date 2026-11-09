@@ -389,6 +389,67 @@ int main() {
         assert(lo > 500 && hi > 500);
     }
 
+    // Choosing is activity: turning every 30 s keeps the screen open past
+    // 60 s; 60 s after the last turn it goes home.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        ParrotSession p;
+        p.Bind(g_buffer.data(), g_buffer.size());
+        assert(p.Open(0, ok, nullptr));
+        uint32_t t = 0;
+        for (int i = 0; i < 6; ++i) {  // 3 minutes of picking
+            t += 30000;
+            assert(!p.Tick(t).leave);
+            assert(p.Input(GameInput::Down, t).redraw);
+        }
+        assert(!p.Tick(t + ParrotSession::kIdleExitMs - 1).leave);
+        assert(p.Tick(t + ParrotSession::kIdleExitMs).leave);
+    }
+
+    // The home slot leaves even while XiaoZhi or a cue holds the speaker.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        for (int which = 0; which < 2; ++which) {
+            ParrotSession p;
+            p.Bind(g_buffer.data(), g_buffer.size());
+            assert(p.Open(0, ok, nullptr));
+            Choose(p, ParrotSession::kHomeChoice);
+            ParrotContext c = ok;
+            (which ? c.voice_active : c.audio_busy) = true;
+            const ParrotOutput o = p.Hold(true, 5, c, 0);
+            assert(o.leave && !o.start_mic && !p.Active());
+        }
+    }
+
+    // Interpolation between far apart neighbours must not overflow: compare
+    // with a 64-bit reference of the parrot voice (1.3x).
+    {
+        std::vector<int16_t> buf(ParrotSession::kMaxSamples);
+        ParrotSession p;
+        p.Bind(buf.data(), buf.size());
+        assert(p.Open(0, ok, nullptr));
+        const size_t n = ParrotSession::kInRate;
+        std::vector<int16_t> jump(n);
+        for (size_t i = 0; i < n; ++i) jump[i] = (i & 1) ? 32767 : -32768;
+        assert(p.Hold(true, 0, ok, 0).start_mic);
+        p.Feed(jump.data(), n);
+        assert(p.Hold(false, 100, ok, 0).play);
+        std::vector<int16_t> out;
+        Drain(p, &out);
+        const uint64_t step = (1300ull * ParrotSession::kInRate * 65536ull) /
+                              (1000ull * ParrotSession::kOutRate);
+        const int64_t gain = (static_cast<int64_t>(ParrotSession::kOutPeak) * 256) / 32768;
+        for (size_t k = 0; k < 400; ++k) {
+            const uint64_t pos = k * step;
+            const size_t i = pos >> 16;
+            const int64_t frac = pos & 0xFFFF;
+            const int64_t a = jump[i], b = jump[i + 1];
+            int64_t v = (a + (((b - a) * frac) >> 16)) * gain >> 8;
+            v = std::max<int64_t>(-ParrotSession::kOutPeak, std::min<int64_t>(ParrotSession::kOutPeak, v));
+            assert(out[k] == v);
+        }
+    }
+
     // RAM: five voices live in the same small object (no extra buffer).
     static_assert(sizeof(ParrotSession) <= 96, "voices must not add buffers to ParrotSession");
     static_assert(ParrotSession::kChoices == 6 && ParrotSession::kHomeChoice == 5, "5 voices + home");

@@ -18,10 +18,9 @@ namespace kid_app {
 enum class SoundArt : uint16_t {
     Parrot = 701, Song = 702, ToothBrush = 703, HandWash = 704, Lullaby = 705,
 };
-// V9 S1: the parrot's other voice cards (706..710; the parrot itself keeps
-// SoundArt::Parrot). Drawn by sound_draw_v9.inc; the voice number travels in
-// GameView::sc (0..4 = ParrotVoice, 5 = the home slot).
-enum class ParrotArt : uint16_t { Chipmunk = 706, Bear = 707, Robot = 708, Echo = 709, Home = 710 };
+// V9 S1: the parrot's voice cards are drawn by sound_draw_v9.inc from the
+// voice number in GameView::sc (0..4 = ParrotVoice, 5 = the home slot); they
+// have no picture ids of their own. 706..710 stay reserved for sound art.
 constexpr bool SoundArtValid(uint16_t id) { return id >= 701 && id <= 710; }
 
 // GameView::sound values.

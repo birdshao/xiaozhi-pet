@@ -110,9 +110,6 @@ int main() {
     // choice changes the row, not just the big card.
     assert(Diff(ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 0}),
                 ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 5})) > 1500);
-    // Picture ids of the new cards stay clear of the other ranges.
-    static_assert(static_cast<uint16_t>(ParrotArt::Chipmunk) > 705 &&
-                  static_cast<uint16_t>(ParrotArt::Home) <= 710, "SoundArt range 701..710");
 
     RefreshPlanner planner;
     planner.Completed(GameModel(parrot[0]), RefreshMode::Full, true);
