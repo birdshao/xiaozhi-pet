@@ -109,6 +109,23 @@ void TestIdMapping() {
     for (uint16_t id : kIds) assert(GameToneSamples(GameRuleClip(id)) == 0);
 }
 
+void TestPlaybackPlan() {
+    const uint16_t rule = GameRuleClip(28);
+    // A recorded rule plays from the pack as it is.
+    RulePlan p = PlanGameRule(rule, true);
+    assert(p.source == RuleSource::Pack && p.game_clip == rule);
+    // Not recorded: the old prompt tone stands in, and says so.
+    p = PlanGameRule(rule, false);
+    assert(p.source == RuleSource::Tone && p.game_clip == kGameTonePrompt);
+    // Everything else passes through untouched, whatever the pack holds.
+    for (uint16_t clip : {uint16_t{0}, kGameClipRight, kGameTonePrompt, GameArtTone(41)}) {
+        for (bool found : {false, true}) {
+            p = PlanGameRule(clip, found);
+            assert(p.source == RuleSource::None && p.game_clip == clip);
+        }
+    }
+}
+
 void TestKpsIdsAreFree() {
     // 600..999 holds neither pet lines nor care lines today.
     for (uint16_t id = 600; id <= 999; ++id) {
@@ -150,6 +167,7 @@ void TestBankLookup() {
 
 int main() {
     TestIdMapping();
+    TestPlaybackPlan();
     TestKpsIdsAreFree();
     TestBankLookup();
     std::cout << "game rules ok\n";

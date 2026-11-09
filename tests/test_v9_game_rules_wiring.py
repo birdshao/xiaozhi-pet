@@ -8,10 +8,13 @@ prompt tone, and the self-test scenario stays inside the board parser's
 80-character line limit.
 """
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import selftest_report  # noqa: E402
 INTEGRATE = (ROOT / "scripts/p1_integrate.py").read_text(encoding="utf-8")
 SCENARIO = ROOT / "tools/selftest/v9_game_rules.pettest"
 
@@ -34,8 +37,8 @@ class PromptTaskWiring(unittest.TestCase):
 
     def test_missing_recording_falls_back_to_the_prompt_tone(self):
         body = prompt_task()
-        self.assertRegex(body, r"if \(rule_asked && !rule_recorded\) request\.game = "
-                               r"kid_app::kGameTonePrompt;")
+        self.assertIn("kid_app::PlanGameRule(request.game, rule_found)", body)
+        self.assertIn("request.game = rule_plan.game_clip;", body)
         # A tone request never reaches the sound pack branch.
         self.assertRegex(body, r"const bool game = request\.game != 0 && !rule_recorded;")
 
@@ -62,22 +65,27 @@ class PromptTaskWiring(unittest.TestCase):
 class Scenario(unittest.TestCase):
     def test_lines_fit_the_board_parser(self):
         text = SCENARIO.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("PETSELFTEST1\n"))
-        for n, line in enumerate(text.split("\n"), 1):
-            self.assertLessEqual(len(line.encode("utf-8")), 80, f"line {n}: {line!r}")
+        self.assertTrue(text.startswith("PETSELFTEST1" + chr(10)))
+        self.assertEqual(selftest_report.long_lines(text), [])
 
-    def test_expectations(self):
+    def test_expectations_parse_and_say_what_we_mean(self):
         text = SCENARIO.read_text(encoding="utf-8")
+        # The same parser the host report uses: a malformed line raises.
+        want = selftest_report.expectations(text)
         # The rule is asked twice (open + 12 s of silence); no recording on
         # the card, so both fall back to the prompt tone.
-        self.assertIn("# expect min:PET_GAME_RULE_TONE 2", text)
-        self.assertIn("# expect none:PET_GAME_RULE_PACK 0", text)
-        self.assertIn("# expect min:game=memory4 1", text)
-        self.assertIn("# expect none:PET_GAME_START_FAILED 0", text)
-        self.assertIn("# expect none:PET_GAME_REFUSED 0", text)
-        self.assertIn("# expect selftest_done 1", text)
+        self.assertEqual(want["min:PET_GAME_RULE_TONE"], "2")
+        self.assertEqual(want["none:PET_GAME_RULE_PACK"], "0")
+        self.assertEqual(want["min:game=memory4"], "1")
+        self.assertEqual(want["none:PET_GAME_START_FAILED"], "0")
+        self.assertEqual(want["none:PET_GAME_REFUSED"], "0")
+        self.assertEqual(want["selftest_done"], "1")
+        self.assertEqual(want["max_partial_ms"], "2500")
         self.assertNotIn("timescale", text)  # real time: the 12 s repeat is really 12 s
         self.assertRegex(text, r"(?m)^wait 13000$")
+        # Every "# expect" line is a real expectation (none swallowed by a typo).
+        lines = [ln for ln in text.splitlines() if re.match(r"\s*#\s*expect", ln)]
+        self.assertEqual(len(lines), len(want))
 
 
 if __name__ == "__main__":

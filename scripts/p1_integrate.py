@@ -1811,19 +1811,20 @@ BOARD_WORKER = r'''
             // same arbitration). Without a recording the game plays its old
             // prompt tone, so no pack (or an older one) changes nothing.
             kid_app::SoundClip rule_clip;
-            const bool rule_asked = kid_app::IsGameRuleClip(request.game);
-            const bool rule_recorded =
-                rule_asked &&
+            const bool rule_found =
+                kid_app::IsGameRuleClip(request.game) &&
                 sound_bank_.LoadGameRule(kid_app::GameRuleGameId(request.game), &rule_clip);
-            if (rule_recorded)
+            const kid_app::RulePlan rule_plan = kid_app::PlanGameRule(request.game, rule_found);
+            const bool rule_recorded = rule_plan.source == kid_app::RuleSource::Pack;
+            if (rule_plan.source == kid_app::RuleSource::Pack)
                 ESP_LOGI(TAG, "PET_GAME_RULE_PACK game=%u token=%u",
                          static_cast<unsigned>(kid_app::GameRuleGameId(request.game)),
                          static_cast<unsigned>(request.token));
-            else if (rule_asked)
+            else if (rule_plan.source == kid_app::RuleSource::Tone)
                 ESP_LOGI(TAG, "PET_GAME_RULE_TONE game=%u token=%u",
                          static_cast<unsigned>(kid_app::GameRuleGameId(request.game)),
                          static_cast<unsigned>(request.token));
-            if (rule_asked && !rule_recorded) request.game = kid_app::kGameTonePrompt;
+            request.game = rule_plan.game_clip;
             const bool game = request.game != 0 && !rule_recorded;  // V4-06 mini-game clip
             // V8: a request with only care lines plays care[0] now.
             const bool care = !phrase && !game && !rule_recorded && request.care_count != 0;

@@ -15,7 +15,7 @@ PETSELFTEST1
 # expect none:PET_SLEEP_REQUESTED 0
 # expect none:PET_SELFTEST_ABORT 0
 # expect selftest_done 1
-# expect # expect max_partial_ms 2500
+# expect max_partial_ms 2500
 # expect max_full_ms 5000
 phase day
 volume 15

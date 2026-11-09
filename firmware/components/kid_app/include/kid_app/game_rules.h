@@ -57,4 +57,19 @@ constexpr uint16_t GameRuleGameId(uint16_t clip) {
     return IsGameRuleClip(clip) ? static_cast<uint16_t>(clip - kGameRuleClipBase) : uint16_t{0};
 }
 
+// What the prompt player does with a game clip request (pure, host-tested;
+// the board only supplies `recorded`: the sound pack really holds the rule).
+//  Pack: stream the recording. Tone: no recording, play the old prompt tone
+//  (game_clip). None: not a rule, play game_clip as it is.
+enum class RuleSource : uint8_t { None, Pack, Tone };
+struct RulePlan {
+    RuleSource source = RuleSource::None;
+    uint16_t game_clip = 0;
+};
+constexpr RulePlan PlanGameRule(uint16_t clip, bool recorded) {
+    return !IsGameRuleClip(clip) ? RulePlan{RuleSource::None, clip}
+           : recorded            ? RulePlan{RuleSource::Pack, clip}
+                                 : RulePlan{RuleSource::Tone, kGameTonePrompt};
+}
+
 }  // namespace kid_app

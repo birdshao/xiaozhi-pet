@@ -24,7 +24,7 @@ PLAY_CONTENT_CC = ROOT / "firmware/components/kid_app/src/play_content.cc"
 # say the same words: one clip, KPS1 id 621.
 EXPECTED = {
     621: "找一找，哪两张是一样的？",
-    623: "把团团歪一歪，帮我找到胡萝卜吧。",
+    623: "把团团歪一歪，帮团团找到胡萝卜吧。",
     624: "摇一摇骰子，数一数有几个点。",
     625: "摇一摇小树，数一数掉下几个果子。",
     626: "先动一动，听到“木头人”，就一动也不动。",
@@ -35,7 +35,7 @@ EXPECTED = {
     632: "哪一个是它的宝宝？",
     633: "大、中、小排好队，缺的是哪一个？",
     634: "接下来是哪一个？",
-    635: "哪一个能吃？哪一个不能吃？",
+    635: "看上面的小图，找出符合它的那一个。",
     636: "哪一个是它的影子？",
     637: "箭头指向哪一边，就选哪一边。",
     638: "现在是这个时间，我们该做什么？",
@@ -119,6 +119,16 @@ class PackCatalogueTests(unittest.TestCase):
         names = [c.name for c in sound_pack.catalog()]
         self.assertEqual(len(names), len(set(names)))
         self.assertIn("621", names)
+
+    def test_clip_limit_leaves_room_and_matches_the_reader(self):
+        # A pack over the limit is refused whole: every line would fall back
+        # to a tone. Keep room for the V9 care lines merged next to this.
+        header = (ROOT / "firmware/components/kid_app/include/kid_app/"
+                  "sound_pack_reader.h").read_text(encoding="utf-8")
+        m = re.search(r"kMaxClips = (\d+);", header)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), sound_pack.MAX_CLIPS)
+        self.assertGreaterEqual(sound_pack.MAX_CLIPS, len(sound_pack.catalog()) + 64)
 
     def test_sound_pack_checklist_names_them(self):
         text = sound_pack.checklist()
