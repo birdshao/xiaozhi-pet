@@ -1,0 +1,59 @@
+PETSELFTEST1
+# V9 parrot voices without a person: open the parrot from the play menu
+# (Sound page), turn the dial to the robot (3 turns) and hold the dial centre
+# for a take, then the echo (1 turn) and a second take, then the home slot
+# (1 turn) and a press to leave. Each take records the room for about 1.5 s
+# into RAM only and plays it back in the chosen voice; the log carries the
+# voice NUMBER and sample counts, never audio. Counted from "mark begin".
+# Needs: outside the quiet hours (phase day), battery above the low level.
+# expect min:PET_SOUND_START 1
+# expect min:kind=parrot 1
+# expect min:PET_PARROT_VOICE 2
+# expect min:voice=3 1
+# expect min:voice=4 1
+# expect min:PET_PARROT_PLAY 2
+# A turn while it plays is not part of this scenario.
+# expect none:PET_PARROT_STOP 0
+# expect none:PET_SOUND_REFUSED 0
+# expect none:PET_PARROT_PLAY_FAILED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Game(2), press: first level; Sound page (3 turns, press),
+# the parrot is its 3rd card (2 turns, press).
+tap down 2500
+tap press 6000
+tap down 600
+tap down 600
+tap down 600
+tap press 3000
+tap down 600
+tap down 600
+tap press 6000
+# Voices: parrot(0) -> chipmunk -> bear -> robot(3).
+tap down 1500
+tap down 1500
+tap down 1500
+hold press 1500 8000
+wait 6000
+# Echo(4).
+tap down 1500
+hold press 1500 8000
+wait 8000
+# Home slot(5): a press leaves, nothing is recorded.
+tap down 1500
+tap press 3000
+wait 6000
+pet
+wait 5000
+end

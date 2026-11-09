@@ -29,6 +29,7 @@ void ParrotSession::Wipe() {
     }
     length_ = 0;
     out_samples_ = 0;
+    body_samples_ = 0;
     step_q16_ = 0;
     gain_q8_ = 256;
 }
@@ -53,6 +54,7 @@ bool ParrotSession::Open(uint32_t now_ms, const ParrotContext& c, ParrotOutput* 
         return false;
     }
     Wipe();
+    choice_ = 0;
     phase_ = ParrotPhase::Ready;
     hint_ = ParrotHint::None;
     last_activity_ms_ = now_ms;
@@ -83,9 +85,12 @@ void ParrotSession::PlaybackRefused() {
 }
 
 ParrotOutput ParrotSession::Hold(bool down, uint32_t now_ms, const ParrotContext& c, uint32_t seed) {
+    (void)seed;  // the child chooses the voice (V9)
     ParrotOutput o;
     if (down) {
         if (phase_ != ParrotPhase::Ready) return o;  // already recording / playing
+        // The home slot always leaves, even while XiaoZhi or a cue is busy.
+        if (choice_ == kHomeChoice) return Stop(true);
         // Re-checked at every press: quiet hours may begin while the screen is open.
         if (c.quiet_hours || c.low_battery || c.voice_active || c.audio_busy) {
             o.hint = c.quiet_hours ? ParrotHint::Quiet
@@ -101,7 +106,7 @@ ParrotOutput ParrotSession::Hold(bool down, uint32_t now_ms, const ParrotContext
             return o;
         }
         Wipe();
-        voice_ = (seed & 1u) ? ParrotVoice::Chipmunk : ParrotVoice::Parrot;
+        voice_ = Selected();
         phase_ = ParrotPhase::Recording;
         hint_ = ParrotHint::None;
         record_start_ms_ = now_ms;
@@ -140,7 +145,12 @@ ParrotOutput ParrotSession::Release(uint32_t now_ms) {
     const uint64_t permille = kPermille[static_cast<size_t>(voice_)];
     step_q16_ = static_cast<uint32_t>((permille * kInRate * 65536ull) / (1000ull * kOutRate));
     const uint64_t span = static_cast<uint64_t>(length_ - 1) << 16;
-    out_samples_ = static_cast<size_t>(span / step_q16_) + 1;
+    body_samples_ = static_cast<size_t>(span / step_q16_) + 1;
+    out_samples_ = body_samples_;
+    if (voice_ == ParrotVoice::Echo) {
+        out_samples_ += kEchoDelay2;           // the last copy rings out
+        gain_q8_ = gain_q8_ * 4u / 7u;         // 1 + 1/2 + 1/4 never passes the cap
+    }
     phase_ = ParrotPhase::Playing;
     hint_ = ParrotHint::None;
     o.play = true;
@@ -159,13 +169,24 @@ size_t ParrotSession::Feed(const int16_t* samples, size_t count) {
 }
 
 ParrotOutput ParrotSession::Input(GameInput input, uint32_t now_ms) {
-    (void)now_ms;
-    if ((input == GameInput::Up || input == GameInput::Down || input == GameInput::Long) &&
-        phase_ == ParrotPhase::Ready)
-        return Stop(true);
-    // Playing: a turn of the dial stops the voice and leaves too.
-    if ((input == GameInput::Up || input == GameInput::Down) && phase_ == ParrotPhase::Playing)
-        return Stop(true);
+    const bool turn = input == GameInput::Up || input == GameInput::Down;
+    if (turn && phase_ != ParrotPhase::Recording) last_activity_ms_ = now_ms;  // choosing is activity
+    if (phase_ == ParrotPhase::Ready && turn) {
+        choice_ = static_cast<uint8_t>(input == GameInput::Down ? (choice_ + 1) % kChoices
+                                                                 : (choice_ + kChoices - 1) % kChoices);
+        hint_ = ParrotHint::None;
+        ParrotOutput o;
+        o.redraw = true;
+        return o;
+    }
+    if (phase_ == ParrotPhase::Ready && input == GameInput::Long) return Stop(true);
+    // Playing: a turn of the dial stops the voice (wiped) and is ready again.
+    if (phase_ == ParrotPhase::Playing && turn) {
+        ParrotOutput o = Stop(false);
+        o.stop_audio = true;
+        o.redraw = true;
+        return o;
+    }
     return ParrotOutput{};
 }
 
@@ -185,17 +206,32 @@ void ParrotSession::Scrub(int16_t* block, size_t count) {
     for (size_t i = 0; i < count; ++i) p[i] = 0;
 }
 
+int32_t ParrotSession::Resampled(size_t index) const {
+    if (index >= body_samples_) return 0;
+    const uint64_t pos = static_cast<uint64_t>(index) * step_q16_;
+    const size_t i = static_cast<size_t>(pos >> 16);
+    const int32_t frac = static_cast<int32_t>(pos & 0xFFFFu);
+    const int32_t a = buffer_[i];
+    const int32_t b = i + 1 < length_ ? buffer_[i + 1] : a;
+    return static_cast<int32_t>(a + ((static_cast<int64_t>(b - a) * frac) >> 16));
+}
+
 size_t ParrotSession::Render(size_t offset, int16_t* out, size_t max) {
     if (phase_ != ParrotPhase::Playing || !out || offset >= out_samples_) return 0;
     const size_t n = out_samples_ - offset < max ? out_samples_ - offset : max;
     for (size_t k = 0; k < n; ++k) {
-        const uint64_t pos = static_cast<uint64_t>(offset + k) * step_q16_;
-        const size_t i = static_cast<size_t>(pos >> 16);
-        const int32_t frac = static_cast<int32_t>(pos & 0xFFFFu);
-        const int32_t a = buffer_[i];
-        const int32_t b = i + 1 < length_ ? buffer_[i + 1] : a;
-        int32_t v = a + (((b - a) * frac) >> 16);
+        const size_t at = offset + k;
+        int32_t v = Resampled(at);
+        if (voice_ == ParrotVoice::Echo) {  // the voice, then two quieter copies
+            if (at >= kEchoDelay1) v += Resampled(at - kEchoDelay1) / 2;
+            if (at >= kEchoDelay2) v += Resampled(at - kEchoDelay2) / 4;
+        }
         v = static_cast<int32_t>((static_cast<int64_t>(v) * gain_q8_) >> 8);
+        if (voice_ == ParrotVoice::Robot) {  // ring modulation, 70 Hz triangle carrier
+            const uint32_t phase = static_cast<uint32_t>(at * kCarrierStep) & 0xFFFFu;
+            const int32_t tri = static_cast<int32_t>((phase < 0x8000u ? phase : 0xFFFFu - phase) >> 6) - 256;
+            v = (v * tri) / 256;  // |v| <= kOutPeak, so the product never clips
+        }
         if (v > kOutPeak) v = kOutPeak;
         if (v < -kOutPeak) v = -kOutPeak;
         out[k] = static_cast<int16_t>(v);
