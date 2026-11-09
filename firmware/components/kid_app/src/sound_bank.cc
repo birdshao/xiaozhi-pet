@@ -1,6 +1,7 @@
 #include "kid_app/sound_bank.h"
 
 #include "kid_app/care_phrases.h"
+#include "kid_app/game_rules.h"
 #include "kid_app/home_menu.h"
 
 #include <algorithm>
@@ -153,6 +154,11 @@ bool SoundBank::LoadPhrase(uint16_t phrase_id, SoundClip* out) const {
     out->chime_ = phrase->context;
     out->samples = ChimeSamples(phrase->context);
     return true;
+}
+
+bool SoundBank::LoadGameRule(uint16_t game_id, SoundClip* out) const {
+    const uint16_t id = GameRuleKpsId(game_id);
+    return out && id != 0 && FromPack(id, out);
 }
 
 bool SoundBank::LoadCareLine(uint16_t care_id, SoundClip* out) const {

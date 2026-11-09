@@ -71,8 +71,10 @@ constexpr int kWeatherColdC10 = 180;
 size_t BuildWeatherPool(bool sensor_ok, int temp_c10, GameRound out[3]);
 
 // Prompt wording for the reviewers (and the TTS tool): the text a grown-up
-// would say for a game's question. The firmware plays tones until a
-// reviewed recording exists (TODO in the doc); nothing here is shown.
+// would say for a game's question, i.e. the spoken rule of V9 1E (G4,
+// game_rules.h; tools/game_prompts.py turns it into KPS1 clips 600 + id).
+// The firmware plays the old prompt tone until a reviewed recording exists;
+// nothing here is shown.
 const char* PlayGamePromptText(PlayGame game);
 
 }  // namespace kid_app

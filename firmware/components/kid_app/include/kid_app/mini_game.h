@@ -156,6 +156,7 @@ private:
     uint32_t rng_ = 1;
     uint32_t phase_until_ms_ = 0;
     uint32_t last_input_ms_ = 0;
+    uint16_t rule_clip_ = 0;  // V9 1E: spoken rule of this game (game_rules.h), 0 = none
 };
 
 // GAME_COMPLETED for the growth memory (ADR-012): only a finished session

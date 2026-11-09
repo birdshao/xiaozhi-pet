@@ -1806,9 +1806,27 @@ BOARD_WORKER = r'''
             // V5-04: pick the pet's line first; one too soon after the last
             // is dropped without cutting what is playing.
             const bool phrase = request.phrase != 0;
-            const bool game = request.game != 0;  // V4-06 mini-game clip
+            // V9 1E: a game's spoken rule comes from the TF sound pack when
+            // it holds the clip and then plays like a pet line (same volume,
+            // same arbitration). Without a recording the game plays its old
+            // prompt tone, so no pack (or an older one) changes nothing.
+            kid_app::SoundClip rule_clip;
+            const bool rule_asked = kid_app::IsGameRuleClip(request.game);
+            const bool rule_recorded =
+                rule_asked &&
+                sound_bank_.LoadGameRule(kid_app::GameRuleGameId(request.game), &rule_clip);
+            if (rule_recorded)
+                ESP_LOGI(TAG, "PET_GAME_RULE_PACK game=%u token=%u",
+                         static_cast<unsigned>(kid_app::GameRuleGameId(request.game)),
+                         static_cast<unsigned>(request.token));
+            else if (rule_asked)
+                ESP_LOGI(TAG, "PET_GAME_RULE_TONE game=%u token=%u",
+                         static_cast<unsigned>(kid_app::GameRuleGameId(request.game)),
+                         static_cast<unsigned>(request.token));
+            if (rule_asked && !rule_recorded) request.game = kid_app::kGameTonePrompt;
+            const bool game = request.game != 0 && !rule_recorded;  // V4-06 mini-game clip
             // V8: a request with only care lines plays care[0] now.
-            const bool care = !phrase && !game && request.care_count != 0;
+            const bool care = !phrase && !game && !rule_recorded && request.care_count != 0;
             const auto context =
                 static_cast<kid_app::PhraseContext>(phrase ? request.phrase - 1 : 0);
             const bool bedtime = phrase && context == kid_app::PhraseContext::Bedtime;
@@ -1868,7 +1886,7 @@ BOARD_WORKER = r'''
             const char* kind = phrase ? "PHRASE" : "PROMPT";
             const char* key = phrase ? "id" : "index";
             unsigned what = phrase ? phrase_id : request.index;
-            if (game) {  // V4-06: PET_GAME_* clip=<mini-game clip id>
+            if (game || rule_recorded) {  // V4-06: PET_GAME_* clip=<mini-game clip id>
                 kind = "GAME";
                 key = "clip";
                 what = request.game;
@@ -1881,6 +1899,7 @@ BOARD_WORKER = r'''
             kid_app::SoundClip clip;
             kid_app::GameClip game_clip;
             if (game     ? !kid_app::LoadGameClip(GamePackNow(), request.game, &game_clip)
+                : rule_recorded ? false  // already loaded into rule_clip
                 : care   ? !sound_bank_.LoadCareLine(request.care[0], &clip)
                 : phrase ? !sound_bank_.LoadPhrase(phrase_id, &clip)
                          : !sound_bank_.LoadOption(request.index, &clip)) {
@@ -1888,13 +1907,20 @@ BOARD_WORKER = r'''
                 continue;
             }
             if (game) clip.samples = game_clip.samples;  // streamed by game_clip below
+            else if (rule_recorded) clip = rule_clip;
             const uint64_t session =
-                (uint64_t{game ? 0x47414D45u : care ? 0x43415245u : phrase ? 0x50485253u
-                                                                          : 0x50524F4Du} << 32) |
+                (uint64_t{(game || rule_recorded) ? 0x47414D45u
+                          : care ? 0x43415245u : phrase ? 0x50485253u
+                                                        : 0x50524F4Du} << 32) |
                 request.token;
             if (game)
                 ESP_LOGI(TAG, "PET_GAME_PLAY clip=%u src=%s token=%u samples=%u", what,
                          kid_app::GameClipSourceName(game_clip.source),
+                         static_cast<unsigned>(request.token),
+                         static_cast<unsigned>(clip.samples));
+            else if (rule_recorded)
+                ESP_LOGI(TAG, "PET_GAME_PLAY clip=%u src=%s token=%u samples=%u", what,
+                         kid_app::SoundSourceName(clip.source),
                          static_cast<unsigned>(request.token),
                          static_cast<unsigned>(clip.samples));
             else if (phrase)
@@ -5211,6 +5237,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/prompt_scheduler.h"\n'
         '#include "kid_app/prompt_clips.h"\n'
         '#include "kid_app/sound_bank.h"\n'
+        '#include "kid_app/game_rules.h"\n'
         '#include "kid_app/pet_phrases.h"\n'
         '#include "kid_app/memory_phrases.h"\n'
         '#include "kid_app/status_bar.h"\n'

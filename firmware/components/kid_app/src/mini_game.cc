@@ -1,5 +1,6 @@
 #include "kid_app/mini_game.h"
 
+#include "kid_app/game_rules.h"
 #include "kid_app/memory_store.h"
 #include "kid_app/selftest_clock.h"
 
@@ -353,7 +354,11 @@ bool GameSession::Start(const GameRound* pool, size_t pool_size, uint16_t game_i
     result_ = {};
     result_.game_id = game_id;
     result_.rounds = count;
+    rule_clip_ = GameRuleClip(game_id);
     BeginRound(now_ms, out);
+    // V9 1E: the game opens with its spoken rule instead of the two-note
+    // prompt (the later rounds keep the tone).
+    if (rule_clip_) out->clip = rule_clip_;
     return true;
 }
 
@@ -438,7 +443,7 @@ GameOutput GameSession::Tick(uint32_t now_ms) {
         } else if (!repeated_ &&
                    Reached(now_ms, last_input_ms_ + SelfTestClock::Scaled(kRepeatPromptMs))) {
             repeated_ = true;  // say the question once more, then wait
-            out.clip = current_.prompt_clip;
+            out.clip = rule_clip_ ? rule_clip_ : current_.prompt_clip;
         }
         return out;
     }
