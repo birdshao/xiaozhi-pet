@@ -65,6 +65,8 @@
 
 - `_speak` 改为一整轮：换 `sentence_id`、`await send_tts_message(conn, "start")`、置 `client_is_speaking`，再 `speak_txt`；结束的 `stop` 仍由上游在最后一句后发。命令回复、告别句都走它。
 - **打断**：`client_abort` 在 `handle_child_guard` 入口清掉，时机与上游聊天路径一致（`startToChat` 先打断正在播的回复 `receiveAudioHandle.py:91-92`，再在 `:105` 清掉）。守卫等 PetLearning（最长 9 s）或等板子执行命令（3 s + 最多 4 s）期间，孩子用唤醒词打断（上游 `handleAbortMessage` 置位），`_speak` 看到 `client_abort` 就放弃这一句，不发 start、不朗读（auto 模式下 ASR 经 `run_coroutine_threadsafe` 调 `startToChat`，与 websocket 接收并发，见上游 `asr/base.py:43-51`）。若打断恰好落在发 start 的 await 期间，守卫自己再发一个 `stop` 并复位 `client_is_speaking`，因为上游此时会丢掉整句、不再发 stop。
+  - 轮次：只看 `client_abort` 不够——A 轮还在等开放聊天时孩子打断并说了 B，B 进入守卫会清掉 abort，A 的回复后到仍会播出。所以每轮进入守卫时 `conn.child_guard_turn += 1` 并记下本轮编号，`_speak`（含命令任务）在发 start 前后都核对"编号仍是最新、且没被打断"，否则放弃；过期的回复也不计入兜底计数。
+  - "说完就结束"（安静句、第 3 次告别、命令 `deferred`/`pending`）只在确定朗读、发出 start 之后才置 `close_after_chat`。上游 `handleAbortMessage` 会先清这个标志；若守卫在 await 之后再置位、这句又被丢弃，标志会残留，下一条正常回复说完就断开，180 s 无声超时也失效。
 - **会话结束**：PetLearning 的 `kind=fallback` 且 `reason` 是 `no_match`/`text_invalid`，以及守卫本地的 `NO_SERVICE`/`NOT_BOUND`，算"没有有效意图"。连续 `UNCLEAR_LIMIT = 3` 次时，第 3 次不再说"没听清"，改说告别句"想找我就再叫我一声哦，拜拜。"（告诉孩子怎么把宠物叫回来）并置 `conn.close_after_chat`，上游在这句的 `stop` 之后断开（`sendAudioHandle.py:52-55`）。任何有效回复（固定句、命令、页问答、开放聊天的回答或拦截句等其他 `reason`）都把计数清零。环境噪声在真机上每 2–5 s 出一段，最多三段（约 6–15 s）就结束，再唤醒即可。不做总时长上限：读书可以合理地很长，证据里的长会话全是兜底句。
   - 取舍：`no_match` 不只代表噪声。**开放聊天关闭时**，孩子问了不支持的问题也是 `no_match`；阈值 3 意味着孩子连问两个不支持的问题仍会得到"没听清，再说一遍"，连续第三个才告别（可再唤醒）。**开放聊天打开时**，大多数真问题由 GLM 回答、计数清零，阈值主要拦噪声；但噪声若被 ASR 识别成像样的文字、GLM 也给了回答，同样会清零。**已知限制、待真机观察**：开放聊天打开时，噪声循环是否还会被 GLM 回答撑住，没有证实。
 - **安静时间**：安静时段里 PetLearning 对任何文本都回 `fixed/quiet_hours`（`voice.py` 的 quiet 分支），这是有效回复、会清零计数，噪声会让板子每隔几秒说一次安静句。守卫在 `reason == "quiet_hours"` 时说完这一句就置 `close_after_chat` 结束会话。

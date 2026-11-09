@@ -380,6 +380,69 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(spoken, [])
         self.assertEqual(self.conn.tts_states(), [])
 
+    def abort(self):
+        """Upstream handleAbortMessage: the child's wake word cut the reply off."""
+        self.conn.close_after_chat = False
+        self.conn.client_abort = True
+        self.conn.websocket.sent.append({"type": "tts", "state": "stop", "session_id": "session-1"})
+        self.conn.clearSpeakStatus()
+
+    async def test_a_newer_turn_does_not_revive_an_interrupted_reply(self):
+        """Turn A waits for open chat; the child interrupts and says B; A's reply comes back last."""
+        gate = asyncio.Event()
+
+        def body(text):
+            reason = "quiet_hours" if text == "A" else "tell_time"
+            return {"kind": "fixed", "tts_text": "STALE-A" if text == "A" else "FRESH-B",
+                    "action": None, "reason": reason}
+
+        async def handler(request):
+            text = json.loads(request.content)["text"]
+            if text == "A":
+                await gate.wait()
+            return self.signed(body(text))[0](request)
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts()
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(handler))):
+            turn_a = asyncio.get_running_loop().create_task(guard.handle_child_guard(self.conn, "A"))
+            await asyncio.sleep(0.05)
+            self.abort()
+            self.assertTrue(await guard.handle_child_guard(self.conn, "B"))
+            gate.set()
+            self.assertTrue(await turn_a)
+            await self.played()
+        self.assertEqual([t for _, t in spoken], ["FRESH-B"])
+        # A was a quiet-hours reply (ends the chat) but never played: B must not close.
+        self.assertFalse(self.conn.close_after_chat)
+        self.assertEqual(self.conn.closed, 0)
+
+    async def test_a_dropped_command_sentence_leaves_no_close_behind(self):
+        """deferred means "end the chat", but the child interrupted while the board acted.
+
+        Upstream's abort clears close_after_chat first; the guard must not set it afterwards
+        for a sentence it then drops.
+        """
+        self.conn.mcp_client = FakeMcpClient()
+
+        def device(action):
+            self.abort()
+            return json.dumps({"action": action, "result": "deferred"})
+        original_async = httpx.AsyncClient
+        spoken, patched = self.fake_tts(device)
+        with patched, patch.object(guard.httpx, "AsyncClient", side_effect=lambda *a, **k: original_async(
+                transport=httpx.MockTransport(self.command("OPEN_GAME", "好呀，我们来玩游戏。")))):
+            self.assertTrue(await guard.handle_child_guard(self.conn, "玩游戏"))
+            await self.settle()
+            self.assertEqual(spoken, [])
+            self.assertFalse(self.conn.close_after_chat)
+            # The next normal reply plays and keeps the chat open.
+            handler, _ = self.signed({"kind": "fixed", "tts_text": "现在是9点整。", "action": None,
+                                      "reason": "tell_time"})
+        self.assertEqual(await self.speak_with(handler), "现在是9点整。")
+        await self.played()
+        self.assertEqual(self.conn.closed, 0)
+
     async def test_abort_racing_the_start_still_leaves_speaking(self):
         handler, _ = self.signed({"kind": "fixed", "tts_text": "现在是9点整。",
                                   "action": None, "reason": "tell_time"})
