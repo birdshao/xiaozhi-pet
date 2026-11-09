@@ -1,0 +1,3 @@
+# optional: voice_probe --engine edge (neural voices; only the test sentence is sent to Microsoft)
+edge-tts>=6
+miniaudio>=1.60

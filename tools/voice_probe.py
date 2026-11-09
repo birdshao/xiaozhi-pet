@@ -184,7 +184,7 @@ _XZ_PATTERNS = [
 _PL_TURN = re.compile(r"voice_turn kind=(\w+) reason=(\w+) ms=(\d+)")
 _PL_ACCESS = re.compile(r'"POST /v1/voice/[\w-]+/turn HTTP/[\d.]+" (\d{3})')
 # The guard's fixed sentences, to infer the kind when PetLearning logs only the access line.
-FALLBACK_TTS = "我们可以看看绘本"
+FALLBACK_TTS = ("我们可以看看绘本", "没听清，再说一遍")
 
 
 def parse_xiaozhi_line(t: float, msg: str):
@@ -375,7 +375,7 @@ def judge(case: Case, obs: Observation, quiet: bool | None = None) -> dict:
             issues.append(("action", f"kind 不符：期望 {case.kind}，实际 {obs.kind}/{obs.reason}"))
         elif case.kind and not obs.kind and not obs.turn_seen:
             issues.append(("none", f"PetLearning 没收到这轮（期望 {case.kind}）"))
-        elif case.kind and not obs.kind and FALLBACK_TTS in obs.tts_text and case.kind != "fallback":
+        elif case.kind and not obs.kind and any(f in obs.tts_text for f in FALLBACK_TTS) and case.kind != "fallback":
             issues.append(("action", f"播的是兜底句，期望 {case.kind}（kind 日志缺失，按播报推断）"))
         if case.reason and obs.reason and obs.reason != case.reason:
             issues.append(("action", f"reason 不符：期望 {case.reason}，实际 {obs.reason}"))
@@ -497,6 +497,104 @@ def synth_wav(text: str, out: Path, voice: str = "", rate: int = 0) -> Path:
     finally:
         os.unlink(txt)
     return out
+
+
+EDGE_VOICES = ("zh-CN-XiaoyiNeural", "zh-CN-YunxiaNeural", "zh-CN-XiaoxiaoNeural")
+
+
+def tts_tag(engine: str, voice: str, rate) -> str:
+    """Short label written into every result record: engine / voice / rate."""
+    if engine == "edge":
+        return f"edge-tts/{voice or EDGE_VOICES[0]}/{rate}"
+    return f"sapi/{voice or 'zh-CN 默认'}/{rate}"
+
+
+def edge_synth_wav(text: str, out: Path, voice: str = "", rate: str = "+0%", sample_rate: int = 22050) -> Path:
+    """edge-tts (Microsoft neural voices, no key) -> mp3 -> 16-bit mono wav at the SAPI wav's rate.
+
+    Optional dependencies: `pip install edge-tts miniaudio`. Only the test sentence leaves this machine."""
+    import asyncio
+    try:
+        import edge_tts
+        import miniaudio
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise RuntimeError("edge-tts engine needs: pip install edge-tts miniaudio") from exc
+
+    async def fetch() -> bytes:
+        data = b""
+        async for chunk in edge_tts.Communicate(text, voice or EDGE_VOICES[0], rate=rate).stream():
+            if chunk["type"] == "audio":
+                data += chunk["data"]
+        return data
+
+    mp3 = asyncio.run(fetch())
+    if not mp3:
+        raise RuntimeError(f"edge-tts returned no audio for voice {voice!r}")
+    pcm = miniaudio.decode(mp3, output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1, sample_rate=sample_rate)
+    import wave
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm.samples.tobytes())
+    return out
+
+
+def cache_key(engine: str, voice: str, rate, text: str) -> str:
+    import hashlib
+    return hashlib.sha256(f"{engine}|{voice}|{rate}|{text}".encode("utf-8")).hexdigest()[:24]
+
+
+def synth_any(text: str, out: Path, engine: str = "sapi", voice: str = "", rate=None,
+              cache: Path | None = None) -> Path:
+    """Synthesise with the chosen engine; the same (engine, voice, rate, text) is generated only once."""
+    import shutil
+    if rate is None:
+        rate = "+0%" if engine == "edge" else -1
+    hit = (cache / f"{cache_key(engine, voice, rate, text)}.wav") if cache else None
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if hit is not None and hit.exists():
+        shutil.copyfile(hit, out)
+        return out
+    if engine == "edge":
+        edge_synth_wav(text, out, voice, str(rate))
+    else:
+        synth_wav(text, out, voice, int(rate))
+    if hit is not None:
+        cache.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(out, hit)
+    return out
+
+
+def args_rate(args):
+    return args.edge_rate if args.engine == "edge" else args.rate
+
+
+def apply_gain(src: Path, dst: Path, db: float) -> tuple[float, float]:
+    """Scale a 16-bit wav by `db`; refuses to clip. Returns (peak_before, peak_after) as fractions of full scale."""
+    import array
+    import wave
+    with wave.open(str(src), "rb") as w:
+        params = w.getparams()
+        if w.getsampwidth() != 2:
+            raise ValueError("need 16-bit PCM")
+        samples = array.array("h")
+        samples.frombytes(w.readframes(w.getnframes()))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    k = 10 ** (db / 20)
+    peak = max((abs(x) for x in samples), default=0)
+    if peak * k > 32767:
+        raise ValueError(f"+{db} dB would clip (peak {peak / 32768:.2f} -> {peak * k / 32768:.2f})")
+    out = array.array("h", (int(round(x * k)) for x in samples))
+    if sys.byteorder == "big":
+        out.byteswap()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(dst), "wb") as w:
+        w.setparams(params)
+        w.writeframes(out.tobytes())
+    return peak / 32768, peak * k / 32768
 
 
 def play_wav(path: Path) -> None:
@@ -752,30 +850,84 @@ def cmd_wake(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     wav = out / "wav" / "_wake.wav"
-    if not wav.exists():
-        synth_wav(WAKE_PHRASE, wav, args.voice, args.rate)
+    if args.wav:  # reuse exactly the audio of an earlier run (optionally with gain)
+        src = Path(args.wav)
+        if args.gain_db:
+            peaks = apply_gain(src, wav, args.gain_db)
+            print(f"gain {args.gain_db:+.1f} dB, peak {peaks[0]:.2f} -> {peaks[1]:.2f}")
+        else:
+            wav = src
+    elif not wav.exists():
+        synth_any(WAKE_PHRASE, wav, args.engine, args.voice, args_rate(args), Path(args.tts_cache) if args.tts_cache else None)
+    print(f"wake wav level {wav_dbfs(wav):.1f} dBFS")
     tail = SerialTail(args.port) if args.port else None
     remote = Remote(args.ssh_host, args.ssh_key) if args.ssh_host else None
     offset = remote.clock_offset() if remote else 0.0
     if tail:
         tail.start()
         time.sleep(1.0)
+    if args.wait_active and tail:  # start only once the board reports an active power state
+        end = time.time() + args.wait_active
+        while time.time() < end and last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) != "active":
+            time.sleep(0.5)
     attempts = []
-    for i in range(args.attempts):
+    live_power: list[str] = []
+    if args.until_active:  # adaptive: play whenever no session is open; label each attempt by the live power state
+        n_active = 0
+        for i in range(args.attempts):
+            if n_active >= args.until_active:
+                break
+            if remote:
+                evs = _events_from(remote.logs("xiaozhi", time.time() - 400), parse_xiaozhi_line, offset)
+                end = time.time() + args.session_wait
+                while session_open(evs, time.time()) and time.time() < end:
+                    time.sleep(5)
+                    evs = _events_from(remote.logs("xiaozhi", time.time() - 400), parse_xiaozhi_line, offset)
+                if end - time.time() < args.session_wait - 6:
+                    time.sleep(2.0)  # let the chat-end cue finish
+            pw = last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) if tail else ""
+            live_power.append(pw)
+            n_active += pw == "active"
+            t0 = time.time()
+            play_wav(wav)
+            time.sleep(args.settle)
+            attempts.append((t0, time.time()))
+            print(f"wake attempt {i + 1} power={pw or '?'} (active {n_active}/{args.until_active})", flush=True)
+            time.sleep(args.gap)
+    for i in range(0 if args.until_active else args.attempts):
+        if args.stop_when_idle and tail and last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) not in ("active", ""):
+            print("board left active state, stopping", flush=True)
+            break
         t0 = time.time()
         play_wav(wav)
         time.sleep(args.settle)
         attempts.append((t0, time.time()))
         print(f"wake attempt {i + 1}/{args.attempts} done", flush=True)
         time.sleep(args.gap)
+        if remote:  # a hit leaves the session open (~2-3 min); wait for it to end, else later plays are just speech
+            end = time.time() + args.session_wait
+            while time.time() < end:
+                evs = _events_from(remote.logs("xiaozhi", t0 - 2), parse_xiaozhi_line, offset)
+                if not session_open(evs, time.time()):
+                    break
+                time.sleep(5)
     xz = _events_from(remote.logs("xiaozhi", attempts[0][0] - 2), parse_xiaozhi_line, offset) if remote else []
     ser = _events_from(tail.snapshot(), parse_serial_line) if tail else []
     if tail:
         tail.stop()
         (out / "serial.log").write_text("\n".join(redact(line) for _, line in tail.snapshot()), encoding="utf-8")
     rows = wake_hits(attempts, xz, ser)
+    det_re = re.compile(r"wake ?word|wakenet|afe|wn9", re.I)
+    for row, (t0, t1) in zip(rows, attempts):
+        row["power"] = last_power(ser, t0)
+        raw = [line for t, line in (tail.snapshot() if tail else []) if t0 <= t <= t1 + 1
+               and det_re.search(line) and "PET_WAKE_GUARD" not in line]
+        row["serial_detect_lines"] = len(raw)
+    for row, pw in zip(rows, live_power):
+        row["power"] = pw
     delays = [r["delay_s"] for r in rows if r["delay_s"] is not None]
-    summary = {"attempts": len(rows), "hits": sum(r["hit"] for r in rows),
+    summary = {"tts": (f"wav:{Path(args.wav).name}+{args.gain_db:g}dB" if args.wav else tts_tag(args.engine, args.voice, args_rate(args))),
+               "attempts": len(rows), "hits": sum(r["hit"] for r in rows),
                "delay_median_s": percentile(delays, 50), "delay_p90_s": percentile(delays, 90), "rows": rows}
     (out / "wake.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"唤醒命中 {summary['hits']}/{summary['attempts']}，延迟中位数 {summary['delay_median_s']}s "
@@ -793,12 +945,12 @@ def cmd_run(args) -> int:
     wavdir = out / "wav"
     wake_wav = wavdir / "_wake.wav"
     if not wake_wav.exists():
-        synth_wav(WAKE_PHRASE, wake_wav, args.voice, args.rate)
+        synth_any(WAKE_PHRASE, wake_wav, args.engine, args.voice, args_rate(args), Path(args.tts_cache) if args.tts_cache else None)
     wavs = {}
     for c in cases:
         wavs[c.id] = wavdir / f"{c.id}.wav"
         if not wavs[c.id].exists():
-            synth_wav(c.say, wavs[c.id], args.voice, args.rate)
+            synth_any(c.say, wavs[c.id], args.engine, args.voice, args_rate(args), Path(args.tts_cache) if args.tts_cache else None)
     if args.dry_run:
         print(f"dry run: synthesised {len(wavs) + 1} wav files into {wavdir}")
         return 0
@@ -890,7 +1042,7 @@ def cmd_run(args) -> int:
         res = {"id": c.id, "say": c.say, "group": c.group, "status": "ran", "woke": needs_wake,
                "asr": verdict["asr"], "kind": obs.kind, "reason": obs.reason, "tts_text": obs.tts_text,
                "device_cmds": obs.device_cmds, "latency_s": latency(obs), "turn_ms": obs.turn_ms,
-               "wake_attempts": wake_attempts if needs_wake else 0, "stages": stages(obs), "power": last_power(ser_events, t_begin),
+               "wake_attempts": wake_attempts if needs_wake else 0, "tts": tts_tag(args.engine, args.voice, args_rate(args)), "stages": stages(obs), "power": last_power(ser_events, t_begin),
                "passed": verdict["passed"], "issues": verdict["issues"]}
         results.append(res)
         print(f"[{'PASS' if res['passed'] else 'FAIL'}] {c.id}: asr={res['asr']!r} kind={obs.kind or '?'} "
@@ -905,7 +1057,7 @@ def cmd_run(args) -> int:
             (out / f"{name}.log").write_text(
                 "\n".join(redact(f"{dt.datetime.fromtimestamp(t - offset).strftime('%H:%M:%S.%f')[:-3]} {m}")
                           for t, m in rows if "/healthz" not in m), encoding="utf-8")
-    meta = {"时间": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "音色": args.voice or "SAPI zh-CN 默认",
+    meta = {"时间": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "音色": tts_tag(args.engine, args.voice, args_rate(args)),
             "安静时段": {None: "未知", True: "是", False: "否"}[quiet] + f"（{quiet_src}）",
             "环境底噪": noise_note, "服务器时钟偏差(s)": round(offset, 2)}
     (out / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -933,6 +1085,10 @@ def main(argv=None) -> int:
     p.add_argument("--ssh-key")
     p.add_argument("--out", required=True)
     p.add_argument("--voice", default="")
+    p.add_argument("--engine", choices=("sapi", "edge"), default="sapi",
+                   help="speech engine: Windows SAPI, or edge-tts neural voices (optional: pip install edge-tts miniaudio)")
+    p.add_argument("--edge-rate", default="+0%", help="edge-tts speaking rate, e.g. -10%%")
+    p.add_argument("--tts-cache", help="directory that caches generated wavs per engine/voice/rate/sentence")
     p.add_argument("--rate", type=int, default=-1)
     p.add_argument("--wake-settle", type=float, default=3.0, help="seconds to wait after the wake word")
     p.add_argument("--window", type=float, default=8.0, help="seconds to wait for a reply after speech")
@@ -960,7 +1116,17 @@ def main(argv=None) -> int:
     p.add_argument("--settle", type=float, default=6.0, help="seconds to watch after each wake phrase")
     p.add_argument("--gap", type=float, default=25.0, help="idle seconds so the board is back to idle")
     p.add_argument("--voice", default="")
+    p.add_argument("--engine", choices=("sapi", "edge"), default="sapi",
+                   help="speech engine: Windows SAPI, or edge-tts neural voices (optional: pip install edge-tts miniaudio)")
+    p.add_argument("--edge-rate", default="+0%", help="edge-tts speaking rate, e.g. -10%%")
+    p.add_argument("--tts-cache", help="directory that caches generated wavs per engine/voice/rate/sentence")
     p.add_argument("--rate", type=int, default=-1)
+    p.add_argument("--wav", help="reuse this wake wav instead of synthesising (e.g. the earlier run's _wake.wav)")
+    p.add_argument("--gain-db", type=float, default=0.0, help="with --wav: scale the audio by this many dB (refuses to clip)")
+    p.add_argument("--until-active", type=int, default=0, help="adaptive mode: keep playing (never during an open session) until N attempts happened in the active power state; --attempts is the cap")
+    p.add_argument("--wait-active", type=float, default=0.0, help="wait up to N s for PET_POWER state=active first")
+    p.add_argument("--stop-when-idle", action="store_true", help="stop attempts once the board leaves the active state")
+    p.add_argument("--session-wait", type=float, default=240.0, help="max seconds to wait for an open session to end")
     p.set_defaults(fn=cmd_wake)
     p = sub.add_parser("noise", help="measure ambient level with the PC microphone and print it (calibration)")
     p.add_argument("--seconds", type=float, default=2.0)

@@ -232,3 +232,47 @@ def test_state_machine_line_and_dialog_end_close_the_session():
     closed = vp.parse_xiaozhi_line(5.0, "[a]-INFO-结束对话，无需发送结束提示语")
     assert closed["ev"] == "closed"
     assert not vp.session_open([{"t": 1, "ev": "tts_end", "text": ""}, closed], 6)
+
+
+def test_apply_gain_scales_and_refuses_clipping(tmp_path):
+    import array
+    import wave
+    src = tmp_path / "a.wav"
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(array.array("h", [1000, -2000, 3000]).tobytes())
+    dst = tmp_path / "b.wav"
+    before, after = vp.apply_gain(src, dst, 6.0)
+    assert abs(after / before - 10 ** (6 / 20)) < 1e-6
+    with wave.open(str(dst), "rb") as w:
+        got = array.array("h")
+        got.frombytes(w.readframes(3))
+    assert list(got) == [1995, -3991, 5986]
+    with pytest.raises(ValueError):
+        vp.apply_gain(src, dst, 30.0)
+
+
+def test_tts_tag_and_cache_key_distinguish_engine_voice_rate():
+    assert vp.tts_tag("edge", "zh-CN-YunxiaNeural", "-10%") == "edge-tts/zh-CN-YunxiaNeural/-10%"
+    assert vp.tts_tag("sapi", "", -1).startswith("sapi/")
+    keys = {vp.cache_key("edge", v, r, "你好") for v in ("a", "b") for r in ("+0%", "-10%")}
+    assert len(keys) == 4
+    assert vp.cache_key("edge", "a", "+0%", "你好") == vp.cache_key("edge", "a", "+0%", "你好")
+
+
+def test_synth_any_uses_cache_and_does_not_resynthesise(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_edge(text, out, voice="", rate="+0%", sample_rate=22050):
+        calls.append((text, voice, rate))
+        out.write_bytes(b"RIFFfake")
+        return out
+    monkeypatch.setattr(vp, "edge_synth_wav", fake_edge)
+    cache = tmp_path / "cache"
+    vp.synth_any("你好", tmp_path / "a.wav", "edge", "v1", "+0%", cache)
+    vp.synth_any("你好", tmp_path / "b.wav", "edge", "v1", "+0%", cache)
+    vp.synth_any("你好", tmp_path / "c.wav", "edge", "v1", "-10%", cache)
+    assert len(calls) == 2
+    assert (tmp_path / "b.wav").read_bytes() == b"RIFFfake"
