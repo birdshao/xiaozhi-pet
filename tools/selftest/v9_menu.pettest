@@ -1,0 +1,73 @@
+PETSELFTEST1
+# V9 1A two-level play menu. First level: today, brain, move, sound, album.
+# Today page and Brain page are entered and left by a long press (back to
+# the first level, highlight kept), a second long press goes home. The
+# voice command OPEN_GAME opens the first level again, the album card (a
+# leaf) opens the album straight away. Which games "today" offers depends on
+# the date, so nothing is started from it. Counted from "mark begin".
+# Needs: outside the quiet hours (phase day), battery above the low level.
+# expect min:PET_GAME_MENU 3
+# 5 level changes: into today, back, into brain, back, into brain again.
+# expect min:PET_GAME_MENU_LEVEL 5
+# expect min:level=games 2
+# expect min:level=top 2
+# expect min:page=today 1
+# expect min:page=brain 1
+# expect min:game=stickers 1
+# expect min:kind=album 2
+# expect min:end=home 3
+# expect min:name=OPEN_GAME 2
+# expect min:name=GO_HOME 1
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_CARE_RECORD 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Game(2), press: first level (full refresh).
+tap down 2500
+tap press 6000
+# Today page (card 0), a highlight move inside it, back, highlight kept.
+tap press 3000
+tap down 600
+hold press 1500 3000
+# Brain page (card 1), a few moves, back.
+tap down 600
+tap press 3000
+tap down 600
+tap down 600
+hold press 1500 3000
+# Long press on the first level goes home (full refresh).
+hold press 1500 8000
+# Voice opens the first level too; leave it by a long press.
+vcmd OPEN_GAME
+wait 6000
+hold press 1500 8000
+# Voice GO_HOME from the second level goes home at once, not up one level.
+vcmd OPEN_GAME
+wait 6000
+tap down 600
+tap press 3000
+vcmd GO_HOME
+wait 6000
+# Album: the fifth card, a leaf. Press opens it, press again is home.
+tap press 6000
+tap down 600
+tap down 600
+tap down 600
+tap down 600
+tap press 6000
+tap press 8000
+pet
+wait 5000
+end

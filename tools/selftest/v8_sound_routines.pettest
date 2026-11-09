@@ -2,7 +2,7 @@ PETSELFTEST1
 # V8 sound routines without a person: tooth brushing from the care menu
 # (card 6): open, press to start, one hourglass frame, then leave early
 # with a long press (no completion, no care record); the parrot from the
-# play menu (card 24): opened and left by turning the dial, the dial centre
+# play menu (Sound page): opened and left by turning the dial, the dial centre
 # is never held so nothing is recorded; the song player by voice command
 # PLAY_SONG on a card WITHOUT song_ / lullaby_ books (count=0: the hint
 # picture; a card with songs shows the list instead and this scenario
@@ -52,31 +52,14 @@ tap press 3000
 wait 15000
 # Leave early: long press = home, quietly.
 hold press 1500 8000
-# Rail Feed(3) -> Game(2), press: play menu; the parrot is card 24.
+# Rail Feed(3) -> Game(2), press: play menu.
 tap up 2500
 tap press 6000
+# V9: Sound page (card 3), the parrot is its 3rd card.
 tap down 600
 tap down 600
 tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
+tap press 3000
 tap down 600
 tap down 600
 tap press 6000

@@ -451,6 +451,21 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
 
+# V9 1A: today's pick for the play menu (pure, deterministic): categories,
+# evening / bored rules, parent switches, the age band slot, memory id map.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/activity_recommend.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_activity_recommend.cc" \
+  -o "$BUILD/test_activity_recommend"
+"$BUILD/test_activity_recommend"
+
 # V8 mini games: 20+ round banks per game, live clock / weather rounds,
 # memory flip, tilt maze (always solvable), shake dice / tree, wooden man,
 # day and night, four-way tilt, resting board stays quiet, the game list and

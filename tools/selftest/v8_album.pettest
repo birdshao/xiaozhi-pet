@@ -1,6 +1,6 @@
 PETSELFTEST1
 # V8 sticker album: the Game rail item opens the play menu, the album is
-# its 24th card (index 23, after the games and before parrot and songs).
+# its last first-level card (V9: a page of one, the card opens it).
 # Dial down = next page, up = back, press = home. Quiet UI only: no pet
 # commits of its own. Counted from "mark begin" (see tools/selftest_report.py).
 # expect min:PET_GAME_MENU 1
@@ -27,26 +27,8 @@ mark begin
 # Rail Story(1) -> Game(2), press: play menu (full).
 tap down 2500
 tap press 6000
-# 23 cards on: the highlight moves are cheap partials.
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
+# V9: first level = today, brain, move, sound, album: four cheap
+# partial highlight moves.
 tap down 600
 tap down 600
 tap down 600

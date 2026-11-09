@@ -1455,7 +1455,8 @@ class DisplayOverlayTest(unittest.TestCase):
         menu = self._body(patched, 'void OpenCareMenu(uint8_t start)')
         self.assertIn('kid_app::ActivityGroup::Care', menu)
         # An empty group never leaves the board stuck in the game frame.
-        for opener in ('void OpenCareMenu(uint8_t start)', 'void OpenGameMenu(uint8_t start)'):
+        for opener in ('void OpenCareMenu(uint8_t start)',
+                       'bool ShowGameMenu(const kid_app::GameMenuOutput& out)'):
             body = self._body(patched, opener)
             self.assertLess(body.index('EndGame("menu_empty")'), body.index('game_active_.store(true)'))
         self.assertIn('pet_mailbox_.game_only.store(true)', menu)
@@ -1518,11 +1519,48 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('!uxQueueMessagesWaiting(prompt_queue_)', prompt)
         self.assertIn('xQueueSend(prompt_queue_, &next, 0)', prompt)
 
+    def test_v9_play_menu_two_levels_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/activity_recommend.h"', patched)
+        # Rail and voice (OPEN_GAME) both open the FIRST level (the pages).
+        self.assertIn('OpenGameMenu(0);', self._body(patched, 'void StartGame()'))
+        self.assertIn('case kid_app::VoiceProposal::OpenGame:\n                OpenGameMenu(0);', patched)
+        # Opening refreshes today's pick from the day, phase, boredom, last game, motion switch.
+        pick = self._body(patched, 'void RefreshGamePick()')
+        for needle in ('local_day_.load()', 'day_phase_.load()', 'local_minute_.load()',
+                       'CareNow().Needs(minute,', ').bored',
+                       'GameChoiceOfMemoryId(', 'motion_enabled_.load()',
+                       'game_menu_.SetRecommendation(kid_app::RecommendToday(in))'):
+            self.assertIn(needle, pick)
+        # The pick is read only, nothing is written or rewarded.
+        for forbidden in ('PostLocal', 'PostCare', 'nvs_'):
+            self.assertNotIn(forbidden, pick)
+        self.assertIn('RefreshGamePick();', self._body(patched, 'void OpenGameMenu(uint8_t start)'))
+        # A refused game reopens the menu on its own page, on its card.
+        on = self._body(patched, 'void OpenGameMenuOn(kid_app::GameChoice game)')
+        self.assertIn('game_menu_.StartOn(NowMs(), game)', on)
+        self.assertIn('ShowGameMenu(out)', on)
+        self.assertIn('ShowGameMenu(out)', self._body(patched, 'void OpenGameMenu(uint8_t start)'))
+        # The raw boredom level, not the home face's top need (hungry could hide it).
+        self.assertNotIn('UnpackLook', pick)
+        self.assertNotIn('TopNeed', pick)
+        # Voice GO_HOME leaves the menu from either level (a long press only goes up one).
+        voice = patched[patched.index('case kid_app::VoiceAction::GoHome:'):]
+        voice = voice[:voice.index('case kid_app::VoiceAction::ShowTime:')]
+        self.assertIn('game_mode_ == GameMode::Menu', voice)
+        self.assertIn('HandleMenuOutput(game_menu_.Home())', voice)
+        choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')
+        self.assertIn('OpenGameMenuOn(out.chosen)', choice)
+        self.assertNotIn('OpenGameMenu(kid_app::ActivityIndexOf(out.chosen))', choice)
+        self.assertIn('PET_GAME_MENU_LEVEL', choice)
+        # The care menu is still opened flat, from index 0.
+        self.assertIn('OpenCareMenu(0);', patched)
+
     def test_v4_motion_games_wiring(self):
         patched = self._board()
         self.assertIn('#include "kid_app/motion_game.h"', patched)
         # The menu owns the screen first, then the chosen game; pet_input owns all of it.
-        menu = self._body(patched, 'void OpenGameMenu(uint8_t start)')
+        menu = self._body(patched, 'bool ShowGameMenu(const kid_app::GameMenuOutput& out)')
         self.assertIn('game_mode_ = GameMode::Menu;', menu)
         self.assertIn('pet_mailbox_.game_only.store(true)', menu)
         self.assertNotIn('pet_service_', menu)

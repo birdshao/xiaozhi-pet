@@ -54,7 +54,8 @@ constexpr bool MicArtValid(uint16_t id) { return id >= 101 && id <= 105; }
 // V8 mini games (docs/V8_MINI_GAMES.md): pictures for the new learning
 // rounds and motion games. Not in kGameArtIds and not for KPG1 packs (a
 // pack may only name the catalogue above); append only, never renumber.
-// Simple pictures are 401..599 (201..223 are the care pictures, CareArt). Composite pictures encode their parts in
+// Simple pictures are 401..599 (601.. are the care pictures, CareArt; 201..204 the
+// menu pages, MenuArt). Composite pictures encode their parts in
 // the id (see the PlayArt* helpers) so a round stays four small numbers:
 //   0x2000 pattern strip   0x2800 spot-the-difference pair
 //   0x3000 sized shape     0x3100 size-order strip
