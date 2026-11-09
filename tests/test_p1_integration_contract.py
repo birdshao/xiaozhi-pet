@@ -702,9 +702,48 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(body.index('if (pet_mode_.load())'), body.index('"OFF"'))
         self.assertLess(body.index('power_save_timer_->WakeUp();\n                return;'),
                         body.index('pmic_->PowerOff()'))
-        self.assertIn('new PowerSaveTimer(-1, 100, 300)', patched)
+        # V9: no sleep step (it would stop the AFE); shutdown stays 300 s.
+        self.assertIn('new PowerSaveTimer(-1, -1, 300)', patched)
+        self.assertNotIn('(-1, 100, 300)', patched)
         with self.assertRaises(RuntimeError):
             patch_power_save_timer('no anchor here')
+        with self.assertRaises(RuntimeError):  # sleep-step anchor is unique
+            patch_power_save_timer(upstream + upstream)
+
+    def test_v9_wake_guard_keeps_wake_word_armed(self):
+        patched = self._board()
+        self.assertIn('#include "assets/lang_config.h"', patched)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        self.assertLess(loop.index('UpdatePower(state)'),
+                        loop.index('UpdateWakeGuard(state)'))
+        guard = self._body(patched, 'void UpdateWakeGuard(')
+        # Re-arm only while idle, never while the sleep flow owns the board.
+        self.assertIn('IsWakeWordRunning()', guard)
+        self.assertIn('EnableWakeWordDetection(true)', guard)
+        self.assertIn('sleep_flow_.Active()', guard)
+        self.assertIn('kWakeGuardMaxFixes', guard)
+        log = self._body(patched, 'void LogWakeGuard(')
+        self.assertIn('PET_WAKE_GUARD sleep=%d wakeword=%d', log)
+        # Logged on entering idle and nap.
+        power = self._body(patched, 'bool HandlePowerEvent(')
+        self.assertIn('LogWakeGuard("enter_idle"', power)
+        self.assertIn('LogWakeGuard("enter_nap"', power)
+        # The guard never lowers the clock or enables light sleep.
+        whole = patched[patched.index('V9 wake guard'):]
+        whole = whole[:whole.index('Plain power-on')]
+        for word in ('esp_pm_configure', 'light_sleep', 'EnableInput(false)',
+                     'EnableWakeWordDetection(false)'):
+            self.assertNotIn(word, whole)
+
+    def test_v9_chat_end_cue_uses_builtin_sound_not_tts(self):
+        patched = self._board()
+        cue = self._body(patched, 'void CueChatEnded(')
+        self.assertIn('Lang::Sounds::OGG_VIBRATION', cue)
+        self.assertNotIn('PostPhrase', cue)
+        self.assertIn('DayPhase::Night', cue)
+        guard = self._body(patched, 'void UpdateWakeGuard(')
+        self.assertIn('prev == kDeviceStateListening', guard)
+        self.assertIn('CueChatEnded()', guard)
         import inspect
         from scripts import p1_integrate
         self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
