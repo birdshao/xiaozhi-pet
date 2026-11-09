@@ -1,6 +1,6 @@
 """Voice turn pipeline (V5_V6_SERVER_PLAN §6.1-§6.3).
 
-Order: text checks -> quiet hours -> fixed commands -> page Q&A -> open chat
+Order: text checks -> quiet hours -> wake-word-only greeting -> fixed commands -> page Q&A -> open chat
 (S6, only when every gate is open, see open_chat.py) -> fixed fallback. Every
 failure lands on a fixed sentence.
 Raw ASR text lives only in this call's locals: it is never stored or logged.
@@ -22,7 +22,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .db import connect
-from .intent import QUIET_OK, is_page_question, match_fixed
+from .intent import QUIET_OK, is_page_question, is_wake_only, match_fixed
 from .jokes import JOKES
 from .store import BOOK_RE, DEVICE_RE
 
@@ -35,12 +35,14 @@ CONTEXT_MAX_ENTRIES = 256
 BATTERY_MAX_AGE = 600
 TURN_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 
-BAD_TEXT = "我没听清，可以请大人帮我们再说一次吗？"
+# One short sentence (about 2 s spoken): a child waits through every syllable.
+BAD_TEXT = "没听清，再说一遍好吗？"
 QUIET = "现在是安静时间，我们轻轻休息吧。"
 NO_BATTERY = "看看屏幕右上角的电池吧。"
 NO_PAGE = "我们先翻到书里再问吧。"
 NOT_BOUND = "请让家长帮忙连接儿童模式。"
-FALLBACK = "我们可以看看绘本，或者请家人一起聊聊这个问题。"
+FALLBACK = "没听清，再说一遍好吗？"
+WAKE_GREETING = "我在呢。"
 
 
 def reply(kind: str, tts_text: str, reason: str, action: str | None = None) -> dict[str, Any]:
@@ -177,6 +179,9 @@ class VoiceTurns:
         if quiet and not (match is not None and match.kind == "local_command"
                           and match.action in QUIET_OK):
             return reply("fixed", QUIET, "quiet_hours")
+        if is_wake_only(text):
+            # The board sends the wake word itself as the first utterance of a session.
+            return reply("fixed", WAKE_GREETING, "wake_greeting")
         if match is not None:
             if match.kind == "local_command":
                 tts_text = match.tts_text

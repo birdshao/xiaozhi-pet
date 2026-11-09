@@ -41,7 +41,7 @@ COMMANDS = {
 NEAR_MISSES = [
     "我不想睡觉", "团团睡觉了吗", "睡觉", "下一页是什么", "不要下一页", "喂宠物吃糖", "喂鸭子",
     "我想回家", "回家吃饭", "讲故事给我听好不好", "几点了呀你说", "还有多少钱", "玩具", "梳头",
-    "喂，团团！", "喂 团团", "喂，宠物", "团团睡觉？", "团团睡觉?", "回家？", "梳毛？", "下一页？",
+    "喂，团团！", "喂 团团", "喂，宠物", "不想睡觉", "我要睡觉了吗？", "团睡觉？", "打开书架？", "团团睡觉？", "团团睡觉?", "回家？", "梳毛？", "下一页？",
     "喂团团？", "next page", "ＮＥＸＴ", "", "。", "团团", "睡",
 ]
 
@@ -165,6 +165,62 @@ class FixedCommandTests(VoiceBase):
             self.assertEqual(self.say("还有多少电")["tts_text"], "看看屏幕右上角的电池吧。")
 
 
+class WakeAndAliasTests(VoiceBase):
+    def test_wake_word_only_gets_short_greeting(self):
+        for phrase in ("你好小智", "你好，小智！", "你好团团", "你好呀团团", "团团你好小智啊", "你好小知",
+                       "你好晓智", "团团你好", "小智你好", "小智，你好呀", "团团你好小智"):
+            data = self.say(phrase)
+            self.assertEqual((data["kind"], data["tts_text"], data["action"], data["reason"]),
+                             ("fixed", "我在呢。", None, "wake_greeting"), phrase)
+
+    def test_wake_greeting_is_exact_not_substring(self):
+        for phrase in ("你好小智今天天气怎么样", "你好团团讲故事", "你好", "小智", "团团", "你好呀", "小智你好吗", "你好小智睡觉"):
+            self.assertNotEqual(self.say(phrase)["reason"], "wake_greeting", phrase)
+        self.assertEqual(self.say("你好团团讲故事")["reason"], "no_match")
+
+    def test_quiet_hours_beat_wake_greeting(self):
+        self.set_quiet()
+        data = self.say("你好小智")
+        self.assertEqual((data["kind"], data["reason"]), ("fixed", "quiet_hours"))
+
+    def test_confirmed_misrecognitions_hit_commands(self):
+        for phrase, action in (("团睡觉", "SLEEP_REQUEST"), ("打开书下", "OPEN_READER"),
+                               ("书架", "OPEN_READER"), ("打开书架", "OPEN_READER"),
+                               ("去书架。", "OPEN_READER"), ("看书架", "OPEN_READER")):
+            data = self.say(phrase)
+            self.assertEqual((data["kind"], data["action"]), ("local_command", action), phrase)
+
+    def test_how_many_times_is_not_the_battery(self):
+        # "还有多少遍" is a plausible real question (brushing, games): never answer it with the battery.
+        self.add_battery(64, int(self.now) - 30)
+        for phrase in ("还有多少遍", "还有多少遍？"):
+            self.assertIsNone(match_fixed(phrase), phrase)
+            data = self.say(phrase)
+            self.assertEqual(data["reason"], "no_match", phrase)
+            self.assertNotIn("电", data["tts_text"])
+
+    def test_alias_table_stays_explicit_and_unambiguous(self):
+        for phrase in ("一页", "半业", "一年了", "松下", "像一也", "让你也", "书", "架", "书架上有什么"):
+            self.assertIsNone(match_fixed(phrase), phrase)
+        for phrase in ("我不想睡觉", "不想睡觉", "我要睡觉了吗？", "团睡觉吗？"):
+            data = self.say(phrase)
+            self.assertIsNone(data["action"], phrase)
+            self.assertNotEqual(data["kind"], "local_command", phrase)
+
+    def test_quiet_hours_still_allow_sleep_alias_only(self):
+        self.set_quiet()
+        self.assertEqual(self.say("团睡觉")["action"], "SLEEP_REQUEST")
+        self.assertEqual(self.say("书架")["reason"], "quiet_hours")
+
+    def test_fallback_sentences_are_short(self):
+        from services.pet_learning import voice
+        for sentence in (voice.FALLBACK, voice.BAD_TEXT):
+            self.assertEqual(sentence, "没听清，再说一遍好吗？")
+            self.assertLessEqual(len(sentence), 12)
+        for sentence in (voice.QUIET, voice.NO_BATTERY, voice.NO_PAGE, voice.NOT_BOUND, voice.WAKE_GREETING):
+            self.assertLessEqual(len(sentence), 17, sentence)
+
+
 class QuietHoursTests(VoiceBase):
     def test_quiet_hours_precede_commands_and_page_qa(self):
         self.put_context()
@@ -242,11 +298,11 @@ class FallbackTests(VoiceBase):
     def test_unmatched_text_is_fixed_fallback_without_echo(self):
         data = self.say("说出我的家庭地址")
         self.assertEqual((data["kind"], data["action"], data["reason"]), ("fallback", None, "no_match"))
-        self.assertEqual(data["tts_text"], "我们可以看看绘本，或者请家人一起聊聊这个问题。")
+        self.assertEqual(data["tts_text"], "没听清，再说一遍好吗？")
         self.assertNotIn("地址", data["tts_text"])
 
     def test_invalid_text_paths_are_fixed_sentences(self):
-        sentence = "我没听清，可以请大人帮我们再说一次吗？"
+        sentence = "没听清，再说一遍好吗？"
         bodies = [{"text": ""}, {"text": "   "}, {"text": "字" * 121}, {"text": "a\x00b"},
                   {"text": "a‮b"}, {"text": 5}, {"text": None}, {}, {"text": "好", "x": 1},
                   {"text": "你好", "turn_id": "short"}, {"text": "你好", "turn_id": 7},
@@ -413,6 +469,37 @@ class PrivacyTests(VoiceBase):
         self.assertNotIn("幸福", dump)
         self.assertNotIn(VOICE_TOKEN, dump)
         self.assertNotIn(VOICE_TOKEN, joined)
+
+    def test_voice_turn_line_reaches_info_logging(self):
+        """C7: create_app makes the pet_learning logger emit INFO, so the line shows in the container log."""
+        self.assertLessEqual(logging.getLogger("pet_learning").getEffectiveLevel(), logging.INFO)
+        with self.assertLogs("pet_learning.voice", level=logging.INFO) as logs:
+            self.say("你好小智")
+        self.assertIn("voice_turn kind=fixed reason=wake_greeting ms=", "\n".join(logs.output))
+        self.assertNotIn("小智", "\n".join(logs.output))
+
+    def test_voice_turn_line_logged_even_with_bare_root_logger(self):
+        """C7 regression: uvicorn leaves the root logger without handlers; create_app must still log."""
+        import io
+        root, app_logger = logging.getLogger(), logging.getLogger("pet_learning")
+        saved = (root.handlers[:], app_logger.handlers[:], app_logger.level)
+        root.handlers[:] = []
+        app_logger.handlers[:] = []
+        app_logger.setLevel(logging.NOTSET)
+
+        def restore():
+            root.handlers[:], app_logger.handlers[:] = saved[0], saved[1]
+            app_logger.setLevel(saved[2])
+        self.addCleanup(restore)
+        stream = io.StringIO()
+        with patch("sys.stderr", stream):  # StreamHandler() binds sys.stderr when constructed
+            app = create_app(self.db, settings=Settings(database=self.db, voice_token=VOICE_TOKEN))
+            self.assertTrue(app_logger.handlers)
+            with TestClient(app, client=("127.0.0.1", 5000)) as client:
+                client.post(f"/v1/voice/{DEVICE}/turn", headers=VOICE, json={"text": "我家住在幸福路"})
+        out = stream.getvalue()
+        self.assertIn("voice_turn kind=fallback reason=no_match ms=", out)
+        self.assertNotIn("幸福", out)
 
     def test_every_turn_is_audited_including_failures(self):
         self.say("几点了")

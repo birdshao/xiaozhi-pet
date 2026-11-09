@@ -702,12 +702,87 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertLess(body.index('if (pet_mode_.load())'), body.index('"OFF"'))
         self.assertLess(body.index('power_save_timer_->WakeUp();\n                return;'),
                         body.index('pmic_->PowerOff()'))
-        self.assertIn('new PowerSaveTimer(-1, 100, 300)', patched)
+        # V9: no sleep step (it would stop the AFE); shutdown stays 300 s.
+        self.assertIn('new PowerSaveTimer(-1, -1, 300)', patched)
+        self.assertNotIn('(-1, 100, 300)', patched)
         with self.assertRaises(RuntimeError):
             patch_power_save_timer('no anchor here')
+        with self.assertRaises(RuntimeError):  # sleep-step anchor is unique
+            twin = ('        other_ = new PowerSaveTimer(-1, 100, 300);' + chr(10) +
+                    '        power_save_timer_->')
+            patch_power_save_timer(upstream.replace(
+                'power_save_timer_->OnShutdownRequest', twin + 'OnShutdownRequest', 1))
         import inspect
         from scripts import p1_integrate
         self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
+
+    def test_v9_wake_guard_keeps_wake_word_armed(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/wake_guard.h"', patched)
+        loop = self._body(patched, 'void InputTaskLoop()')
+        # After UpdateVoiceCommand, so a command decided this loop is seen.
+        self.assertLess(loop.index('UpdateVoiceCommand(state)'),
+                        loop.index('UpdateWakeGuard(state)'))
+        guard = self._body(patched, 'void UpdateWakeGuard(')
+        # The gate gets the LIVE state and flag, plus the sleep block.
+        self.assertIn('wake_gate_.Observe(app.GetDeviceState() == kDeviceStateIdle,\n'
+                      '                               audio.IsWakeWordRunning(),\n'
+                      '                               sleep_flow_.Active() || '
+                      'sleep_active_.load(), now)', guard)
+        # Acting happens on the main task, re-checked right before enabling.
+        self.assertIn('app.Schedule([attempt]() {', guard)
+        sched = guard[guard.index('app.Schedule('):]
+        recheck = ('if (main_app.GetDeviceState() != kDeviceStateIdle ||\n'
+                   '                    main_audio.IsWakeWordRunning())\n'
+                   '                    return;')
+        self.assertIn(recheck, sched)
+        self.assertLess(sched.index(recheck),
+                        sched.index('main_audio.EnableWakeWordDetection(true)'))
+        self.assertEqual(guard.count('EnableWakeWordDetection(true)'), 1)
+        log = self._body(patched, 'void LogWakeGuard(')
+        self.assertIn('PET_WAKE_GUARD sleep=%d wakeword=%d', log)
+        power = self._body(patched, 'bool HandlePowerEvent(')
+        self.assertIn('LogWakeGuard("enter_idle"', power)
+        self.assertIn('LogWakeGuard("enter_nap"', power)
+        # The guard never lowers the clock or enables light sleep.
+        whole = patched[patched.index('V9 wake guard'):]
+        whole = whole[:whole.index('Plain power-on')]
+        for word in ('esp_pm_configure', 'light_sleep', 'EnableInput(false)',
+                     'EnableWakeWordDetection(false)'):
+            self.assertNotIn(word, whole)
+
+    def test_v9_chat_end_cue_is_scaled_pcm_and_gated(self):
+        patched = self._board()
+        self.assertNotIn('OGG_VIBRATION', patched)
+        self.assertNotIn('PostPhrase(kid_app::PhraseContext::ChatEnd', patched)
+        conditions = self._body(patched, 'kid_app::CueConditions ChatEndCueConditions(')
+        for needle in (
+                'c.idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&\n'
+                '                 state == kDeviceStateIdle && pet_mode_.load();',
+                'c.phase_known = phase >= 0;',
+                'c.night = phase == static_cast<int>(kid_app::DayPhase::Night);',
+                'c.sleeping = sleep_flow_.Active() || sleep_active_.load();',
+                'c.quiet_hours = quiet_hours_.load();',
+                'c.power_off = power_.State() == kid_app::PowerState::Off;',
+                'c.command_pending = voice_cmd_.load() != 0 ||',
+                'voice_deferred_.Pending() != kid_app::VoiceCommand::Unknown;',
+                'c.volume_zero = PromptVolumePct() == 0;',
+                'c.audio_busy = !Application::GetInstance().GetAudioService().IsIdle();'):
+            self.assertIn(needle, conditions)
+        guard = self._body(patched, 'void UpdateWakeGuard(')
+        self.assertIn('const bool was_chatting = prev == kDeviceStateListening || '
+                      'prev == kDeviceStateSpeaking;', guard)
+        self.assertIn('chat_cue_.OnState(was_chatting, state == kDeviceStateIdle, now);',
+                      guard)
+        self.assertIn('if (chat_cue_.Poll(ChatEndCueConditions(state), now)) {', guard)
+        # The sound is a synthesised bell at the parent-capped prompt volume.
+        start = self._body(patched, 'void StartChatEndCue(')
+        self.assertIn('chat_cue_volume_.store(PromptVolumePct())', start)
+        task = self._body(patched, 'void ChatEndCueTask(')
+        self.assertIn('kid_app::Timbre::Bell, chat_cue_volume_.load()', task)
+        self.assertIn('if (!PromptAllowed()) return;  // sleep or not idle', task)
+        self.assertIn('if (!PromptAllowed()) return;  // a newer state wins', task)
+        self.assertIn('TryQueueLocalStoryPcm(\n            kChatEndCueSession', patched)
 
     def test_plain_power_on_opens_pet_mode(self):
         patched = self._board()

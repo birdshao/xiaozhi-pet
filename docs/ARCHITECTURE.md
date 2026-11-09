@@ -148,7 +148,7 @@ Off ──(PWR 键 或 RTC 闹钟)──> 开机 → 判断唤醒原因 → 早�
 | Off | 断电 | 关 | 显示"熟睡"（断电保留） | PWR、RTC 闹钟（经 PMIC 开机） |
 
 - 关机前统一顺序：音频静音 → 刷"熟睡"画面 → 账本提交 → 设置下次 RTC 闹钟 → PMIC 关机。
-- 小智原版 `PowerSaveTimer(-1, 100, 300)` 在 300 秒无操作时直接关机，且屏幕显示"OFF"。overlay 须改为由 PowerManager 接管。
+- 小智原版 `PowerSaveTimer(-1, 100, 300)`（overlay 改为 `(-1, -1, 300)`，见 VOICE_WAKE_POWERSAVE.md）在 300 秒无操作时直接关机，且屏幕显示"OFF"。overlay 须改为由 PowerManager 接管。
 - 唤醒原因：开机时读 RTC 闹钟标志（官方示例用 `RTC_INT` 判断）、VBUS 状态区分"闹钟开机 / 按键开机 / 插电开机"。
 - ESP32-S3 深睡眠只能用 RTC GPIO（0–21）唤醒；姿态 INT2（40）、RTC INT（45）、PMIC IRQ（38）不在其中，所以采用"浅睡眠 + 真关机"两级，不依赖深睡眠。
 - 低电量：<20% 宠物打哈欠并提示找大人充电；<8% 强制走关机顺序。充电中显示"在吃电"。

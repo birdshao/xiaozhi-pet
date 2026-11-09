@@ -15,16 +15,17 @@
 
 1. 文本检查（固定命令里的动作类还要求"像命令"：含 `?`/`？` 或"喂"后紧跟标点/空白——如"团团睡觉？"、"喂，团团！"——都不匹配；几点了/电量带问号照常匹配）：JSON、只含 `text`/`turn_id`、`turn_id` 8–64 位 `[A-Za-z0-9_-]`、去空白后 1–120 字、无控制/格式字符 → 否则 `fallback/text_invalid`（HTTP 200，固定句）。
 2. 未知设备 → `fallback/unknown_device`。
-3. 安静时段（设备投影 `quiet`）→ `fixed/quiet_hours`。
-4. 固定命令（NFKC + 去空白/标点 + 精确匹配白名单）：`SLEEP_REQUEST PAGE_NEXT PAGE_PREV OPEN_READER OPEN_GAME PET_FEED PET_GROOM GO_HOME`（`local_command`，`action` 仅来自这里）；几点了；还有多少电。
+3. 安静时段（设备投影 `quiet`）→ `fixed/quiet_hours`（唤醒词问候也受此限制，安静时只回安静句）。
+3b. 唤醒词问候（`intent.is_wake_only`）：板子唤醒后会把"你好小智"本身当作第一句话送来。NFKC + 去空白/标点后，文本**完全**等于 `你好小智`/`你好团团`（及误识 `你好小知`/`你好晓智`），或名字在前的 `团团你好`/`小智你好`，前后/中间可夹"团团、呀、啊、哦、哇、啦、嘿、哎"这类语气词（如"你好呀团团""团团你好小智啊"），→ `fixed/wake_greeting`，固定句"我在呢。"。整句匹配，不做包含匹配："你好小智今天天气怎么样""你好团团讲故事"仍走后面的流程。
+4. 固定命令（NFKC + 去空白/标点 + 精确匹配白名单，外加一张**显式别名表**：只收真机基线里确认过、且不会成为别的句子的误识——`团睡觉`→`SLEEP_REQUEST`、`打开书下`/`书架`/`打开书架`/`去书架`/`看书架`→`OPEN_READER`（V9 起"讲故事"在卡上有两本及以上时先出书架，所以书架就是这个动作）；不做编辑距离或包含匹配，也不收可能是真问题的句子（如"还有多少遍"：刷牙、游戏时也会问，不当作电量），"一页""半业""一年了""松下"这类太短或有歧义的不收；问号规则不变，"我不想睡觉""不想睡觉""我要睡觉了吗？"都不触发）：`SLEEP_REQUEST PAGE_NEXT PAGE_PREV OPEN_READER OPEN_GAME PET_FEED PET_GROOM GO_HOME`（`local_command`，`action` 仅来自这里）；几点了；还有多少电。
 5. 页问答：白名单问句 + 120 s 内的 READER 上下文 → 只播已审核页文本（`approved_content/page_qa`）。
-6. 其余 → 固定兜底句 `fallback/no_match`。
+6. 其余 → 固定兜底句 `fallback/no_match`。兜底句（`no_match`、`text_invalid`、`internal_error`）统一为一句短话"没听清，再说一遍好吗？"（约 2 s；原句两段、约 7 s）。安静/未绑定/无电量/无页上下文等其他固定句都在 17 字内，未改（测试断言长度）。守卫侧 `REVIEWED_FALLBACK`（服务不可用时的离线句）和 `kind`/长度限制不变。
 
 任何异常（含审计写失败以外的所有内部错误）→ `fallback/internal_error` 固定句。`local_command`、页问答、兜底都不带 ASR 回显。
 
 ## 审计与隐私
 
-每个 turn 写一行 `audit_log(actor=voice, action=voice.turn, target=<device_id>, result=<kind>:<reason>)`，日志只有 `kind/reason/耗时`。ASR 文本、`turn_id`、回复文本都不落盘、不进日志（测试断言）。审计写失败不影响应答。
+每个 turn 写一行 `audit_log(actor=voice, action=voice.turn, target=<device_id>, result=<kind>:<reason>)`，日志只有 `kind/reason/耗时`：`voice_turn kind=… reason=… ms=…` 以 INFO 级别输出——`create_app` 把 `pet_learning` logger 设为 INFO，并在根 logger 没有 handler（uvicorn 只配自己的 logger）时给它挂一个 stderr handler，所以 `docker logs pet-learning` 里能直接按 kind 统计。ASR 文本、`turn_id`、回复文本都不落盘、不进日志（测试断言）。审计写失败不影响应答。
 
 ## 已解决的方案歧义
 
