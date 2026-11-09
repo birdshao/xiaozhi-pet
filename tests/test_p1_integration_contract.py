@@ -708,23 +708,37 @@ class DisplayOverlayTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             patch_power_save_timer('no anchor here')
         with self.assertRaises(RuntimeError):  # sleep-step anchor is unique
-            patch_power_save_timer(upstream + upstream)
+            twin = ('        other_ = new PowerSaveTimer(-1, 100, 300);' + chr(10) +
+                    '        power_save_timer_->')
+            patch_power_save_timer(upstream.replace(
+                'power_save_timer_->OnShutdownRequest', twin + 'OnShutdownRequest', 1))
+        import inspect
+        from scripts import p1_integrate
+        self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
 
     def test_v9_wake_guard_keeps_wake_word_armed(self):
         patched = self._board()
         self.assertIn('#include "assets/lang_config.h"', patched)
         loop = self._body(patched, 'void InputTaskLoop()')
-        self.assertLess(loop.index('UpdatePower(state)'),
+        # After UpdateVoiceCommand, so a command decided this loop is seen.
+        self.assertLess(loop.index('UpdateVoiceCommand(state)'),
                         loop.index('UpdateWakeGuard(state)'))
         guard = self._body(patched, 'void UpdateWakeGuard(')
-        # Re-arm only while idle, never while the sleep flow owns the board.
-        self.assertIn('IsWakeWordRunning()', guard)
-        self.assertIn('EnableWakeWordDetection(true)', guard)
+        # Repair only for idle, read live (not the loop's stale state), after
+        # kWakeGuardSettleMs of it, and re-checked on the main task.
+        self.assertIn('app.GetDeviceState() == kDeviceStateIdle', guard)
+        self.assertIn('kWakeGuardSettleMs', guard)
+        self.assertIn('app.Schedule(', guard)
+        sched = guard[guard.index('app.Schedule('):]
+        self.assertLess(sched.index('GetDeviceState() != kDeviceStateIdle'),
+                        sched.index('EnableWakeWordDetection(true)'))
+        self.assertLess(sched.index('IsWakeWordRunning()'),
+                        sched.index('EnableWakeWordDetection(true)'))
+        self.assertEqual(guard.count('EnableWakeWordDetection(true)'), 1)
         self.assertIn('sleep_flow_.Active()', guard)
         self.assertIn('kWakeGuardMaxFixes', guard)
         log = self._body(patched, 'void LogWakeGuard(')
         self.assertIn('PET_WAKE_GUARD sleep=%d wakeword=%d', log)
-        # Logged on entering idle and nap.
         power = self._body(patched, 'bool HandlePowerEvent(')
         self.assertIn('LogWakeGuard("enter_idle"', power)
         self.assertIn('LogWakeGuard("enter_nap"', power)
@@ -737,16 +751,23 @@ class DisplayOverlayTest(unittest.TestCase):
 
     def test_v9_chat_end_cue_uses_builtin_sound_not_tts(self):
         patched = self._board()
-        cue = self._body(patched, 'void CueChatEnded(')
-        self.assertIn('Lang::Sounds::OGG_VIBRATION', cue)
-        self.assertNotIn('PostPhrase', cue)
-        self.assertIn('DayPhase::Night', cue)
+        self.assertNotIn('void CueChatEnded(', patched)
+        allowed = self._body(patched, 'bool ChatEndCueAllowed(')
+        for needle in ('phase < 0', 'DayPhase::Night', 'sleep_flow_.Active()',
+                       'sleep_active_.load()', 'quiet_hours_.load()',
+                       'voice_cmd_.load() != 0', 'voice_deferred_.Pending()',
+                       'PromptVolumePct() == 0', 'IsIdle()'):
+            self.assertIn(needle, allowed)
         guard = self._body(patched, 'void UpdateWakeGuard(')
         self.assertIn('prev == kDeviceStateListening', guard)
-        self.assertIn('CueChatEnded()', guard)
-        import inspect
-        from scripts import p1_integrate
-        self.assertIn('patch_power_save_timer(patch_board(', inspect.getsource(p1_integrate.run))
+        self.assertIn('prev == kDeviceStateSpeaking', guard)
+        # Armed on the transition, fired later, only if still allowed.
+        self.assertLess(guard.index('wake_cue_armed_ = true'),
+                        guard.index('!ChatEndCueAllowed()'))
+        self.assertLess(guard.index('!ChatEndCueAllowed()'),
+                        guard.index('Lang::Sounds::OGG_VIBRATION'))
+        self.assertIn('kChatEndCueDelayMs', guard)
+        self.assertNotIn('PostPhrase', guard)
 
     def test_plain_power_on_opens_pet_mode(self):
         patched = self._board()

@@ -41,20 +41,34 @@
 
 - `patch_power_save_timer`：`PowerSaveTimer(-1, 100, 300)` →
   `(-1, -1, 300)`。去掉 sleep 步，将来即使有人给 `cpu_max_freq` 赋值，
-  也不会停 AFE / 开轻睡眠。300 s 关机接管逻辑不变。
-- `UpdateWakeGuard`（pet_input 每圈）：
-  - 板子 idle 且 `IsWakeWordRunning()==false` 时重新
-    `EnableWakeWordDetection(true)`，5 s 一次，最多 6 次，睡眠流程中不动。
+  也不会停 AFE / 开轻睡眠。**注意行为差异**：这是全局参数，非宠物模式
+  也受影响；原来 100 s 后进入 `in_sleep_mode_`，之后即使有会话也继续累计
+  tick；现在只有连续 300 s 满足 `CanEnterSleepMode()`（idle、无音频通道、
+  音频空闲）才触发关机回调，所以关机更保守。宠物模式下该回调本来就只复位
+  计时器，PowerManager 接管关机。
+- `UpdateWakeGuard`（pet_input 每圈，在 `UpdateVoiceCommand` 之后）：
+  - 默认只观测。仅在"实时读到 idle 且唤醒词未运行"**连续 ≥1 s**、距上次
+    修复 ≥5 s、最多 6 次、睡眠流程之外时才修复；修复动作用
+    `Application::Schedule` 放到主任务，执行前在主任务里再判一次
+    "仍是 idle 且仍未运行"。理由：孩子喊唤醒词时 AFE 会先清掉 RUNNING，
+    主任务随后才离开 idle；若用循环开头读到的旧 `state` 直接重开，会在
+    Connecting 期间重开 WakeNet，造成误报 `repair=1`、丢掉再喊的唤醒，
+    并可能和唤醒词音频编码任务并发。保留修复是因为根因未在板上证实，
+    若 idle 里确有东西关过唤醒词，这是最便宜的兜底。
   - 日志 `PET_WAKE_GUARD sleep=<0|1> wakeword=<0|1> input=<0|1> power=<state>
     state=<n> why=<enter_idle|enter_nap|periodic|chat_end>`；进入 idle/nap
     各打一次，idle 时每 30 s 一次；修复时 `PET_WAKE_GUARD repair=1 try=n`。
     `sleep=1` 表示 kid_app 处于 Idle 或 Nap。
-- C6 提示音：会话从 listening/speaking 回 idle 时播一声内置
-  `OGG_VIBRATION`（不新增 TTS、不新增音频文件），夜间（Night）和睡觉流程中
-  不播；日志 `PET_CHAT_END_CUE`。
+- C6 提示音：会话 listening/speaking 回 idle 时**先挂起**，800 ms 后仍满足
+  全部条件才播一声内置 `OGG_VIBRATION`（不新增 TTS、不新增音频文件）。
+  条件：宠物模式、RTC 已设（day_phase 已知）且非 Night、非家长安静时段、
+  不在睡觉流程、无待执行/延后的语音命令、家长音量上限不为 0、音频服务空闲
+  （错误回 idle 时 `OGG_EXCLAMATION` 会让音频忙，提示音随之取消）。
+  声音按编解码器当前音量播放（家长上限已作用在该音量上）。日志
+  `PET_CHAT_END_CUE`。
 - 没有降频、没有开轻睡眠、没有改屏幕刷新策略（见耗电）。
 
-## 服务端建议值（本 PR 不改服务端）
+## 服务端建议值（仅建议，需要另做；本 PR 不改服务端）
 
 - `close_connection_no_voice_time`：120 s 对孩子偏短，建议 **180 s**
   （孩子想一想、翻书、等大人的时间）；再长会让麦克风长时间保持上传
