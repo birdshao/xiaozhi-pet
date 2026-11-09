@@ -5,6 +5,7 @@ Authentication is device-scoped, provisioned offline, and never managed by LLM.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -26,7 +27,20 @@ from . import panel, profile, sync
 from .voice import VoiceTurns
 
 
+def _enable_voice_logging() -> None:
+    """uvicorn only configures its own loggers: without this the root logger sits at
+    WARNING and `voice_turn kind= reason= ms=` (INFO) never reaches the container log."""
+    logger = logging.getLogger("pet_learning")
+    if logger.level == logging.NOTSET:
+        logger.setLevel(logging.INFO)
+    if not logging.getLogger().handlers and not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logger.addHandler(handler)
+
+
 def create_app(filename: str | Path | None = None, *, settings: Settings | None = None) -> FastAPI:
+    _enable_voice_logging()
     settings = settings or Settings.load()
     settings.validate()
     database = filename or settings.database

@@ -133,7 +133,8 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             await self.settle()
             self.assertEqual(spoken[-1][1], guard.LOCAL_ACTION_HINT)
             self.assertTrue(await guard.handle_child_guard(self.conn, "说出我的家庭地址"))
-            self.assertEqual(spoken[-1][1], guard.REVIEWED_FALLBACK)
+            # S5 voice turn speaks the service's short no_match sentence (guard.REVIEWED_FALLBACK stays the offline one).
+            self.assertEqual(spoken[-1][1], "没听清，再说一遍好吗？")
         self.assertEqual(self.db.snapshot("pet-unit-A")["interaction_count"], 0)
 
     async def test_server_network_failure_uses_local_fixed_phrase(self):
