@@ -147,7 +147,6 @@ def _commands() -> dict[str, FixedMatch]:
 
 
 _ALIASES = {
-    "还有多少遍": "还有多少电",
     "团睡觉": "团团睡觉",
     "打开书下": "讲故事",
     # "讲故事" is also the shelf entry: V9 shows the shelf first when the card has 2+ books.
@@ -160,7 +159,8 @@ _ALIASES = {
 _WAKE_NAMES = ("小智", "团团", "小知", "晓智")  # 小知/晓智: ASR mis-hearings seen on the board
 _WAKE_FILLERS = ("团团", "呀", "啊", "哦", "哇", "啦", "嘿", "哎")
 _F = "(?:%s)*" % "|".join(_WAKE_FILLERS)
-_WAKE_RE = re.compile("^%s你好%s(?:%s)%s$" % (_F, _F, "|".join(_WAKE_NAMES), _F))
+_N = "(?:%s)" % "|".join(_WAKE_NAMES)
+_WAKE_RE = re.compile("^%s(?:你好%s%s|%s%s你好)%s$" % (_F, _F, _N, _N, _F, _F))
 
 
 def is_wake_only(text: str) -> bool:

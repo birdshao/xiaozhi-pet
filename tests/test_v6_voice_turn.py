@@ -168,13 +168,13 @@ class FixedCommandTests(VoiceBase):
 class WakeAndAliasTests(VoiceBase):
     def test_wake_word_only_gets_short_greeting(self):
         for phrase in ("你好小智", "你好，小智！", "你好团团", "你好呀团团", "团团你好小智啊", "你好小知",
-                       "你好晓智"):
+                       "你好晓智", "团团你好", "小智你好", "小智，你好呀", "团团你好小智"):
             data = self.say(phrase)
             self.assertEqual((data["kind"], data["tts_text"], data["action"], data["reason"]),
                              ("fixed", "我在呢。", None, "wake_greeting"), phrase)
 
     def test_wake_greeting_is_exact_not_substring(self):
-        for phrase in ("你好小智今天天气怎么样", "你好团团讲故事", "你好", "小智", "你好小智睡觉"):
+        for phrase in ("你好小智今天天气怎么样", "你好团团讲故事", "你好", "小智", "团团", "你好呀", "小智你好吗", "你好小智睡觉"):
             self.assertNotEqual(self.say(phrase)["reason"], "wake_greeting", phrase)
         self.assertEqual(self.say("你好团团讲故事")["reason"], "no_match")
 
@@ -189,9 +189,15 @@ class WakeAndAliasTests(VoiceBase):
                                ("去书架。", "OPEN_READER"), ("看书架", "OPEN_READER")):
             data = self.say(phrase)
             self.assertEqual((data["kind"], data["action"]), ("local_command", action), phrase)
-        self.assertEqual(self.say("还有多少遍")["reason"], "battery_unavailable")
+
+    def test_how_many_times_is_not_the_battery(self):
+        # "还有多少遍" is a plausible real question (brushing, games): never answer it with the battery.
         self.add_battery(64, int(self.now) - 30)
-        self.assertEqual(self.say("还有多少遍")["tts_text"], "还有百分之64的电。")
+        for phrase in ("还有多少遍", "还有多少遍？"):
+            self.assertIsNone(match_fixed(phrase), phrase)
+            data = self.say(phrase)
+            self.assertEqual(data["reason"], "no_match", phrase)
+            self.assertNotIn("电", data["tts_text"])
 
     def test_alias_table_stays_explicit_and_unambiguous(self):
         for phrase in ("一页", "半业", "一年了", "松下", "像一也", "让你也", "书", "架", "书架上有什么"):
@@ -471,6 +477,29 @@ class PrivacyTests(VoiceBase):
             self.say("你好小智")
         self.assertIn("voice_turn kind=fixed reason=wake_greeting ms=", "\n".join(logs.output))
         self.assertNotIn("小智", "\n".join(logs.output))
+
+    def test_voice_turn_line_logged_even_with_bare_root_logger(self):
+        """C7 regression: uvicorn leaves the root logger without handlers; create_app must still log."""
+        import io
+        root, app_logger = logging.getLogger(), logging.getLogger("pet_learning")
+        saved = (root.handlers[:], app_logger.handlers[:], app_logger.level)
+        root.handlers[:] = []
+        app_logger.handlers[:] = []
+        app_logger.setLevel(logging.NOTSET)
+
+        def restore():
+            root.handlers[:], app_logger.handlers[:] = saved[0], saved[1]
+            app_logger.setLevel(saved[2])
+        self.addCleanup(restore)
+        stream = io.StringIO()
+        with patch("sys.stderr", stream):  # StreamHandler() binds sys.stderr when constructed
+            app = create_app(self.db, settings=Settings(database=self.db, voice_token=VOICE_TOKEN))
+            self.assertTrue(app_logger.handlers)
+            with TestClient(app, client=("127.0.0.1", 5000)) as client:
+                client.post(f"/v1/voice/{DEVICE}/turn", headers=VOICE, json={"text": "我家住在幸福路"})
+        out = stream.getvalue()
+        self.assertIn("voice_turn kind=fallback reason=no_match ms=", out)
+        self.assertNotIn("幸福", out)
 
     def test_every_turn_is_audited_including_failures(self):
         self.say("几点了")

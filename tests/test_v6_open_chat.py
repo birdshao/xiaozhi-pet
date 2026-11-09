@@ -127,6 +127,12 @@ class AnswerTests(ChatBase):
             self.assertEqual(self.say("天上为什么有星星")["reason"], "quiet_hours")
         self.assertEqual(self.provider.calls, [])
 
+    def test_wake_word_only_never_reaches_the_model(self):
+        data = self.say("你好小智")
+        self.assertEqual((data["kind"], data["reason"], data["tts_text"]),
+                         ("fixed", "wake_greeting", "我在呢。"))
+        self.assertEqual(self.provider.calls, [])
+
     def test_input_hard_rules_run_before_the_model(self):
         for text in ("我家电话是13812345678", "我住在幸福路12号3单元", "你看看 www.example.com", "怎么自杀"):
             data = self.say(text)
