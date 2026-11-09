@@ -1,0 +1,189 @@
+# 复测清单（固件 e50c1e8 / 服务端 870a87a）。顺序有意安排：先不改画面的，再开读书器翻页，最后睡觉。
+
+[[case]]
+id = "wake_greet1"
+say = "小智你好"
+group = "wake"
+kind = "fixed"
+reason = "wake_greeting"
+tts_contains = "我在呢"
+
+[[case]]
+id = "wake_greet2"
+say = "你好团团"
+group = "wake"
+kind = "fixed"
+reason = "wake_greeting"
+tts_contains = "我在呢"
+
+[[case]]
+id = "time"
+say = "几点了"
+group = "command"
+kind = "fixed"
+reason = "tell_time"
+tts_contains = "现在是"
+
+[[case]]
+id = "battery"
+say = "还有多少电"
+group = "command"
+kind = "fixed"
+reason = "tell_battery"
+
+[[case]]
+id = "neg_sleep1"
+say = "我不想睡觉"
+group = "negative"
+kind = "fallback"
+reason = "no_match"
+
+[[case]]
+id = "neg_sleep2"
+say = "团团不要睡觉"
+group = "negative"
+kind = "fallback"
+reason = "no_match"
+
+[[case]]
+id = "neg_story"
+say = "不要讲故事"
+group = "negative"
+kind = "fallback"
+reason = "no_match"
+
+[[case]]
+id = "chat_weather"
+say = "今天天气怎么样"
+group = "chat"
+kind = "fallback"
+reason = "no_match"
+
+[[case]]
+id = "shelf1"
+say = "打开书架"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+
+[[case]]
+id = "page_next"
+say = "下一页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_NEXT"
+
+[[case]]
+id = "page_prev"
+say = "上一页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_PREV"
+
+[[case]]
+id = "page_flip"
+say = "翻页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_NEXT"
+
+[[case]]
+id = "home"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "story"
+say = "讲故事"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+
+[[case]]
+id = "home2"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "shelf2"
+say = "书架"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+
+[[case]]
+id = "home3"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "shelf3"
+say = "去书架"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+
+[[case]]
+id = "home4"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "shelf4"
+say = "看书架"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+
+[[case]]
+id = "home5"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "game"
+say = "玩游戏"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_GAME"
+
+[[case]]
+id = "home6"
+say = "回首页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "GO_HOME"
+
+[[case]]
+id = "sleep_short"
+say = "团睡觉"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "SLEEP_REQUEST"
+
