@@ -24,6 +24,8 @@ NO_SERVICE = "现在还不能语音聊天，我们可以先用按键和小宠物
 NOT_BOUND = "请让家长帮忙连接儿童模式。"
 LOCAL_ACTION_HINT = "我听到了，我们用设备上的按键完成这个动作吧。"
 GOODBYE = "我们下次再聊吧，拜拜。"
+# Ends a run of unclear turns: also tells the child how to get the pet back.
+UNCLEAR_GOODBYE = "想找我就再叫我一声哦，拜拜。"
 # PetLearning may wait up to 6 s for the open-chat model (S6); fixed answers come back at once.
 SERVICE_TIMEOUT_S = 9.0
 
@@ -38,9 +40,10 @@ SPEAK_WAIT_S = 4.0
 SPEAK_WAIT_STEP_S = 0.1
 # Room noise keeps an auto-listening board sending ASR text, and each one used to get
 # "没听清" back, so the chat never ended (2026-11-09 serial log). After this many
-# no-intent replies in a row the guard says goodbye and ends the chat: the child still
-# gets one "没听清，再说一遍好吗？" and a second try (docs/SERVER_S5.md, "会话结束").
-UNCLEAR_LIMIT = 2
+# no-intent replies in a row the guard says goodbye and ends the chat. no_match is also
+# a real question the pet cannot answer (open chat off), so a child gets two of those
+# and a third try before the goodbye (docs/SERVER_S5.md, "会话结束").
+UNCLEAR_LIMIT = 3
 # PetLearning reasons that mean "no valid intent" (noise, mis-heard speech). Other
 # fallback kinds (quiz / story prompts, open-chat errors) are real turns and do not count.
 _UNCLEAR_REASONS = ("no_match", "text_invalid")
@@ -108,6 +111,10 @@ class _Unclear(str):
     """A sentence that answered no valid intent (fallback, service down, not bound)."""
 
 
+class _Closing(str):
+    """A valid reply after which the chat ends (quiet hours: every utterance gets it)."""
+
+
 class _Command:
     """A signed local_command: the action name and the server's reviewed sentence."""
 
@@ -161,6 +168,8 @@ async def _voice_reply(conn, text: str):
         if kind in _ALLOWED_KINDS and isinstance(spoken, str) and 0 < len(spoken) <= 320:
             if kind == "fallback" and data.get("reason") in _UNCLEAR_REASONS:
                 return _Unclear(spoken)
+            if data.get("reason") == "quiet_hours":
+                return _Closing(spoken)
             return spoken
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
         pass
@@ -234,11 +243,20 @@ async def _speak(conn, answer: str) -> None:
     # Imported lazily to avoid circular import when upstream loads the hook.
     from core.handle.intentHandler import speak_txt
     from core.handle.sendAudioHandle import send_tts_message
+    # The child interrupted (abort) while the guard waited for PetLearning or the board:
+    # this sentence answers an utterance that was cut off, so it is dropped.
+    if getattr(conn, "client_abort", False):
+        return
     conn.sentence_id = uuid.uuid4().hex
-    # An earlier abort (wake word while speaking) leaves client_abort set, and upstream's
-    # TTS threads drop everything while it is; startToChat clears it only on the chat path.
-    conn.client_abort = False
     await send_tts_message(conn, "start")
+    if getattr(conn, "client_abort", False):
+        # The abort raced the start: upstream's abort "stop" may have gone out first, and
+        # its TTS threads now drop our sentence (no stop of their own). Leave the board
+        # out of speaking ourselves.
+        await conn.websocket.send(json.dumps(
+            {"type": "tts", "state": "stop", "session_id": getattr(conn, "session_id", None)}))
+        conn.clearSpeakStatus()
+        return
     conn.client_is_speaking = True  # as send_stt_message does; cleared by the "stop"
     speak_txt(conn, str(answer))
 
@@ -247,6 +265,10 @@ def _end_unclear_run(conn, answer):
     """Count no-intent replies in a row; the UNCLEAR_LIMIT-th says goodbye and ends the chat."""
     if not isinstance(answer, _Unclear):
         conn.child_guard_unclear = 0
+        if isinstance(answer, _Closing):
+            # Quiet hours answer every utterance alike: say it once, then end the chat
+            # (room noise at night would otherwise repeat it every few seconds).
+            conn.close_after_chat = True
         return answer
     count = getattr(conn, "child_guard_unclear", 0) + 1
     if count < UNCLEAR_LIMIT:
@@ -256,7 +278,7 @@ def _end_unclear_run(conn, answer):
     # Upstream closes the connection after this sentence's stop (sendAudioMessage, LAST).
     conn.close_after_chat = True
     _log.info("child guard: %d unclear turns in a row, ending the chat", count)
-    return GOODBYE
+    return UNCLEAR_GOODBYE
 
 
 def _is_end_prompt(conn, text) -> bool:
@@ -282,6 +304,10 @@ async def handle_child_guard(conn, text: str) -> bool:
     if previous is not None and not previous.done():
         previous.cancel()
     conn.child_guard_task = None
+    # A new turn: clear an earlier abort at the same point upstream's chat path does
+    # (startToChat aborts a playing reply, then clears client_abort before answering).
+    # An abort that arrives while this turn waits stays set and drops its sentence.
+    conn.client_abort = False
     if _is_end_prompt(conn, text):
         # Not the child speaking: never forward upstream's model prompt to PetLearning.
         await _speak(conn, GOODBYE)

@@ -63,12 +63,21 @@
 
 修法（只改守卫和 overlay）：
 
-- `_speak` 改为一整轮：换 `sentence_id`、清 `client_abort`、`await send_tts_message(conn, "start")`、置 `client_is_speaking`，再 `speak_txt`；结束的 `stop` 仍由上游在最后一句后发。命令回复、告别句都走它。
-- **会话结束**：PetLearning 的 `kind=fallback` 且 `reason` 是 `no_match`/`text_invalid`，以及守卫本地的 `NO_SERVICE`/`NOT_BOUND`，算"没有有效意图"。连续 `UNCLEAR_LIMIT = 2` 次时，第 2 次不再说"没听清"，改说固定告别句"我们下次再聊吧，拜拜。"并置 `conn.close_after_chat`，上游在这句的 `stop` 之后断开（`sendAudioHandle.py:52-55`）。任何有效回复（固定句、命令、问答、开放聊天、测验/故事里的提示）都把计数清零。理由：孩子一次没听清还会得到"再说一遍"，有一次重说的机会；环境噪声在真机上每 2–5 s 出一段，最多两段（约 5–10 s）就结束，再唤醒即可。不做总时长上限：读书/测验可以合理地很长，证据里的长会话全是兜底句。
+- `_speak` 改为一整轮：换 `sentence_id`、`await send_tts_message(conn, "start")`、置 `client_is_speaking`，再 `speak_txt`；结束的 `stop` 仍由上游在最后一句后发。命令回复、告别句都走它。
+- **打断**：`client_abort` 在 `handle_child_guard` 入口清掉，时机与上游聊天路径一致（`startToChat` 先打断正在播的回复 `receiveAudioHandle.py:91-92`，再在 `:105` 清掉）。守卫等 PetLearning（最长 9 s）或等板子执行命令（3 s + 最多 4 s）期间，孩子用唤醒词打断（上游 `handleAbortMessage` 置位），`_speak` 看到 `client_abort` 就放弃这一句，不发 start、不朗读（auto 模式下 ASR 经 `run_coroutine_threadsafe` 调 `startToChat`，与 websocket 接收并发，见上游 `asr/base.py:43-51`）。若打断恰好落在发 start 的 await 期间，守卫自己再发一个 `stop` 并复位 `client_is_speaking`，因为上游此时会丢掉整句、不再发 stop。
+- **会话结束**：PetLearning 的 `kind=fallback` 且 `reason` 是 `no_match`/`text_invalid`，以及守卫本地的 `NO_SERVICE`/`NOT_BOUND`，算"没有有效意图"。连续 `UNCLEAR_LIMIT = 3` 次时，第 3 次不再说"没听清"，改说告别句"想找我就再叫我一声哦，拜拜。"（告诉孩子怎么把宠物叫回来）并置 `conn.close_after_chat`，上游在这句的 `stop` 之后断开（`sendAudioHandle.py:52-55`）。任何有效回复（固定句、命令、页问答、开放聊天的回答或拦截句等其他 `reason`）都把计数清零。环境噪声在真机上每 2–5 s 出一段，最多三段（约 6–15 s）就结束，再唤醒即可。不做总时长上限：读书可以合理地很长，证据里的长会话全是兜底句。
+  - 取舍：`no_match` 不只代表噪声。**开放聊天关闭时**，孩子问了不支持的问题也是 `no_match`；阈值 3 意味着孩子连问两个不支持的问题仍会得到"没听清，再说一遍"，连续第三个才告别（可再唤醒）。**开放聊天打开时**，大多数真问题由 GLM 回答、计数清零，阈值主要拦噪声；但噪声若被 ASR 识别成像样的文字、GLM 也给了回答，同样会清零。**已知限制、待真机观察**：开放聊天打开时，噪声循环是否还会被 GLM 回答撑住，没有证实。
+- **安静时间**：安静时段里 PetLearning 对任何文本都回 `fixed/quiet_hours`（`voice.py` 的 quiet 分支），这是有效回复、会清零计数，噪声会让板子每隔几秒说一次安静句。守卫在 `reason == "quiet_hours"` 时说完这一句就置 `close_after_chat` 结束会话。
 - `close_connection_no_voice_time: 180`（`deploy/xiaozhi/child.config.yaml`，上游默认 120）：给孩子想一想、翻页的时间。它只管"安静"，噪声会重置它，所以结束噪声会话靠的是上一条。
 - 唤醒词（S6 审计 #12）：overlay 在 `listenMessageHandler.py` 的 `if is_wakeup_words and not enable_greeting:` 前插一段，只在儿童模式下把板子发来的唤醒词原文交给 `startToChat` → 守卫，PetLearning 的 `is_wake_only` 回"我在呢。"，并设 `just_woken_up`。匹配没有放宽：上游问候分支用的替身文本"嘿，你好呀"仍不是唤醒词；`wakeup_words` 列表和 `enable_greeting: false` 不变。
 
-真机仍需验证：唤醒后串口应是 `connecting -> listening -> speaking`（"我在呢"有声）`-> listening`；每条回复前都有 `listening -> speaking`；在嘈杂环境不说话，两句后听到"我们下次再聊吧，拜拜"并回 idle；服务端日志 `child guard: 2 unclear turns in a row`。
+已知限制：
+
+- 儿童模式的唤醒分支不再发 `stt`，所以固件 `display_->UserUtterances()`（脸部 thinking 计数）在儿童模式下不会因唤醒词增加；之后的 ASR 文本走守卫，也不发 stt。暂不改，记为已知问题。
+- 唤醒后约 2 s 内的上行音频被 `just_woken_up` 丢弃（上游 `receiveAudioHandle.py:21-26`，与上游问候分支相同）。孩子连着说"你好小智，几点了"时，后半句可能丢失，要停一下等"我在呢"再说。
+- 开放聊天打开时噪声是否会被 GLM 回答撑住（见上），待真机观察。
+
+真机仍需验证：唤醒后串口应是 `connecting -> listening -> speaking`（"我在呢"有声）`-> listening`；每条回复前都有 `listening -> speaking`；在嘈杂环境不说话，三句后听到"想找我就再叫我一声哦，拜拜"并回 idle，服务端日志 `child guard: 3 unclear turns in a row`；说话中用唤醒词打断，被打断那句不再播出；安静时段说一句话，只听到一次安静句后回 idle。
 
 ## 设备端仍需要（不在本 PR）
 
