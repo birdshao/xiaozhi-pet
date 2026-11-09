@@ -21,6 +21,7 @@ from services.pet_learning.store import PetStore
 from scripts.p3_server_overlay import overlay, ANCHOR, INSERT
 from scripts.p3_server_overlay import (overlay_mcp_client, overlay_mcp_executor, CLIENT_ANCHOR,
                                        CLIENT_INSERT, EXECUTOR_ANCHOR, EXECUTOR_INSERT)
+from scripts.p3_server_overlay import TTS_EGRESS, TTS_EGRESS_PATHS, overlay_tts_egress
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -180,7 +181,8 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(request.content)["text"], "几点了")
 
     async def test_unexpected_kind_or_missing_text_is_fixed_error(self):
-        for body in ({"kind": "open_chat", "tts_text": "x"}, {"kind": "fixed"},
+        for body in ({"kind": "open_chat"}, {"kind": "open_chat", "tts_text": "x" * 321},
+                     {"kind": "chat", "tts_text": "x"}, {"kind": "fixed"},
                      {"kind": "fixed", "tts_text": "x" * 321}, [1]):
             handler, _ = self.signed(body)
             self.assertEqual(await self.speak_with(handler, "你好"), guard.NO_SERVICE)
@@ -197,9 +199,39 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
                                           hashlib.sha256).hexdigest()})
         self.assertEqual(await self.speak_with(replay), guard.NO_SERVICE)
 
-    def command(self, action="PET_FEED", spoken="好呀，选一样好吃的喂团团吧。"):
+    def command(self, action="PET_FEED", spoken="好呀，选一样好吃的喂团团吧。", reason="fixed_command"):
         return self.signed({"kind": "local_command", "tts_text": spoken, "action": action,
-                            "reason": "fixed_command"})[0]
+                            "reason": reason})[0]
+
+    async def test_open_chat_answer_is_spoken(self):
+        # S6: PetLearning already ran the local hard rules; the guard speaks the signed reply.
+        handler, _ = self.signed({"kind": "open_chat", "tts_text": "星星是很远很远的太阳。",
+                                  "action": None, "reason": "open_chat"})
+        self.assertEqual(await self.speak_with(handler, "天上为什么有星星"), "星星是很远很远的太阳。")
+
+    async def test_service_timeout_leaves_room_for_the_model(self):
+        self.assertGreaterEqual(guard.SERVICE_TIMEOUT_S, 8.0)
+        self.assertLessEqual(guard.SERVICE_TIMEOUT_S, 10.0)
+
+    async def test_model_requested_action_speaks_what_the_device_answered(self):
+        """S6/ADR-016: a GLM tool call is the same local_command; the board's answer picks the sentence."""
+        self.conn.mcp_client = FakeMcpClient()
+        handler = self.command("OPEN_GAME", "好呀，我们来玩游戏。", reason="open_chat_tool")
+        for result, expected in (("deferred", "好呀，我们来玩游戏。"), ("quiet", guard.DEVICE_QUIET),
+                                 ("low_battery", guard.DEVICE_LOW_BATTERY), ("parent", guard.DEVICE_NOT_NOW),
+                                 ("busy", guard.DEVICE_NOT_NOW)):
+            self.conn.close_after_chat = False
+            said = await self.speak_with(handler, "我们玩点什么吧", self.device(result))
+            self.assertEqual(said, expected, result)
+        self.assertEqual(self.calls[-1], ("self_pet_request", {"action": "OPEN_GAME"}, guard.DEVICE_TIMEOUT_S))
+
+    async def test_upstream_end_prompt_is_never_forwarded(self):
+        """S6 audit #16: the no-voice timeout's model prompt is not the child speaking."""
+        handler, seen = self.signed({"kind": "fixed", "tts_text": "x", "action": None, "reason": "x"})
+        self.conn.config = {"end_prompt": {"enable": False, "prompt": "请你以“时间过得真快”未来头，结束吧！\n"}}
+        for text in ("请你以“时间过得真快”未来头，结束吧！", guard._UPSTREAM_END_PROMPT):
+            self.assertEqual(await self.speak_with(handler, text), guard.GOODBYE)
+        self.assertEqual(seen, [])
 
     @staticmethod
     def device(result, action=None):
@@ -445,11 +477,100 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
     def test_overlay_installs_all_three_patches(self):
         source = (ROOT / "deploy" / "apply_overlay.py").read_text(encoding="utf-8")
         for needle in ("overlay_mcp_client(", "overlay_mcp_executor(", "mcp_client.py",
-                       "mcp_executor.py"):
+                       "mcp_executor.py", "overlay_tts_egress(", "TTS_EGRESS_PATHS"):
             self.assertIn(needle, source)
         main = (ROOT / "scripts" / "p3_server_overlay.py").read_text(encoding="utf-8")
         self.assertIn("overlay_mcp_client(", main[main.index("def main()"):])
         self.assertIn("overlay_mcp_executor(", main[main.index("def main()"):])
+        self.assertIn("overlay_tts_egress(", main[main.index("def main()"):])
+
+    def test_tts_egress_patches_close_every_upstream_source_in_child_mode(self):
+        """S6 TTS egress audit: each patched upstream function is silent in child mode only."""
+        fixtures = {
+            "receiveAudioHandle.py": (
+                "async def startToChat(conn, text):\n    conn.chatted.append(text)\n\n"
+                'async def max_out_size(conn: "ConnectionHandler"):\n    conn.spoke.append("limit")\n\n'
+                'async def check_bind_device(conn: "ConnectionHandler"):\n    conn.spoke.append("bind")\n\n'
+                "async def no_voice_close_connect(conn, have_voice):\n"
+                "        if True:\n"
+                "            prompt = conn.prompt\n"
+                "            await startToChat(conn, prompt)\n"),
+            "listenMessageHandler.py": (
+                "async def handle(conn, original_text):\n"
+                "                if True:\n"
+                '                    call_text = original_text[len("[device_call]"):].strip()\n'
+                "                    conn.spoke.append(call_text)\n"),
+            "connection.py": (
+                "class ConnectionHandler:\n"
+                "    def chat(self, query, depth=0):\n"
+                "        self.spoke.append(query)\n"
+                "        return True\n"),
+        }
+        self.assertEqual(set(fixtures), set(TTS_EGRESS))
+        self.assertEqual(set(TTS_EGRESS_PATHS), set(TTS_EGRESS))
+
+        class Conn:
+            def __init__(self):
+                self.spoke, self.chatted, self.closed, self.prompt = [], [], 0, "说再见吧"
+
+            async def close(self):
+                self.closed += 1
+
+        async def drive(scope, conn):
+            await scope["max_out_size"](conn)
+            await scope["check_bind_device"](conn)
+            await scope["no_voice_close_connect"](conn, False)
+        patched = {name: overlay_tts_egress(name, text) for name, text in fixtures.items()}
+        for name, text in patched.items():
+            for _anchor, insert, _where in TTS_EGRESS[name]:
+                self.assertIn(insert, text)
+            self.assertEqual(text.count("KID_PET_CHILD_MODE"), len(TTS_EGRESS[name]))
+            with self.assertRaisesRegex(ValueError, "already installed"):
+                overlay_tts_egress(name, text)
+            with self.assertRaisesRegex(ValueError, "anchor changed"):
+                overlay_tts_egress(name, fixtures[name].replace(TTS_EGRESS[name][0][0], "# moved\n"))
+        for mode, silent in (("1", True), ("", False), ("0", False)):
+            with patch.dict(os.environ, {"KID_PET_CHILD_MODE": mode}):
+                scope, conn = {}, Conn()
+                exec(compile(patched["receiveAudioHandle.py"], "r.py", "exec"), scope)
+                asyncio.run(drive(scope, conn))
+                self.assertEqual((conn.spoke, conn.chatted, conn.closed),
+                                 ([], [], 1) if silent else (["limit", "bind"], ["说再见吧"], 0), mode)
+                scope, conn = {}, Conn()
+                exec(compile(patched["listenMessageHandler.py"], "l.py", "exec"), scope)
+                asyncio.run(scope["handle"](conn, "[device_call]任何文字"))
+                self.assertEqual(conn.spoke, [] if silent else ["任何文字"], mode)
+                scope = {}
+                exec(compile(patched["connection.py"], "c.py", "exec"), scope)
+                handler = scope["ConnectionHandler"]()
+                handler.spoke = []
+                self.assertEqual(handler.chat("x"), None if silent else True)
+                self.assertEqual(handler.spoke, [] if silent else ["x"], mode)
+
+    @unittest.skipUnless(os.environ.get("XZ_UPSTREAM_SRC"), "set XZ_UPSTREAM_SRC to a pinned upstream checkout")
+    def test_tts_egress_patches_apply_to_the_pinned_upstream(self):
+        source = Path(os.environ["XZ_UPSTREAM_SRC"])
+        for name, parts in TTS_EGRESS_PATHS.items():
+            overlay_tts_egress(name, source.joinpath(*parts).read_text(encoding="utf-8"))
+
+    def test_child_config_closes_the_config_driven_tts_sources(self):
+        import yaml
+        from services.pet_learning.xz_checklist import CHILD_ERROR_RESPONSE, check_xiaozhi_config
+        config = yaml.safe_load((ROOT / "deploy" / "xiaozhi" / "child.config.yaml").read_text(encoding="utf-8"))
+        self.assertIs(config["enable_greeting"], False)
+        self.assertIs(config["end_prompt"]["enable"], False)
+        self.assertIs(config["enable_stop_tts_notify"], False)
+        self.assertEqual(config["system_error_response"], CHILD_ERROR_RESPONSE)
+        self.assertEqual(guard.NO_SERVICE, CHILD_ERROR_RESPONSE)
+        for key, value in (("enable_greeting", True), ("end_prompt", {"enable": True}),
+                           ("enable_stop_tts_notify", True), ("system_error_response", "主人，小智现在有点忙")):
+            problems = check_xiaozhi_config({**config, key: value})
+            self.assertTrue(any(key in p for p in problems), (key, problems))
+
+    def test_s6_audit_document_lists_every_source(self):
+        doc = (ROOT / "docs" / "SERVER_S6.md").read_text(encoding="utf-8")
+        for needle in ("#1 ", "#15", "#16", "#18", "#19", "#20", "8f2dda09"):
+            self.assertIn(needle, doc)
 
     def test_tool_name_matches_upstream_sanitising(self):
         # core.utils.util.sanitize_tool_name at the pinned commit.

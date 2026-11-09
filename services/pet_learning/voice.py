@@ -1,7 +1,8 @@
 """Voice turn pipeline (V5_V6_SERVER_PLAN §6.1-§6.3).
 
-Order: text checks -> quiet hours -> fixed commands -> page Q&A -> fixed
-fallback. No step calls an LLM and every failure lands on a fixed sentence.
+Order: text checks -> quiet hours -> fixed commands -> page Q&A -> open chat
+(S6, only when every gate is open, see open_chat.py) -> fixed fallback. Every
+failure lands on a fixed sentence.
 Raw ASR text lives only in this call's locals: it is never stored or logged.
 """
 from __future__ import annotations
@@ -121,11 +122,12 @@ class DeviceStateBattery:
 
 class VoiceTurns:
     def __init__(self, store, filename, settings, *, clock: Callable[[], float] = time.time,
-                 pages=None, battery=None, contexts: ContextCache | None = None):
+                 pages=None, battery=None, contexts: ContextCache | None = None, open_chat=None):
         self.store, self.filename, self.settings, self.clock = store, filename, settings, clock
         self.pages = pages or LegacyPageSource(store)
         self.battery = battery or DeviceStateBattery(filename)
         self.contexts = contexts or ContextCache()
+        self.open_chat = open_chat
 
     def authorized(self, token: str | None) -> bool:
         expected = self.settings.voice_token
@@ -186,7 +188,19 @@ class VoiceTurns:
             return self._battery(device_id)
         if is_page_question(text):
             return self._page_answer(device_id)
+        if self.open_chat is not None:
+            answer = self.open_chat.answer(device_id, text, lambda: self._current_page(device_id),
+                                           lambda: self._joke(body))
+            if answer is not None:
+                return answer
         return reply("fallback", FALLBACK, "no_match")
+
+    def _current_page(self, device_id: str) -> str | None:
+        """The approved text of the page the child is looking at, if any (§6.3)."""
+        context = self.contexts.get(device_id)
+        if context is None or context.scene != "READER":
+            return None
+        return self.pages.page_text(context)
 
     @staticmethod
     def _parse(body: bytes) -> str | None:

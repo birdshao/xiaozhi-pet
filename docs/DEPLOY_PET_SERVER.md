@@ -40,6 +40,7 @@ CT 内 ufw：默认拒绝入站；只允许 `192.168.1.0/24` 访问 22 和 8780�
 - 三个服务：`pet-learning`、`xiaozhi-server`（commit `8f2dda09…`，v0.9.8，叠加儿童守卫）、`gateway`（nginx）。
 - Docker Hub 在这个网络不可达：`/etc/docker/daemon.json` 配了 `docker.m.daocloud.io`、`docker.1ms.run` 两个镜像加速器；PyPI 用阿里云镜像，GitHub 可直连。
 - 提供商（协调会话决定，零成本、儿童录音不出本机）：ASR `SherpaParaformerASR`（本地，`sherpa-onnx-paraformer-zh-small-2024-03-09`，约 74 MB 下载 / 80 MB 解压，`deploy/fetch_models.sh` 校验 SHA-256）；TTS `EdgeTTS`（只把回复文本发给微软）；LLM `ChatGLMLLM`，**未配 key**，S6 之前守卫接管每一句话，用不上。
+- **S6 开放问答（ADR-015）**：GLM 由 pet-learning 直接调用（`https://open.bigmodel.cn`，地址写死在代码里），不经过小智的 `ChatGLMLLM`；小智的 `chat()` 在儿童模式下被 overlay 关掉了。用户要在 `deploy/providers.env` 里加 `KID_PET_GLM_API_KEY=<key>`，可选再加 `KID_PET_GLM_MODEL=glm-4.7-flash`（这是默认值）。compose 现在让 pet-learning 也读 `providers.env`。没有密钥时，面板上的开放问答开关置灰。详见 [SERVER_S6.md](SERVER_S6.md) §5。pet-learning 容器要能出网访问 `open.bigmodel.cn:443`。
 - 实测内存与冒烟结果见下方「验证」。
 
 ## 4. 验证

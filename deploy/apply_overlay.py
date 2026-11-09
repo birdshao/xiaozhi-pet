@@ -8,7 +8,8 @@ Dockerfile before this runs (see docs/DEPLOY_PET_SERVER.md, "pin mismatch").
 import argparse
 from pathlib import Path
 
-from p3_server_overlay import overlay, overlay_mcp_client, overlay_mcp_executor
+from p3_server_overlay import (TTS_EGRESS_PATHS, overlay, overlay_mcp_client, overlay_mcp_executor,
+                               overlay_tts_egress)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--source", type=Path, required=True)
@@ -27,8 +28,13 @@ compile(module, str(plugin), "exec")
 patched_handler = overlay(handler.read_text(encoding="utf-8"))
 patched_client = overlay_mcp_client(client.read_text(encoding="utf-8"))
 patched_executor = overlay_mcp_executor(executor.read_text(encoding="utf-8"))
+# S6 TTS egress audit: child mode closes every upstream TTS source outside the guard.
+egress = {args.source.joinpath(*parts): overlay_tts_egress(name, args.source.joinpath(*parts).read_text(encoding="utf-8"))
+          for name, parts in TTS_EGRESS_PATHS.items()}
 handler.write_text(patched_handler, encoding="utf-8")
 client.write_text(patched_client, encoding="utf-8")
 executor.write_text(patched_executor, encoding="utf-8")
+for path, text in egress.items():
+    path.write_text(text, encoding="utf-8")
 plugin.write_text(module, encoding="utf-8")
 print("CHILD_GUARD_INSTALLED")

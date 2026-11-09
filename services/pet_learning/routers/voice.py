@@ -3,6 +3,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import Field
 
 from ..models import EventBatch, QuizAnswer, StrictModel, VoiceQuery
@@ -71,7 +72,9 @@ def create_router(store, quiz, reader):
                        ("x-forwarded-for", "forwarded", "x-real-ip"))):
             raise HTTPException(status_code=403, detail="VOICE_INTERNAL_ONLY")
         body = await request.body()
-        content = json.dumps(turns.turn(device_id, body), ensure_ascii=False,
+        # Off the event loop: an open-chat turn waits up to 6 s for the model.
+        result = await run_in_threadpool(turns.turn, device_id, body)
+        content = json.dumps(result, ensure_ascii=False,
                              separators=(",", ":")).encode("utf-8")
         # The guard verifies this before speaking: a rogue host cannot make the pet talk.
         return Response(content, media_type="application/json", headers={

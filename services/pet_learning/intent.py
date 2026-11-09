@@ -105,6 +105,11 @@ def normalize_speech(text: str) -> str:
 NEUTRAL = "好的，我们来准备一下。"
 
 
+# The reviewed confirmation for each action (its first row below): open chat speaks this,
+# never model text, when the model asks the device for an action (ADR-016).
+ACTION_REPLIES: dict[str, str] = {}
+
+
 def _commands() -> dict[str, FixedMatch]:
     rows = {
         ("SLEEP_REQUEST", "好的，我们准备睡觉啦。"): ("团团睡觉", "团团睡觉吧", "我们睡觉吧", "我们睡觉了"),
@@ -125,6 +130,7 @@ def _commands() -> dict[str, FixedMatch]:
     table = {}
     for (action, reply), phrases in rows.items():
         assert action in ACTIONS
+        ACTION_REPLIES.setdefault(action, reply)
         for phrase in phrases:
             table[normalize_speech(phrase)] = FixedMatch("local_command", "fixed_command", action, reply)
     for phrase in ("几点了", "现在几点", "现在几点了", "现在几点钟", "几点钟了"):

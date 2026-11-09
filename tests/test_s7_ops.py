@@ -31,6 +31,10 @@ GOOD_XZ = {
                "websocket": "wss://pet.family-home.net:8443/xiaozhi/v1/", "mqtt_gateway": None},
     "delete_audio": True,
     "selected_module": {"Memory": "nomem", "Intent": "nointent"},
+    # S6 TTS egress audit: config-driven upstream speech is off or fixed.
+    "enable_greeting": False, "end_prompt": {"enable": False}, "enable_stop_tts_notify": False,
+    "enable_wakeup_words_response_cache": False,
+    "system_error_response": "现在还不能语音聊天，我们可以先用按键和小宠物玩。",
 }
 
 
@@ -215,7 +219,9 @@ class ConfigCheckTests(unittest.TestCase):
                ("server", {**GOOD_XZ["server"], "auth": {"enabled": True, "allowed_devices": ["x"]}}),
                ("server", {**GOOD_XZ["server"], "websocket": "ws://pet.example/x"}),
                ("selected_module", {"Memory": "mem0ai", "Intent": "nointent"}),
-               ("delete_audio", False), ("read_config_from_api", True)]
+               ("delete_audio", False), ("read_config_from_api", True),
+               ("enable_greeting", True), ("end_prompt", {"enable": True}), ("end_prompt", "x"), ("system_error_response", "主人"),
+               ("enable_wakeup_words_response_cache", True)]
         for key, value in bad:
             self.assertTrue(ops.check_xiaozhi_config({**GOOD_XZ, key: value}), key)
         self.assertTrue(ops.check_xiaozhi_config(GOOD_XZ, "https://other.example"))
