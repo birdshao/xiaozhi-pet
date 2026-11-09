@@ -423,6 +423,23 @@ void TestMenuStartOn() {
     assert(out.finished && !m.Active());
 }
 
+void TestMenuHome() {
+    // Voice GO_HOME: home from either level at once (a long press only goes up).
+    GameMenu m;
+    m.SetRecommendation(kPick);
+    assert(!m.Home().finished);  // dead menu: nothing
+    m.Start(0, 1);
+    m.Input(GameInput::Press, 10);
+    assert(m.Level() == MenuLevel::Games);
+    auto out = m.Home();
+    assert(out.finished && !out.redraw && !m.Active() && m.End() == GameEnd::Home);
+    m.Start(0);
+    out = m.Home();
+    assert(out.finished && m.End() == GameEnd::Home);
+    m.Start(0, 0, ActivityGroup::Care);
+    assert(m.Home().finished && !m.Active());
+}
+
 void TestMenuCareStaysFlat() {
     // The care menu is still one flat list of cards.
     GameMenu m;
@@ -442,6 +459,7 @@ void TestMenu() {
     TestMenuTopLevel();
     TestMenuGamesLevel();
     TestMenuStartOn();
+    TestMenuHome();
     TestMenuCareStaysFlat();
 }
 
@@ -630,6 +648,36 @@ void TestScenes() {
     assert(gate.Request(b));   // the ball moved: drawn
 }
 
+// Going between the pages and a page's games is a rail-only change: the
+// planner keeps it a partial refresh, the gate draws each new view once.
+void TestMenuLevelRefresh() {
+    GameMenu m;
+    m.SetRecommendation(kPick);
+    m.Start(0, 1);
+    const SceneModel top = GameScene(m.View());
+    m.Input(GameInput::Press, 10);
+    const SceneModel page = GameScene(m.View());
+    assert(top.game != page.game && top.game.RailDiffers(page.game));
+    assert(!top.game.QuestionDiffers(page.game));
+    RefreshPlanner planner;
+    assert(planner.Plan(top) == RefreshMode::Full);  // first frame of the game scene
+    planner.Completed(top, RefreshMode::Full, true);
+    assert(planner.Plan(page) == RefreshMode::Partial);
+    planner.Completed(page, RefreshMode::Partial, true);
+    assert(planner.Plan(top) == RefreshMode::Partial);  // and back up
+    planner.Completed(top, RefreshMode::Partial, true);
+    assert(planner.RailPartials() == 2 && planner.PetPartials() == 0);
+    PetRefreshGate gate(0);
+    SceneModel got{};
+    assert(gate.Request(top) && gate.Acquire(0, &got));
+    gate.Complete(true, 0);
+    assert(gate.Request(page));    // into the page: drawn
+    assert(gate.Acquire(0, &got));
+    gate.Complete(true, 0);
+    assert(!gate.Request(page));   // same view: skipped
+    assert(gate.Request(top));     // back up: drawn
+}
+
 // The category cards draw: distinct pictures, ink only inside the card rail.
 void TestMenuArtScene() {
     std::set<std::string> drawn;
@@ -683,6 +731,7 @@ int main() {
     TestEmptyGroup();
     TestCategories();
     TestMenuArtScene();
+    TestMenuLevelRefresh();
     TestScenes();
     // The holes for the hardware script (tools/selftest/v4_motion_games.pettest).
     MotionGameSession s = Started(MotionKind::Ball, 4242);

@@ -161,6 +161,9 @@ public:
     // Play row: does not open (finished).
     GameMenuOutput StartOn(uint32_t now_ms, GameChoice game);
     GameMenuOutput Input(GameInput input, uint32_t now_ms);
+    // Straight to the home screen from either level (the voice command
+    // GO_HOME; a long press only goes up one level). Dead menu: nothing.
+    GameMenuOutput Home();
     GameMenuOutput Tick(uint32_t now_ms);
     void Interrupt();
 

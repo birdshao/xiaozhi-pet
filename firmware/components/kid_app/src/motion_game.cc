@@ -406,6 +406,15 @@ GameMenuOutput GameMenu::Input(GameInput input, uint32_t now_ms) {
     return out;
 }
 
+GameMenuOutput GameMenu::Home() {
+    GameMenuOutput out{};
+    if (!active_) return out;
+    active_ = false;
+    end_ = GameEnd::Home;
+    out.finished = true;
+    return out;
+}
+
 GameMenuOutput GameMenu::Tick(uint32_t now_ms) {
     GameMenuOutput out{};
     if (active_ &&

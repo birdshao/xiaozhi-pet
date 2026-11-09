@@ -1268,7 +1268,10 @@ BOARD_WORKER = r'''
                 break;
             case kid_app::VoiceAction::GoHome:  // the dial's long press
                 if (context.scene == kid_app::VoiceScene::Game) {
-                    HandleGameInput(kid_app::InputKind::DialLong);
+                    if (game_mode_ == GameMode::Menu)  // V9: home, not one level up
+                        HandleMenuOutput(game_menu_.Home());
+                    else
+                        HandleGameInput(kid_app::InputKind::DialLong);
                 } else if (book_.Active()) {
                     ApplyBookStep(book_.OnInput(kid_app::InputKind::DialLong, NowMs()), "voice");
                 } else if (!pet_service_.PostLocal(kid_app::PetAction::StopStory)) {
@@ -3357,33 +3360,44 @@ BOARD_WORKER = r'''
         const int phase = day_phase_.load();
         in.evening = phase == static_cast<int>(kid_app::DayPhase::Evening) ||
                      phase == static_cast<int>(kid_app::DayPhase::Night);
-        const auto look = kid_app::UnpackLook(home_look_.load());
-        in.bored = look.need == static_cast<uint8_t>(kid_app::Need::Bored) ? look.need_level : 0;
+        // Raw need level (not the home face's top need: hungry or sleepy can
+        // outrank bored there and would hide it). Clock unknown: no need.
+        const uint32_t minute = local_minute_.load();
+        in.bored = minute == 0 ? 0
+                               : pet_service_.CareNow().Needs(minute, phase >= 0
+                                     ? static_cast<kid_app::DayPhase>(phase)
+                                     : kid_app::DayPhase::Day).bored;
         in.last_game = kid_app::GameChoiceOfMemoryId(pet_service_.MemoryNow().Today().last_game);
         in.motion_ok = motion_enabled_.load();
         game_menu_.SetRecommendation(kid_app::RecommendToday(in));
+    }
+
+    // Shows a freshly started play menu (a start result of game_menu_): the
+    // game frame, the menu scene. False when nothing opened (not a play row):
+    // the board has left the game frame again, never stuck in it.
+    bool ShowGameMenu(const kid_app::GameMenuOutput& out) {
+        if (out.finished) {
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return false;
+        }
+        SceneStateLock lock(scene_state_mutex_);
+        game_active_.store(true);
+        game_mode_ = GameMode::Menu;
+        pet_mailbox_.game_only.store(true);
+        {
+            SceneStateLock anim_lock(anim_mutex_);
+            anim_director_.Reset(NowMs());
+        }
+        PublishGameSceneLocked();
+        return true;
     }
 
     // Opens the play menu's first level (the pages); `start` is the top card.
     void OpenGameMenu(uint8_t start) {
         RefreshGamePick();
         const auto out = game_menu_.Start(NowMs(), start);
-        if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
-            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
-            EndGame("menu_empty");
-            return;
-        }
-        {
-            SceneStateLock lock(scene_state_mutex_);
-            game_active_.store(true);
-            game_mode_ = GameMode::Menu;
-            pet_mailbox_.game_only.store(true);
-            {
-                SceneStateLock anim_lock(anim_mutex_);
-                anim_director_.Reset(NowMs());
-            }
-            PublishGameSceneLocked();
-        }
+        if (!ShowGameMenu(out)) return;
         ESP_LOGI(TAG, "PET_GAME_MENU highlight=%u", static_cast<unsigned>(start));
         PostGameClip(out.clip);
     }
@@ -3393,22 +3407,7 @@ BOARD_WORKER = r'''
     void OpenGameMenuOn(kid_app::GameChoice game) {
         RefreshGamePick();
         const auto out = game_menu_.StartOn(NowMs(), game);
-        if (out.finished) {  // not a play row: leave the game frame, never stick in it
-            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
-            EndGame("menu_empty");
-            return;
-        }
-        {
-            SceneStateLock lock(scene_state_mutex_);
-            game_active_.store(true);
-            game_mode_ = GameMode::Menu;
-            pet_mailbox_.game_only.store(true);
-            {
-                SceneStateLock anim_lock(anim_mutex_);
-                anim_director_.Reset(NowMs());
-            }
-            PublishGameSceneLocked();
-        }
+        if (!ShowGameMenu(out)) return;
         ESP_LOGI(TAG, "PET_GAME_MENU reopen=%s", kid_app::GameChoiceName(game));
         PostGameClip(out.clip);
     }

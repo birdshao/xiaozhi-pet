@@ -18,6 +18,8 @@ namespace kid_app {
 // Rules for other sessions:
 //  - Ids are stable: append a GameChoice value, never renumber or reuse.
 //  - Append the row at the end of its group: the order is the card order.
+//  - A Play row names its menu page (`category`, V9 1A); a Care row has none.
+//    A new Play row goes to the page where a child would look for it.
 //  - `art` is a picture SceneComposer already draws (GameArt / MicArt /
 //    CareArt ids); a new picture is appended to its own enum first.
 //  - `needs` lets the board refuse a card the parents switched off
@@ -123,7 +125,8 @@ constexpr Activity kActivities[] = {
      ActivityNeeds::None, "mama_baby", ActivityCategory::Brain},
     {GameChoice::Classify, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Apple),
      ActivityNeeds::None, "classify", ActivityCategory::Brain},
-    {GameChoice::Tree, ActivityGroup::Play, PlayTreeArt(3), ActivityNeeds::Motion, "shake_tree", ActivityCategory::Move},
+    {GameChoice::Tree, ActivityGroup::Play, PlayTreeArt(3), ActivityNeeds::Motion,
+     "shake_tree", ActivityCategory::Move},
     {GameChoice::Shadow, ActivityGroup::Play, PlayShadowArt(static_cast<uint16_t>(GameArt::Star)),
      ActivityNeeds::None, "shadow", ActivityCategory::Brain},
     {GameChoice::Statue, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Statue),
@@ -134,7 +137,8 @@ constexpr Activity kActivities[] = {
      "left_right", ActivityCategory::Brain},
     {GameChoice::SpotDiff, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Pos2),
      ActivityNeeds::None, "spot_diff", ActivityCategory::Brain},
-    {GameChoice::Dice, ActivityGroup::Play, PlayDiceArt(5), ActivityNeeds::Motion, "shake_dice", ActivityCategory::Move},
+    {GameChoice::Dice, ActivityGroup::Play, PlayDiceArt(5), ActivityNeeds::Motion,
+     "shake_dice", ActivityCategory::Move},
     {GameChoice::Memory6, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Dots6),
      ActivityNeeds::None, "memory6", ActivityCategory::Brain},
     {GameChoice::SizeOrder, ActivityGroup::Play, PlaySizedArt(0, 2), ActivityNeeds::None,
@@ -143,7 +147,8 @@ constexpr Activity kActivities[] = {
      "pattern", ActivityCategory::Brain},
     {GameChoice::Maze, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Carrot),
      ActivityNeeds::Motion, "maze", ActivityCategory::Move},
-    {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None, "clock", ActivityCategory::Brain},
+    {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None,
+     "clock", ActivityCategory::Brain},
     {GameChoice::Stickers, ActivityGroup::Play, static_cast<uint16_t>(CareArt::Sticker),
      ActivityNeeds::None, "stickers", ActivityCategory::Album},
     // V8 sound (session 3): the parrot and the song player.
@@ -238,6 +243,7 @@ constexpr bool ActivityTableValid() {
     }
     return ActivityCount(ActivityGroup::Play) >= 3 && ActivityCount(ActivityGroup::Care) >= 3;
 }
-static_assert(ActivityTableValid(), "activity table: unique ids, known art, categories, >= 3 cards a menu");
+static_assert(ActivityTableValid(),
+              "activity table: unique ids, known art, categories, >= 3 cards a menu");
 
 }  // namespace kid_app

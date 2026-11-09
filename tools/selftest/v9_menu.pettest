@@ -7,16 +7,17 @@ PETSELFTEST1
 # the date, so nothing is started from it. Counted from "mark begin".
 # Needs: outside the quiet hours (phase day), battery above the low level.
 # expect min:PET_GAME_MENU 3
-# 4 level changes: into today, back, into brain, back.
-# expect min:PET_GAME_MENU_LEVEL 4
+# 5 level changes: into today, back, into brain, back, into brain again.
+# expect min:PET_GAME_MENU_LEVEL 5
 # expect min:level=games 2
 # expect min:level=top 2
 # expect min:page=today 1
 # expect min:page=brain 1
 # expect min:game=stickers 1
 # expect min:kind=album 2
-# expect min:end=home 1
-# expect min:name=OPEN_GAME 1
+# expect min:end=home 3
+# expect min:name=OPEN_GAME 2
+# expect min:name=GO_HOME 1
 # expect none:PET_GAME_REFUSED 0
 # expect none:PET_CARE_RECORD 0
 # expect none:PET_SLEEP_REQUESTED 0
@@ -52,6 +53,13 @@ hold press 1500 8000
 vcmd OPEN_GAME
 wait 6000
 hold press 1500 8000
+# Voice GO_HOME from the second level goes home at once, not up one level.
+vcmd OPEN_GAME
+wait 6000
+tap down 600
+tap press 3000
+vcmd GO_HOME
+wait 6000
 # Album: the fifth card, a leaf. Press opens it, press again is home.
 tap press 6000
 tap down 600

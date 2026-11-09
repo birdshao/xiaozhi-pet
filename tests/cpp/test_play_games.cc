@@ -805,7 +805,8 @@ void TestMenu() {
     // The id range: 13..30, none of the older games' or the care rows' ids.
     assert(*choices.begin() == 13 && *choices.rbegin() == 30 && choices.size() == 18);
     assert(PlayGameOf(GameChoice::Ball) == PlayGame::None && !GameChoiceIsPlay(GameChoice::Feed));
-    // The care pictures (CareArt 201..223) and the play pictures never overlap.
+    // The menu page pictures (MenuArt 201..204, 201..223 kept clear) and the play
+    // pictures never overlap.
     for (uint16_t id = 201; id <= 223; ++id) assert(!PlayArtValid(id));
     // V9: walk every category page of the play menu: every card is a valid
     // picture and every game is reachable, in table order.

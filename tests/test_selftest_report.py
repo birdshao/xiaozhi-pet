@@ -343,7 +343,8 @@ class SelfTestReportTests(unittest.TestCase):
         # reach a sleep flow (tap pwr / SLEEP_REQUEST), and the ones whose
         # behaviour follows the time of day say which phase they mean.
         for name in ("v8_care_cards.pettest", "v8_album.pettest", "v8_play_games.pettest",
-                     "v8_sound_routines.pettest", "v4_book_reader.pettest"):
+                     "v8_sound_routines.pettest", "v4_book_reader.pettest",
+                     "v9_menu.pettest"):
             text, steps = self._steps(name)
             self.assertIn(["phase", "day"], steps, name)
             self.assertLess(steps.index(["phase", "day"]), steps.index(["pet"]), name)
@@ -361,7 +362,7 @@ class SelfTestReportTests(unittest.TestCase):
         # 2026-11-07 22:22 run, 241,242,242 and 5 commits), so they never
         # depend on the wall clock.
         for name in ("v2_home_rail", "v5_phrases", "v3_animations", "v7_ledger_persist",
-                     "v4_mini_game", "v4_motion_games", "v4_mic_games"):
+                     "v4_mini_game", "v4_motion_games", "v4_mic_games", "v9_menu"):
             _, steps = self._steps(name + ".pettest")
             self.assertIn(["phase", "day"], steps, name)
             self.assertLess(steps.index(["phase", "day"]), steps.index(["pet"]), name)

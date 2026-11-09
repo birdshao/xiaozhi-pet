@@ -143,9 +143,18 @@ void TestAgeBand() {
             }
         }
     }
+    // "All" does not filter: games suggested from age 4 or 5 do show up.
     in.evening = false;
     in.age = AgeBand::All;
-    assert(RecommendToday(in) == RecommendToday(RecommendInput{in}));
+    bool later_age_seen = false;
+    for (uint32_t d = 0; d < 60; ++d) {
+        in.day = 20400 + d;
+        for (GameChoice c : RecommendToday(in)) {
+            const PlayGameInfo* info = FindPlayGame(PlayGameOf(c));
+            if (info && info->min_age > 3) later_age_seen = true;
+        }
+    }
+    assert(later_age_seen);
 }
 
 void TestMemoryIdMapping() {

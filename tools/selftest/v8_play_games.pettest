@@ -1,10 +1,10 @@
 PETSELFTEST1
 # V8 new mini games from the play menu: memory4 (Brain page) and the tilt
 # maze (Move page, needs motion on in the parent menu). Each is entered,
-# shown for
-# a moment and left by a long press: this checks the entry wiring, the
-# rules are host-tested. Counted from "mark begin" (tools/selftest_report.py).
-# Games are UI only until a game completes: no completion here.
+# shown for a moment and left by a long press: this checks the entry
+# wiring, the rules are host-tested. Counted from "mark begin"
+# (tools/selftest_report.py). Games are UI only until a game completes:
+# no completion here.
 # expect min:PET_GAME_MENU 2
 # expect min:game=memory4 2
 # expect min:game=maze 2
