@@ -4,7 +4,7 @@ PETSELFTEST1
 # without input (real time, 13 s wait). Needs no recording: take
 # /sounds/default.kps off the card, or this expects PET_GAME_RULE_PACK
 # instead of _TONE (the tone is the fallback). Quiet hours refuse games,
-# so the day phase is pinned. The menu steps follow v8_play_games.
+# so the day phase is pinned. The menu steps follow v8_play_games (1A).
 # Counted from "mark begin" (see tools/selftest_report.py).
 # expect min:PET_GAME_RULE_TONE 2
 # expect none:PET_GAME_RULE_PACK 0
@@ -26,14 +26,12 @@ wait 6000
 tap press 6000
 hold press 1500 6000
 mark begin
-# Rail Story(1) -> Game(2), press: play menu, then memory4 is card 8.
+# Rail Story(1) -> Game(2), press: play menu.
 tap down 2500
 tap press 6000
+# V9 1A: Brain page (card 1), memory4 is its 4th card.
 tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
+tap press 3000
 tap down 600
 tap down 600
 tap down 600
