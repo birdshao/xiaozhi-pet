@@ -179,9 +179,12 @@ _XZ_PATTERNS = [
     ("tts_first", re.compile(r"发送第一段语音[:：]\s*(.*)$")),
     ("tts_ok", re.compile(r"语音生成成功[:：]\s*(.*?)(?:，重试\d+次)?$")),
     ("tts_end", re.compile(r"发送音频消息: SentenceType\.LAST")),
-    ("closed", re.compile(r"客户端断开连接")),
+    ("closed", re.compile(r"客户端断开连接|结束对话")),
 ]
 _PL_TURN = re.compile(r"voice_turn kind=(\w+) reason=(\w+) ms=(\d+)")
+_PL_ACCESS = re.compile(r'"POST /v1/voice/[\w-]+/turn HTTP/[\d.]+" (\d{3})')
+# The guard's fixed sentences, to infer the kind when PetLearning logs only the access line.
+FALLBACK_TTS = "我们可以看看绘本"
 
 
 def parse_xiaozhi_line(t: float, msg: str):
@@ -194,16 +197,20 @@ def parse_xiaozhi_line(t: float, msg: str):
 
 
 def parse_learning_line(t: float, msg: str):
-    m = _PL_TURN.search(_ANSI.sub("", msg))
+    msg = _ANSI.sub("", msg)
+    m = _PL_TURN.search(msg)
     if m:
         return {"t": t, "ev": "turn", "kind": m[1], "reason": m[2], "ms": int(m[3])}
+    m = _PL_ACCESS.search(msg)
+    if m:  # only the access line: the turn happened, its kind is not logged
+        return {"t": t, "ev": "turn", "kind": "", "reason": "", "ms": None, "status": int(m[1])}
     return None
 
 
 _SERIAL_PATTERNS = [
     ("stt", re.compile(r">>\s*(.+)$")),                       # xiaozhi Application: STT text
     ("tts_sentence", re.compile(r"<<\s*(.+)$")),              # xiaozhi Application: TTS sentence
-    ("state", re.compile(r"(?i)\bSTATE:\s*(\w+)")),
+    ("state", re.compile(r"StateMachine: State: \w+ -> (\w+)|(?i:\bSTATE:\s*(\w+))")),
     ("wake", re.compile(r"(?i)wake ?word detected|WakeWord detected|Wake word:\s*(\S+)")),
     ("voice_cmd", re.compile(r"PET_VOICE_CMD name=(\S+) result=(\S+)(?: action=(\S+))?")),
     ("power", re.compile(r"PET_POWER state=(\w+)")),
@@ -216,7 +223,7 @@ def parse_serial_line(t: float, line: str):
     for name, pat in _SERIAL_PATTERNS:
         m = pat.search(line)
         if m:
-            ev = {"t": t, "ev": name, "text": (m.group(1) or "").strip() if m.groups() else ""}
+            ev = {"t": t, "ev": name, "text": next((g for g in m.groups() if g), "").strip()}
             if name == "voice_cmd":
                 ev.update(name_=m[1], result=m[2], action=m[3] or "")
             return ev
@@ -253,6 +260,7 @@ class Observation:
     t_tts_device: float | None = None     # device speaking-state / '<<' time, PC clock
     device_cmds: list = dataclasses.field(default_factory=list)  # (name, result, action)
     woke: bool | None = None
+    turn_seen: bool = False               # PetLearning got a /v1/voice turn (kind may be unlogged)
 
 
 def build_observation(speech_start: float, speech_end: float, window_end: float,
@@ -268,7 +276,8 @@ def build_observation(speech_start: float, speech_end: float, window_end: float,
         elif ev["ev"] == "tts_first" and obs.t_tts_server is None and ev["t"] >= speech_end - 0.5:
             obs.t_tts_server, obs.tts_text = ev["t"], ev["text"]
     for ev in pl:
-        if ev["ev"] == "turn" and speech_start <= ev["t"] <= window_end and not obs.kind:
+        if ev["ev"] == "turn" and speech_start <= ev["t"] <= window_end and not obs.turn_seen:
+            obs.turn_seen = True
             obs.kind, obs.reason, obs.turn_ms = ev["kind"], ev["reason"], ev["ms"]
     for ev in ser:
         if not speech_start <= ev["t"] <= window_end:
@@ -364,8 +373,10 @@ def judge(case: Case, obs: Observation, quiet: bool | None = None) -> dict:
             issues.append(("asr", f"识别错：期望“{want_asr}”，识别为“{asr}”（相似度 {sim:.2f}）"))
         if case.kind and obs.kind and obs.kind != case.kind:
             issues.append(("action", f"kind 不符：期望 {case.kind}，实际 {obs.kind}/{obs.reason}"))
-        elif case.kind and not obs.kind:
-            issues.append(("none", f"没有 kind（PetLearning 没收到这轮，期望 {case.kind}）"))
+        elif case.kind and not obs.kind and not obs.turn_seen:
+            issues.append(("none", f"PetLearning 没收到这轮（期望 {case.kind}）"))
+        elif case.kind and not obs.kind and FALLBACK_TTS in obs.tts_text and case.kind != "fallback":
+            issues.append(("action", f"播的是兜底句，期望 {case.kind}（kind 日志缺失，按播报推断）"))
         if case.reason and obs.reason and obs.reason != case.reason:
             issues.append(("action", f"reason 不符：期望 {case.reason}，实际 {obs.reason}"))
         if case.action:
@@ -841,15 +852,23 @@ def cmd_run(args) -> int:
                 results.append({"id": c.id, "say": c.say, "status": "skipped", "skip_reason": why})
             continue
         t_begin = time.time()
+        wake_attempts = 0
         # An open xiaozhi session keeps listening (auto mode): a wake word played then is just speech.
         needs_wake = not session_open(
             _events_from(remote.logs("xiaozhi", t_begin - 200), parse_xiaozhi_line, offset) if remote else [],
             t_begin)
         if needs_wake:
-            t_w = time.time()
-            play_wav(wake_wav)
-            if remote:  # the board answers the wake word; let that reply finish before speaking
-                wait_for_event(remote, offset, "tts_end", t_w, args.wake_settle + 12)
+            woke_at = None
+            for attempt in range(1, args.wake_retries + 1):
+                t_w = time.time()
+                play_wav(wake_wav)
+                if not remote or wait_for_event(remote, offset, "wake", t_w, 7):
+                    woke_at = t_w
+                    break
+                print(f"  wake attempt {attempt} not detected", flush=True)
+            wake_attempts = attempt
+            if woke_at is not None and remote:  # the board answers the wake word; let that finish first
+                wait_for_event(remote, offset, "tts_end", woke_at, args.wake_settle + 12)
             time.sleep(1.5)
         t_say = time.time()
         play_wav(wavs[c.id])
@@ -871,7 +890,7 @@ def cmd_run(args) -> int:
         res = {"id": c.id, "say": c.say, "group": c.group, "status": "ran", "woke": needs_wake,
                "asr": verdict["asr"], "kind": obs.kind, "reason": obs.reason, "tts_text": obs.tts_text,
                "device_cmds": obs.device_cmds, "latency_s": latency(obs), "turn_ms": obs.turn_ms,
-               "stages": stages(obs), "power": last_power(ser_events, t_begin),
+               "wake_attempts": wake_attempts if needs_wake else 0, "stages": stages(obs), "power": last_power(ser_events, t_begin),
                "passed": verdict["passed"], "issues": verdict["issues"]}
         results.append(res)
         print(f"[{'PASS' if res['passed'] else 'FAIL'}] {c.id}: asr={res['asr']!r} kind={obs.kind or '?'} "
@@ -930,6 +949,7 @@ def main(argv=None) -> int:
     p.add_argument("--business-id", help="PetLearning device id: read its quiet flag from the server")
     p.add_argument("--repeat", type=int, default=1, help="play every case N times")
     p.add_argument("--include-skipped", action="store_true", help="also play cases marked skip")
+    p.add_argument("--wake-retries", type=int, default=4, help="wake word plays per case before giving up")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("wake", help="wake-word hit rate: play the wake phrase N times, count server 'detect' events")
     p.add_argument("--port")

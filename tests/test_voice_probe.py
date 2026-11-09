@@ -223,3 +223,12 @@ def test_last_power_from_serial():
     ev2 = vp.parse_serial_line(9, "I (1) w: PET_POWER state=active reason=wake")
     assert vp.last_power([ev, ev2], 7) == "nap" and vp.last_power([ev, ev2], 10) == "active"
     assert vp.last_power([], 1) == ""
+
+
+def test_state_machine_line_and_dialog_end_close_the_session():
+    ev = vp.parse_serial_line(1, "I (801647) StateMachine: State: listening -> idle")
+    assert ev["ev"] == "state" and ev["text"] == "idle"
+    assert vp.parse_serial_line(1, "I (1) Application: STATE: speaking")["text"] == "speaking"
+    closed = vp.parse_xiaozhi_line(5.0, "[a]-INFO-结束对话，无需发送结束提示语")
+    assert closed["ev"] == "closed"
+    assert not vp.session_open([{"t": 1, "ev": "tts_end", "text": ""}, closed], 6)
