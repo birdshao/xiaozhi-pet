@@ -137,7 +137,35 @@ def _commands() -> dict[str, FixedMatch]:
         table[normalize_speech(phrase)] = FixedMatch("time", "tell_time")
     for phrase in ("还有多少电", "还剩多少电", "电量还有多少", "团团还有多少电"):
         table[normalize_speech(phrase)] = FixedMatch("battery", "tell_battery")
+    # Explicit alias table: only mis-recognitions confirmed on the real board
+    # (docs/voice baseline 2026-11-09) that cannot be another sentence. No edit
+    # distance, no substring matching. Too short / ambiguous ones ("一页", "半业",
+    # "一年了", "松下") are deliberately absent.
+    for alias, canonical in _ALIASES.items():
+        table[normalize_speech(alias)] = table[normalize_speech(canonical)]
     return table
+
+
+_ALIASES = {
+    "团睡觉": "团团睡觉",
+    "打开书下": "讲故事",
+    # "讲故事" is also the shelf entry: V9 shows the shelf first when the card has 2+ books.
+    "书架": "讲故事",
+    "打开书架": "讲故事",
+    "去书架": "讲故事",
+    "看书架": "讲故事",
+}
+
+_WAKE_NAMES = ("小智", "团团", "小知", "晓智")  # 小知/晓智: ASR mis-hearings seen on the board
+_WAKE_FILLERS = ("团团", "呀", "啊", "哦", "哇", "啦", "嘿", "哎")
+_F = "(?:%s)*" % "|".join(_WAKE_FILLERS)
+_N = "(?:%s)" % "|".join(_WAKE_NAMES)
+_WAKE_RE = re.compile("^%s(?:你好%s%s|%s%s你好)%s$" % (_F, _F, _N, _N, _F, _F))
+
+
+def is_wake_only(text: str) -> bool:
+    """True when the whole utterance is just the wake word (plus fillers)."""
+    return _WAKE_RE.fullmatch(normalize_speech(text)) is not None
 
 
 _FIXED = _commands()

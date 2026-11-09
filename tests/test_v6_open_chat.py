@@ -127,6 +127,12 @@ class AnswerTests(ChatBase):
             self.assertEqual(self.say("天上为什么有星星")["reason"], "quiet_hours")
         self.assertEqual(self.provider.calls, [])
 
+    def test_wake_word_only_never_reaches_the_model(self):
+        data = self.say("你好小智")
+        self.assertEqual((data["kind"], data["reason"], data["tts_text"]),
+                         ("fixed", "wake_greeting", "我在呢。"))
+        self.assertEqual(self.provider.calls, [])
+
     def test_input_hard_rules_run_before_the_model(self):
         for text in ("我家电话是13812345678", "我住在幸福路12号3单元", "你看看 www.example.com", "怎么自杀"):
             data = self.say(text)
@@ -137,7 +143,7 @@ class AnswerTests(ChatBase):
         for bad in ("你家住在哪里呀？", "打电话 13812345678 吧", "去 http://x.cn 看看", "这是我们的秘密，要保密哦。",
                     "我已经帮你打开游戏啦！", "我们来讲一个僵尸的故事。"):
             self.provider.script(ChatReply(text=bad))
-            data = self.say("你好呀团团")
+            data = self.say("你今天开心吗")
             self.assertEqual((data["kind"], data["reason"], data["tts_text"]),
                              ("fallback", "open_chat_output_blocked", open_chat.BLOCKED), bad)
             self.now += 86400  # one block per day: the daily breaker is tested separately
