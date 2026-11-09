@@ -9,7 +9,7 @@
 namespace kid_app {
 namespace {
 constexpr char kTag[] = "kid_song_audio";
-constexpr uint32_t kStackBytes = 6144;
+constexpr uint32_t kStackBytes = 8192;  // the synthesiser does a little floating point
 constexpr size_t kFrameSamples = 480;  // 20 ms at 24 kHz
 }  // namespace
 
@@ -41,6 +41,15 @@ bool FreertosSongWorker::Open(const char* id) {
     Request request{};
     request.cmd = Cmd::Open;
     std::strncpy(request.id, id, sizeof(request.id) - 1);
+    event_.store(0);
+    return Send(request);
+}
+
+bool FreertosSongWorker::OpenBuiltin(uint8_t index) {
+    if (index >= BuiltinMelodyCount()) return false;
+    Request request{};
+    request.cmd = Cmd::Open;
+    request.builtin = static_cast<uint8_t>(index + 1);
     event_.store(0);
     return Send(request);
 }
@@ -80,6 +89,11 @@ void FreertosSongWorker::TaskEntry(void* context) {
     static_cast<FreertosSongWorker*>(context)->Run();
 }
 
+bool FreertosSongWorker::SynthPush(const int16_t* pcm, size_t count, void* context) {
+    auto* self = static_cast<FreertosSongWorker*>(context);
+    return self->hooks_.push(self->synth_token_, pcm, count, self->context_);
+}
+
 void FreertosSongWorker::Run() {
     Request request{};
     Request queued{};
@@ -98,11 +112,18 @@ void FreertosSongWorker::Run() {
         if (request.cmd == Cmd::Close) {
             if (open_) file_.Close();
             open_ = false;
+            builtin_ = 0;
             continue;
         }
         if (request.cmd == Cmd::Open) {
             if (open_) file_.Close();
             open_ = false;
+            builtin_ = 0;
+            if (request.builtin) {  // synthesised: one page, nothing to read
+                builtin_ = request.builtin;
+                Post(Event::Opened, 1);
+                continue;
+            }
             if (file_.OpenBook(book_dir_, request.id) && reader_.Open(file_)) {
                 open_ = true;
                 Post(Event::Opened, reader_.PageCount());
@@ -115,9 +136,18 @@ void FreertosSongWorker::Run() {
         }
         // Cmd::Play
         StoryPageInfo info{};
-        if (!open_ || !request.page || !reader_.Page(request.page, &info) ||
-            info.sample_rate != 24000 || info.channels != 1 || info.bits != 16 ||
-            info.pcm_bytes == 0) {
+        bool playable;
+        if (builtin_) {
+            const BuiltinMelody& tune = BuiltinMelodyAt(builtin_ - 1);
+            // Full level: the board's song volume (fade, quiet hours) scales it.
+            playable = request.page == 1 && streamer_.Start(tune.melody, tune.timbre, 100);
+            info.pcm_bytes = 1;  // streamed frame by frame, the length is not needed here
+        } else {
+            playable = open_ && request.page && reader_.Page(request.page, &info) &&
+                       info.sample_rate == 24000 && info.channels == 1 && info.bits == 16 &&
+                       info.pcm_bytes != 0;
+        }
+        if (!playable || info.pcm_bytes == 0) {
             ESP_LOGW(kTag, "SONG_PAGE_UNPLAYABLE page=%u", static_cast<unsigned>(request.page));
             Post(Event::PageDone, request.page);  // skip it: never stuck on a bad page
             continue;
@@ -137,6 +167,28 @@ void FreertosSongWorker::Run() {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         if (!begun) continue;
+        if (builtin_) {  // synthesised: same cancel / retry rules as a card page
+            synth_token_ = token;
+            bool stopped = false;
+            for (;;) {
+                if (xQueueReceive(queue_, &queued, 0) == pdPASS) {
+                    preloaded = true;  // a newer command always wins
+                    stopped = true;
+                    break;
+                }
+                const MelodyStreamer::Result r = streamer_.Step(&SynthPush, this);
+                if (r == MelodyStreamer::Result::Done) break;
+                if (r == MelodyStreamer::Result::Stuck) {
+                    ESP_LOGW(kTag, "SONG_QUEUE_STUCK page=%u", static_cast<unsigned>(request.page));
+                    hooks_.cancel(context_);
+                    stopped = true;
+                    break;
+                }
+                if (streamer_.Waiting()) vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (!stopped) Post(Event::PageDone, request.page);
+            continue;
+        }
         const uint32_t total = info.pcm_bytes;
         uint32_t offset = 0;
         unsigned failed = 0;

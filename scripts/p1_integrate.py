@@ -4333,6 +4333,14 @@ BOARD_WORKER = r'''
         closedir(dir);
     }
 
+    // V9-3A: the built-in melodies are always on the list, card or no card.
+    // Offered after the card scan: a card book with the same id wins.
+    // (melody_synth.h comes in through freertos_song_worker.h.)
+    static void AddBuiltinSongs(kid_app::SongCatalog* catalog) {
+        for (size_t i = 0; i < kid_app::BuiltinMelodyCount(); ++i)
+            catalog->OfferBuiltin(static_cast<uint8_t>(i), kid_app::BuiltinMelodyAt(i).id);
+    }
+
     void StartSound(SoundKind kind) {
         const uint32_t now = NowMs();
         kid_app::SongOutput song_out{};
@@ -4373,6 +4381,7 @@ BOARD_WORKER = r'''
                 kid_app::SongCatalog catalog;
                 const bool mounted = sound_sd_.load() == kSoundSdMounted;
                 if (mounted) ScanSongs(&catalog);
+                AddBuiltinSongs(&catalog);
                 kid_app::SongContext context;
                 context.quiet_hours = quiet_hours_.load();
                 context.low_battery = battery_.LowPower();
@@ -4593,8 +4602,11 @@ BOARD_WORKER = r'''
         }
         if (out.load) {
             const char* id = songs_.Chosen().id;
-            const bool opened = song_worker_.Ready() && song_worker_.Open(id);
-            ESP_LOGI(TAG, "PET_SONGS_LOAD id=%s ok=%d", id, opened ? 1 : 0);
+            const uint8_t builtin = songs_.Chosen().builtin;
+            const bool opened = song_worker_.Ready() &&
+                                (builtin ? song_worker_.OpenBuiltin(static_cast<uint8_t>(builtin - 1))
+                                         : song_worker_.Open(id));
+            ESP_LOGI(TAG, "PET_SONGS_LOAD id=%s ok=%d builtin=%d", id, opened ? 1 : 0, builtin ? 1 : 0);
             if (!opened) ApplySongOutput(songs_.Loaded(0, NowMs()));
         }
         if (out.play_page) {

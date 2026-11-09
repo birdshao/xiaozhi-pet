@@ -29,7 +29,7 @@ idf_component_register(
          "src/mic_envelope.cc" "src/mic_game.cc"
          "src/activity_recommend.cc"
          "src/parrot_session.cc" "src/song_player.cc" "src/routine_timer.cc"
-         "src/sound_view.cc" "src/freertos_song_worker.cc"
+         "src/sound_view.cc" "src/freertos_song_worker.cc" "src/melody_synth.cc"
          "src/json_lite.cc" "src/server_sync.cc" "src/parent_requests.cc"
          "src/pet_command_apply.cc" "src/freertos_server_sync_worker.cc"
          "src/care_store.cc" "src/care_calendar.cc" "src/care_phrases.cc" "src/care_session.cc"

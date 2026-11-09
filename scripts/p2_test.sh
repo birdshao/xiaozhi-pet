@@ -66,6 +66,13 @@ CXX="${CXX:-g++}"
 "$BUILD/test_song_player"
 
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/melody_synth.cc" \
+  "$ROOT/firmware/components/kid_app/src/song_player.cc" \
+  "$ROOT/tests/cpp/test_melody_synth.cc" \
+  -o "$BUILD/test_melody_synth"
+"$BUILD/test_melody_synth"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/routine_timer.cc" \
   "$ROOT/tests/cpp/test_routine_timer.cc" \
   -o "$BUILD/test_routine_timer"
