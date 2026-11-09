@@ -48,7 +48,19 @@ WHEN = {
     "TickleDone": "挠痒完成", "LullStart": "开始哄睡", "LullDone": "哄睡完成", "TidyStart": "睡前收玩具",
     "TidyDone": "玩具收好了", "StickerNew": "得到新贴纸", "DressDone": "穿上新装扮",
     "GentlePlease": "摇得太用力时（温和提醒，不是奖励）",
+    # V9 slice 1C (docs/V9_MENU_DEEPENING_PROPOSAL.md).
+    "TickleSeek": "开始挠痒（有日期时：用拨轮把羽毛移到痒痒处）",
+    "TickleLaugh": "挠到最怕痒的地方（按性格固定）",
+    "DiaryGameNamed": "日记：说出今天玩的游戏",
+    "BoredGone": "无聊 ≥2 级时玩完一局游戏",
+    "SongAsk": "睡前日记之后：问要不要听摇篮曲",
+    "GrowMorning": "早安：团团长大了（升阶后第一个早上）",
+    "GrowDiary": "日记结尾前：今天长大了",
+    "WishHit": "喂到了团团“今天想吃”的那样（三颗心）",
 }
+# Ids from here on are V9 drafts: TTS only, an adult listens to each one
+# before it goes into a pack (firmware: care_phrases.h kFirstDraftCareId).
+FIRST_DRAFT_ID = 1300
 # Lines that set the bedtime mood: a real voice is better (TTS only as a draft).
 HUMAN = {"DiaryOpen", "DiaryClose", "LullDone", "DiaryQuiet"}
 
@@ -76,11 +88,17 @@ def table(source: Path = CARE_CC) -> list[CareLine]:
     return rows
 
 
+def is_draft(r: CareLine) -> bool:
+    """V9 lines: drafts until an adult has listened (no pack before that)."""
+    return r.id >= FIRST_DRAFT_ID
+
+
 def checklist() -> str:
     out = ["| 文件名 | 场景 | 性格 | 什么时候播放 | 要说的话 | 来源 | 最长 |",
            "|---|---|---|---|---|---|---|"]
     for r in table():
-        source = "真人录音（TODO，先用 TTS 草稿）" if r.line in HUMAN else "TTS 生成 + 成人试听"
+        source = ("真人录音（TODO，先用 TTS 草稿）" if r.line in HUMAN
+                  else "V9 TTS 草稿，待成人试听" if is_draft(r) else "TTS 生成 + 成人试听")
         out.append(f"| {r.id}.wav | {r.line} | {TEMPERAMENT_ZH[r.temperament]} | {WHEN[r.line]} | "
                    f"{r.text} | {source} | {MAX_SECONDS} 秒 |")
     return "\n".join(out)
@@ -98,7 +116,8 @@ def synth(output: Path, *, voice: str = DEFAULT_VOICE, only: set[int] | None = N
         sha = speech._generate(r.text, output / f"{r.id}.wav", voice, synthesize=synthesize,
                                replace=replace, max_seconds=MAX_SECONDS)
         manifest["lines"].append({"id": r.id, "line": r.line, "text": r.text, "sha256": sha,
-                                  "human_recording_wanted": r.line in HUMAN})
+                                  "human_recording_wanted": r.line in HUMAN,
+                                  "v9_draft": is_draft(r)})
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
                                           encoding="utf-8")

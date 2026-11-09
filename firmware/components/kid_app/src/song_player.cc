@@ -92,6 +92,7 @@ bool SongPlayer::Open(uint32_t now_ms, const SongContext& c, const SongCatalog& 
         if (out) *out = o;
         return false;
     }
+    ritual_ = false;
     quiet_ = c.quiet_hours;
     catalog_ = quiet_ ? catalog.LullabiesOnly() : catalog;
     selected_ = 0;
@@ -111,12 +112,36 @@ bool SongPlayer::Open(uint32_t now_ms, const SongContext& c, const SongCatalog& 
     return true;
 }
 
+bool SongPlayer::OpenBedtime(uint32_t now_ms, const SongContext& c, const SongCatalog& catalog,
+                             SongOutput* out) {
+    SongOutput o;
+    const SongCatalog lullabies = catalog.LullabiesOnly();
+    if (Active() || c.low_battery || c.voice_active || lullabies.Count() == 0) {
+        if (out) *out = o;
+        return false;
+    }
+    ritual_ = true;
+    quiet_ = c.quiet_hours;
+    catalog_ = lullabies;
+    selected_ = 0;
+    timer_choice_ = 0;  // 10 minutes
+    timer_minutes_ = 0;
+    pages_ = page_ = 0;
+    missing_ = SongMissing::None;
+    phase_ms_ = last_input_ms_ = now_ms;
+    o = Start(now_ms);
+    o.redraw = true;
+    if (out) *out = o;
+    return true;
+}
+
 SongOutput SongPlayer::Back(bool stop) {
     SongOutput o;
     o.stop_audio = stop;
     o.leave = true;
     phase_ = SongPhase::Idle;
     timer_minutes_ = 0;
+    ritual_ = false;
     return o;
 }
 
@@ -171,6 +196,11 @@ SongOutput SongPlayer::Input(GameInput input, uint32_t now_ms) {
             break;
         case SongPhase::Playing:
             if (input == GameInput::Long) return Back(true);
+            if (input == GameInput::Press && ritual_) {  // bedtime: stop and go to bed
+                SongOutput b = Back(true);
+                b.sleep_now = true;
+                return b;
+            }
             if (input == GameInput::Press) {  // stop, back to the list
                 o.stop_audio = true;
                 o.redraw = true;
@@ -190,6 +220,11 @@ SongOutput SongPlayer::Loaded(uint8_t pages, uint32_t now_ms) {
         phase_ms_ = now_ms;
         o.load = static_cast<uint8_t>(selected_ + 1);
         return o;
+    }
+    if (pages == 0 && ritual_) {  // bedtime: no list, TuanTuan just goes to bed
+        SongOutput b = Back(false);
+        b.sleep_now = true;
+        return b;
     }
     if (pages == 0) {  // unreadable book: back to the list, nothing scolded
         phase_ = SongPhase::List;
@@ -241,6 +276,7 @@ SongOutput SongPlayer::Tick(uint32_t now_ms) {
             break;
         case SongPhase::Loading:
             if (static_cast<uint32_t>(now_ms - phase_ms_) >= kLoadTimeoutMs) {
+                if (ritual_) return Loaded(0, now_ms);  // bedtime: to bed, not a list
                 phase_ = SongPhase::List;
                 timer_minutes_ = 0;
                 o.redraw = true;
@@ -254,6 +290,7 @@ SongOutput SongPlayer::Tick(uint32_t now_ms) {
                 o.leave = true;
                 phase_ = SongPhase::Idle;
                 timer_minutes_ = 0;
+                ritual_ = false;
                 break;
             }
             if (sway_frames_ < kMaxSwayFrames && static_cast<uint32_t>(now_ms - sway_ms_) >= kSwayMs) {

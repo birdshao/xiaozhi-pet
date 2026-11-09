@@ -65,6 +65,12 @@ public:
     bool OfferBuiltin(uint8_t index, const char* id);
     // Quiet hours: only lullabies stay.
     SongCatalog LullabiesOnly() const;
+    // V9 S4: any lullaby, on the card or built in (the bedtime ritual asks).
+    bool HasLullaby() const {
+        for (size_t i = 0; i < count_; ++i)
+            if (entries_[i].kind == SongKind::Lullaby) return true;
+        return false;
+    }
     // The player's own copy only: entry `i` becomes its fallback melody.
     void MakeBuiltin(size_t i) {
         entries_[i].builtin = entries_[i].fallback;
@@ -129,6 +135,14 @@ public:
     // The catalogue is copied: later scans do not disturb a running player.
     bool Open(uint32_t now_ms, const SongContext& context, const SongCatalog& catalog,
               SongOutput* out);
+    // V9 S4, the bedtime ritual: the child already said "a lullaby" (care
+    // session Bedsong), so no list and no timer pick: the first lullaby,
+    // kTimerMinutes[0] (10 min), then the sleep flow. If the book cannot be
+    // opened the player leaves into the sleep flow too (never a list at
+    // bedtime). False (nothing opened) without a lullaby, on low battery or
+    // during a voice turn, like Open.
+    bool OpenBedtime(uint32_t now_ms, const SongContext& context, const SongCatalog& catalog,
+                     SongOutput* out);
     // Dial: Up/Down move the cursor (list) or the timer choice; Press picks;
     // Long = home. While playing, Press stops (back to the list), Up/Down are
     // ignored (no accidental skips).
@@ -180,6 +194,7 @@ private:
     uint32_t last_input_ms_ = 0;
     uint32_t sway_ms_ = 0;
     uint32_t end_ms_ = 0;       // lullaby: when to stop
+    bool ritual_ = false;       // opened by OpenBedtime
 };
 
 }  // namespace kid_app

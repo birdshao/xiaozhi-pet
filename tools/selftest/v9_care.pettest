@@ -1,0 +1,67 @@
+PETSELFTEST1
+# V9 slice 1C on the board without a person. A script run has no date for
+# the care sessions (day=0): bath, brush and tickle keep the fixed V8
+# counts, so this checks the V9 build did not break them, and that the
+# tickle feather ignores the dial when there is no date. The daily
+# variations, growth and the bedtime lullaby need the real clock: they are
+# host-tested (tests/cpp/test_care_v9.cc) and on the hand-check list.
+# Needs: motion on (default), outside the quiet hours, battery not low.
+# Menus: tickle, bath.
+# expect min:PET_CARE_MENU 2
+# expect min:kind=tickle 2
+# expect min:kind=bath 2
+# Self-test: no date, the V8 flow.
+# expect min:day=0 2
+# Tickle: dial moves do nothing, 3 gentle shakes; bath: 3 + face down.
+# expect min:care=1 7
+# expect min:PET_CARE_RECORD 2
+# expect min:result=committed 2
+# expect none:PET_CARE_START_FAILED 0
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Feed(3): the care menu.
+tap down 2500
+tap down 2500
+# Tickle: fourth card. The dial first (no feather to move without a
+# date), then three gentle shakes.
+tap press 6000
+tap down 1200
+tap down 1200
+tap down 1200
+tap press 6000
+tap up 1500
+tap down 1500
+gesture gentle
+wait 1500
+gesture gentle
+wait 1500
+gesture gentle
+wait 12000
+# Bath: second card; three bubbles, then face down to rinse.
+tap press 6000
+tap down 2500
+tap press 6000
+gesture gentle
+wait 1500
+gesture gentle
+wait 1500
+gesture gentle
+wait 2500
+gesture facedown
+wait 12000
+pet
+wait 5000
+end

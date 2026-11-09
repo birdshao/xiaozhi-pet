@@ -10,6 +10,7 @@ namespace kid_app {
 
 enum class CareKind : uint8_t {
     None, Feed, Bath, Brush, Tickle, Lull, Dress, Habit, Tidy, Diary, Album,
+    Bedsong,  // V9 S4: after the diary, "a lullaby?" (two cards)
 };
 const char* CareKindName(CareKind kind);
 
@@ -33,6 +34,14 @@ struct CareView {
     uint8_t food = 0;   // Food
     bool book = false, game = false, habit_done = false;
     uint8_t cares = 0;  // CareBucket
+    // V9 C1: what changes from day to day (0 = the classic V8 picture).
+    // Bath: mask of the mud spots (bit per kCareSpotSlots position; the
+    // first `progress` set bits are scrubbed off). Brush: mask of the knots
+    // (progress / 2 of them combed out). Tickle: see Tickle*Of below.
+    uint16_t variant = 0;
+    // V9 G5: the third toy of the tidy-up (CareArt::ToyBear, or the prop of
+    // today's game: any picture GameArtIcon draws).
+    uint16_t toy = 0;
 
     bool RailDiffers(const CareView& o) const {
         return option_count != o.option_count || highlight != o.highlight || options != o.options;
@@ -41,11 +50,25 @@ struct CareView {
         return kind != o.kind || progress != o.progress || goal != o.goal || phase != o.phase ||
                hearts != o.hearts || worn != o.worn || page != o.page || pages != o.pages ||
                stickers != o.stickers || food != o.food || book != o.book || game != o.game ||
-               habit_done != o.habit_done || cares != o.cares;
+               habit_done != o.habit_done || cares != o.cares || variant != o.variant ||
+               toy != o.toy;
     }
     bool operator==(const CareView& o) const { return !RailDiffers(o) && !TopDiffers(o); }
     bool operator!=(const CareView& o) const { return !(*this == o); }
 };
+
+// V9 C1 positions. Bath mud spots and brush knots sit on 8 fixed places
+// of the care picture's pet; tickle spots are head (0), belly (1), feet (2).
+constexpr uint8_t kCareSpotSlots = 8;
+// V9 C4 food pictures: 1..7 the Food, 8 zongzi, 9 mooncake.
+constexpr uint8_t kWishPictures = 9;
+constexpr uint8_t kTickleHead = 0, kTickleBelly = 1, kTickleFeet = 2;
+constexpr uint16_t TickleVariant(uint8_t target, uint8_t feather, bool laugh) {
+    return static_cast<uint16_t>(0x20 | (target & 3) | ((feather & 3) << 2) | (laugh ? 0x10 : 0));
+}
+constexpr uint8_t TickleTargetOf(uint16_t v) { return static_cast<uint8_t>(v & 3); }
+constexpr uint8_t TickleFeatherOf(uint16_t v) { return static_cast<uint8_t>((v >> 2) & 3); }
+constexpr bool TickleLaughOf(uint16_t v) { return (v & 0x10) != 0; }
 
 // What the home picture shows of the V8 care state (Home scenes only; not
 // part of PackScene, like the status band). Item numbers are the
@@ -56,14 +79,18 @@ struct HomeLook {
     uint8_t need = 0;
     uint8_t need_level = 0;
     uint8_t festival = 0;
+    uint8_t stage = 0;  // V9 C3 growth stage 0..3 (growth_stage.h)
+    uint8_t wish = 0;   // V9 C4 today's wish, a food picture (care_session.h WishPicture)
     bool operator==(const HomeLook& o) const {
         return worn == o.worn && need == o.need && need_level == o.need_level &&
-               festival == o.festival;
+               festival == o.festival && stage == o.stage && wish == o.wish;
     }
     bool operator!=(const HomeLook& o) const { return !(*this == o); }
 };
-// One word for board atomics: 4 bits per worn slot (0..19), need 20..23,
-// level 24..25, festival 26..29. Out-of-range values are dropped to 0.
+// One word for board atomics: 3 bits per worn slot (0..14; items are
+// 1..7), wish 15..18 (V9), need 20..23, level 24..25, festival 26..29,
+// stage 30..31 (V9). Out-of-range values are dropped to 0. RAM only:
+// never stored, never sent.
 uint32_t PackLook(const HomeLook& look);
 HomeLook UnpackLook(uint32_t bits);
 

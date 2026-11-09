@@ -8,7 +8,107 @@ namespace kid_app {
 namespace {
 constexpr uint16_t kTick = GameArtTone(static_cast<uint16_t>(GameArt::Heart));
 constexpr uint32_t kDiaryExitMs = 45000;  // up to 7 lines are read first
+constexpr uint32_t kDiaryGrowMs = 8000;     // V9 C3: one more line to read
+constexpr uint32_t kBedsongExitMs = 30000;  // V9 S4: no answer -> straight to bed
+
+// 32-bit integer mix (lowbias32): a fixed, portable hash for the daily
+// variation. Never a random source: the same day and temperament always
+// give the same bath, the same knots and the same itches.
+uint32_t Mix(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// Growth memory id (GAME_COMPLETED option) -> menu card. 1..5 are the V4
+// games (mini_game.h / mic_game.h / motion_game.h), 21..39 the V8 games
+// (play_content.cc PlayGameInfo::id; test_care_v9 checks the two agree).
+struct GameToy {
+    uint8_t game_id;
+    GameChoice card;
+};
+constexpr GameToy kGameToys[] = {
+    {1, GameChoice::Quiz},       {2, GameChoice::Candle},     {3, GameChoice::Clap},
+    {4, GameChoice::Ball},       {5, GameChoice::Peekaboo},   {21, GameChoice::Memory4},
+    {22, GameChoice::Memory6},   {23, GameChoice::Maze},      {24, GameChoice::Dice},
+    {25, GameChoice::Tree},      {26, GameChoice::Statue},    {27, GameChoice::DayNight},
+    {28, GameChoice::Shapes},    {29, GameChoice::Counting},  {31, GameChoice::SpotDiff},
+    {32, GameChoice::MamaBaby},  {33, GameChoice::SizeOrder}, {34, GameChoice::Pattern},
+    {35, GameChoice::Classify},  {36, GameChoice::Shadow},    {37, GameChoice::LeftRight},
+    {38, GameChoice::Clock},     {39, GameChoice::Weather},
+};
 }  // namespace
+
+uint32_t CareSeed(uint32_t day, Temperament t) {
+    const uint32_t s = Mix(day * 3u + static_cast<uint32_t>(t) + 0x9e3779b9u);
+    return s ? s : 1u;
+}
+
+uint8_t CheerArg(uint32_t day) { return day ? static_cast<uint8_t>(day % 3 + 1) : 0; }
+
+uint8_t BathSpots(uint8_t dirty_level) {
+    constexpr uint8_t kSpots[4] = {2, 2, 3, 5};
+    return kSpots[dirty_level > 3 ? 3 : dirty_level];
+}
+
+uint8_t SpotMask(uint32_t seed, uint8_t count) {
+    if (count > kCareSpotSlots) count = kCareSpotSlots;
+    uint8_t mask = 0, have = 0;
+    uint32_t r = seed;
+    while (have < count) {
+        r = Mix(r + 0x6d2b79f5u);
+        const uint8_t bit = static_cast<uint8_t>(1u << (r % kCareSpotSlots));
+        if (mask & bit) continue;
+        mask = static_cast<uint8_t>(mask | bit);
+        ++have;
+    }
+    return mask;
+}
+
+uint8_t BrushKnots(uint32_t seed) { return static_cast<uint8_t>(2 + Mix(seed ^ 0xb5u) % 3); }
+
+uint8_t TickleTarget(uint32_t seed, uint8_t round) {
+    constexpr uint8_t kOrders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                       {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    return kOrders[Mix(seed ^ 0x71u) % 6][round % 3];
+}
+
+uint8_t TicklishSpot(Temperament t) {
+    switch (t) {
+        case Temperament::Curious: return kTickleFeet;
+        case Temperament::Gentle: return kTickleBelly;
+        case Temperament::Lively: return kTickleHead;  // the ears
+    }
+    return kTickleBelly;
+}
+
+Food TodayWish(uint32_t day, Temperament t, const Season& season) {
+    if (!day) return Food::None;
+    Food menu[kAllFoodCount];
+    uint8_t n = 0;
+    for (uint8_t f = 1; f <= kFoodCount; ++f) menu[n++] = static_cast<Food>(f);
+    if (season.dumpling) menu[n++] = Food::Dumpling;
+    if (season.treat != Treat::None) menu[n++] = Food::FestiveTreat;
+    return menu[Mix(CareSeed(day, t) ^ 0xf00du) % n];
+}
+
+uint8_t WishPicture(Food food, Treat treat) {
+    if (food == Food::FestiveTreat) return treat == Treat::Mooncake ? 9 : 8;
+    const uint8_t f = static_cast<uint8_t>(food);
+    return f <= static_cast<uint8_t>(Food::Dumpling) ? f : 0;
+}
+
+uint16_t GameToyArt(uint16_t game_id) {
+    for (const GameToy& g : kGameToys) {
+        if (g.game_id != game_id) continue;
+        const Activity* a = FindActivity(g.card);
+        return a ? a->art : 0;
+    }
+    return 0;
+}
 
 const char* CareKindName(CareKind kind) {
     switch (kind) {
@@ -23,13 +123,14 @@ const char* CareKindName(CareKind kind) {
         case CareKind::Tidy: return "tidy";
         case CareKind::Diary: return "diary";
         case CareKind::Album: return "album";
+        case CareKind::Bedsong: return "bedsong";
     }
     return "none";
 }
 
 uint16_t FoodArt(Food food) {
     const uint8_t f = static_cast<uint8_t>(food);
-    return f >= 1 && f <= kFoodCount
+    return f >= 1 && f <= kAllFoodCount
                ? static_cast<uint16_t>(static_cast<uint16_t>(CareArt::Fish) + f - 1)
                : 0;
 }
@@ -64,11 +165,51 @@ bool CareSession::Start(CareKind kind, const CareContext& context, uint32_t now_
     last_dir_ = 0;
     after_ = CareKind::None;
     const Temperament t = ctx_.temperament;
+    // V9 C1: a dated session varies by day; no date keeps the V8 flow
+    // (self-test scripts and a board whose clock is not set).
+    seed_ = ctx_.day ? CareSeed(ctx_.day, t) : 0;
+    goal_ = 0;
+    variant_ = 0;
+    feather_ = 0;
+    laugh_ = false;
     switch (kind) {
-        case CareKind::Feed: out->clip = CarePhraseId(CareLine::FeedPrompt, 0, t); break;
-        case CareKind::Bath: out->clip = CarePhraseId(CareLine::BathStart, 0, t); break;
-        case CareKind::Brush: out->clip = CarePhraseId(CareLine::BrushStart, 0, t); break;
-        case CareKind::Tickle: out->clip = CarePhraseId(CareLine::TickleStart, 0, t); break;
+        case CareKind::Feed:
+            // V9 C4: the seasonal foods first (out of season: the V8 six).
+            menu_count_ = 0;
+            if (ctx_.season.dumpling) menu_[menu_count_++] = static_cast<uint8_t>(Food::Dumpling);
+            if (ctx_.season.treat != Treat::None)
+                menu_[menu_count_++] = static_cast<uint8_t>(Food::FestiveTreat);
+            for (uint8_t f = 1; f <= kFoodCount; ++f) menu_[menu_count_++] = f;
+            out->clip = CarePhraseId(CareLine::FeedPrompt, 0, t);
+            break;
+        case CareKind::Bath:
+            goal_ = seed_ ? BathSpots(ctx_.dirty) : kBathBubbles;
+            if (seed_) variant_ = SpotMask(seed_, goal_);
+            out->clip = CarePhraseId(CareLine::BathStart, 0, t);
+            break;
+        case CareKind::Brush:
+            if (seed_) {
+                const uint8_t knots = BrushKnots(seed_);
+                variant_ = SpotMask(seed_ ^ 0x5au, knots);
+                goal_ = static_cast<uint8_t>(knots * 2);
+            } else {
+                goal_ = kBrushStrokes;
+            }
+            out->clip = CarePhraseId(CareLine::BrushStart, 0, t);
+            break;
+        case CareKind::Tickle:
+            if (seed_) {
+                // The feather waits on the belly (or, when the first itch is
+                // there, on the head or the feet): one dial step away.
+                const uint8_t first = TickleTarget(seed_, 0);
+                feather_ = first != kTickleBelly ? kTickleBelly
+                                                 : ((seed_ & 1u) ? kTickleHead : kTickleFeet);
+                out->clip = CarePhraseId(CareLine::TickleSeek, 0, t);
+            } else {
+                out->clip = CarePhraseId(CareLine::TickleStart, 0, t);
+            }
+            break;
+        case CareKind::Bedsong: out->clip = CarePhraseId(CareLine::SongAsk, 0, t); break;
         case CareKind::Lull: out->clip = CarePhraseId(CareLine::LullStart, 0, t); break;
         case CareKind::Tidy:
             out->clip = CarePhraseId(CareLine::TidyStart, 0, t);
@@ -95,19 +236,23 @@ bool CareSession::Start(CareKind kind, const CareContext& context, uint32_t now_
 
 uint8_t CareSession::CardCount() const {
     switch (kind_) {
-        case CareKind::Feed: return kFoodCount;
+        case CareKind::Feed: return menu_count_;
         case CareKind::Dress: return dress_count_ ? dress_count_ : 1;
         case CareKind::Habit: return 1;
+        case CareKind::Bedsong: return 2;
         default: return 0;
     }
 }
 
 uint16_t CareSession::CardArt(uint8_t i) const {
     switch (kind_) {
-        case CareKind::Feed: return FoodArt(static_cast<Food>(i + 1));
+        case CareKind::Feed: return FoodArt(static_cast<Food>(menu_[i]));
         case CareKind::Dress:
             return dress_count_ ? WardrobeArt(dress_[i]) : static_cast<uint16_t>(CareArt::Lock);
         case CareKind::Habit: return HabitArt(ctx_.habit);
+        case CareKind::Bedsong:  // the moon with a note, or TuanTuan asleep
+            return i == 0 ? static_cast<uint16_t>(SoundArt::Lullaby)
+                          : static_cast<uint16_t>(PlayArt::Sleep);
         default: return 0;
     }
 }
@@ -158,7 +303,7 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
         // spinning the dial one way does nothing.
         if (dir == last_dir_) return out;
         last_dir_ = dir;
-        if (++progress_ < kBrushStrokes) {
+        if (++progress_ < goal_) {
             out.redraw = true;
             out.clip = kTick;
             return out;
@@ -167,7 +312,7 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
         react_until_ms_ = now_ms + SelfTestClock::Scaled(kReactMs);
         hearts_ = 3;
         out = Record(CareEventKind::Brushed, MemorySource::Device, 0, 0);
-        out.clip = CarePhraseId(CareLine::BrushDone, 0, t);
+        out.clip = CarePhraseId(CareLine::BrushDone, CheerArg(ctx_.day), t);
         return out;
     }
     if (kind_ == CareKind::Tidy) {
@@ -185,9 +330,18 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
     }
     if (kind_ == CareKind::Diary) {
         if (input != GameInput::Press) return out;
-        CareOutput done = Finish(0, now_ms);
-        done.next = CareKind::Lull;  // bedtime ritual: then the lullaby
-        return done;
+        return AfterDiary(now_ms);  // bedtime ritual: a lullaby, then to sleep
+    }
+    if (kind_ == CareKind::Tickle && seed_ &&
+        (input == GameInput::Up || input == GameInput::Down)) {
+        // V9: the dial carries the feather, head (0) .. feet (2).
+        const bool up = input == GameInput::Up;
+        if (up ? feather_ == kTickleHead : feather_ == kTickleFeet) return out;
+        feather_ = static_cast<uint8_t>(up ? feather_ - 1 : feather_ + 1);
+        laugh_ = false;
+        out.redraw = true;
+        out.clip = kTick;
+        return out;
     }
     if (kind_ == CareKind::Bath || kind_ == CareKind::Tickle || kind_ == CareKind::Lull)
         return out;  // motion sessions: the dial only leaves (long press)
@@ -203,15 +357,29 @@ CareOutput CareSession::Input(GameInput input, uint32_t now_ms) {
         return out;
     }
     // Press.
+    if (kind_ == CareKind::Bedsong) {
+        if (index_ != 0) {  // "no song": TuanTuan goes to bed (the lull step)
+            CareOutput done = Finish(0, now_ms);
+            done.next = CareKind::Lull;
+            return done;
+        }
+        // No spoken answer: the lullaby itself is the answer (a line here
+        // would talk over the first bars).
+        CareOutput done = Finish(0, now_ms);
+        done.song = true;  // the board plays the lullaby, then the sleep flow
+        return done;
+    }
     if (kind_ == CareKind::Feed) {
-        const Food food = static_cast<Food>(index_ + 1);
+        const Food food = static_cast<Food>(menu_[index_]);
         const Taste taste = TasteOf(t, food);
-        hearts_ = static_cast<uint8_t>(static_cast<uint8_t>(taste) + 1);
+        const bool wished = food == ctx_.wish;  // V9 C4: "how did you know!"
+        hearts_ = wished ? 3 : static_cast<uint8_t>(static_cast<uint8_t>(taste) + 1);
         phase_ = 1;
         reacting_ = true;
         react_until_ms_ = now_ms + SelfTestClock::Scaled(kReactMs);
         out = Record(CareEventKind::Fed, MemorySource::DialChoice, 0, static_cast<uint16_t>(food));
-        out.clip = CarePhraseId(CareLine::FoodReact, static_cast<uint8_t>(taste), t);
+        out.clip = wished ? CarePhraseId(CareLine::WishHit, 0, t)
+                          : CarePhraseId(CareLine::FoodReact, static_cast<uint8_t>(taste), t);
         return out;
     }
     if (kind_ == CareKind::Habit) {
@@ -249,12 +417,12 @@ CareOutput CareSession::OnGesture(Gesture gesture, uint32_t now_ms) {
         out.clip = CarePhraseId(CareLine::GentlePlease, 0, t);
         return out;
     }
-    auto react = [&](CareEventKind kind, CareLine line) {
+    auto react = [&](CareEventKind kind, CareLine line, uint8_t arg) {
         hearts_ = 3;
         reacting_ = true;
         react_until_ms_ = now_ms + SelfTestClock::Scaled(kReactMs);
         CareOutput r = Record(kind, MemorySource::Device, 0, 0);
-        r.clip = CarePhraseId(line, 0, t);
+        r.clip = CarePhraseId(line, arg, t);
         return r;
     };
     switch (kind_) {
@@ -262,7 +430,7 @@ CareOutput CareSession::OnGesture(Gesture gesture, uint32_t now_ms) {
             if (phase_ == 0 && gesture == Gesture::GentleShake) {
                 last_input_ms_ = now_ms;
                 out.redraw = true;
-                if (++progress_ >= kBathBubbles) {
+                if (++progress_ >= goal_) {
                     phase_ = 1;  // enough bubbles: turn TuanTuan over to rinse
                     out.clip = CarePhraseId(CareLine::BathRinse, 0, t);
                 } else {
@@ -270,13 +438,33 @@ CareOutput CareSession::OnGesture(Gesture gesture, uint32_t now_ms) {
                 }
             } else if (phase_ == 1 && gesture == Gesture::FaceDown) {
                 last_input_ms_ = now_ms;
-                return react(CareEventKind::Bathed, CareLine::BathDone);
+                return react(CareEventKind::Bathed, CareLine::BathDone, CheerArg(ctx_.day));
             }
             break;
         case CareKind::Tickle:
+            if (gesture == Gesture::GentleShake && seed_) {  // V9: the feather on the itch
+                last_input_ms_ = now_ms;
+                const uint8_t target = TickleTarget(seed_, progress_);
+                out.redraw = true;
+                out.clip = kTick;
+                if (feather_ != target) {  // a wiggle towards the itch, no tickle yet
+                    feather_ = static_cast<uint8_t>(feather_ < target ? feather_ + 1 : feather_ - 1);
+                    laugh_ = false;
+                    return out;
+                }
+                laugh_ = target == TicklishSpot(t);  // the big laugh, a frame of its own
+                if (++progress_ >= kTickles) {
+                    return laugh_ ? react(CareEventKind::Tickled, CareLine::TickleLaugh, 0)
+                                  : react(CareEventKind::Tickled, CareLine::TickleDone,
+                                          CheerArg(ctx_.day));
+                }
+                if (laugh_) out.clip = CarePhraseId(CareLine::TickleLaugh, 0, t);
+                return out;
+            }
             if (gesture == Gesture::GentleShake) {
                 last_input_ms_ = now_ms;
-                if (++progress_ >= kTickles) return react(CareEventKind::Tickled, CareLine::TickleDone);
+                if (++progress_ >= kTickles)
+                    return react(CareEventKind::Tickled, CareLine::TickleDone, 0);
                 out.redraw = true;
                 out.clip = kTick;
             }
@@ -285,7 +473,7 @@ CareOutput CareSession::OnGesture(Gesture gesture, uint32_t now_ms) {
             if (gesture == Gesture::FaceDown) {
                 last_input_ms_ = now_ms;
                 progress_ = kLullStillWindows;
-                return react(CareEventKind::Lulled, CareLine::LullDone);
+                return react(CareEventKind::Lulled, CareLine::LullDone, 0);
             }
             break;
         default:
@@ -348,16 +536,29 @@ CareOutput CareSession::Tick(uint32_t now_ms) {
         out.next = after_;
         return out;
     }
-    const uint32_t limit = kind_ == CareKind::Diary ? kDiaryExitMs : kIdleExitMs;
+    // V9: the growth line makes the diary one line longer.
+    const uint32_t diary_ms = kDiaryExitMs + (ctx_.diary.grew ? kDiaryGrowMs : 0);
+    const uint32_t limit = kind_ == CareKind::Diary     ? diary_ms
+                           : kind_ == CareKind::Bedsong ? kBedsongExitMs
+                                                        : kIdleExitMs;
     if (static_cast<int32_t>(now_ms - (last_input_ms_ + SelfTestClock::Scaled(limit))) >= 0) {
-        out = Finish(0, now_ms);
-        // Bedtime: the diary goes on to the lullaby; a lullaby nobody
+        // Bedtime: the diary goes on (the song question or the lull); no
+        // answer to the song question is a quiet "no"; a lullaby nobody
         // finished still ends in bed (the child put TuanTuan down).
-        if (kind_ == CareKind::Diary) out.next = CareKind::Lull;
+        if (kind_ == CareKind::Diary) return AfterDiary(now_ms);
+        out = Finish(0, now_ms);
+        if (kind_ == CareKind::Bedsong) out.next = CareKind::Lull;
         out.sleep = kind_ == CareKind::Lull;
         return out;
     }
     return out;
+}
+
+CareOutput CareSession::AfterDiary(uint32_t now_ms) {
+    CareOutput done = Finish(0, now_ms);
+    // V9 S4: with a lullaby on the card, ask first; otherwise the V8 lull.
+    done.next = ctx_.lullaby ? CareKind::Bedsong : CareKind::Lull;
+    return done;
 }
 
 CareView CareSession::View() const {
@@ -369,18 +570,31 @@ CareView CareSession::View() const {
     v.hearts = reacting_ ? hearts_ : 0;
     v.worn = ctx_.worn;
     switch (kind_) {
-        case CareKind::Bath: v.goal = kBathBubbles; break;
-        case CareKind::Brush: v.goal = kBrushStrokes; break;
-        case CareKind::Tickle: v.goal = kTickles; break;
+        case CareKind::Bath:
+        case CareKind::Brush:
+            v.goal = goal_;
+            v.variant = variant_;
+            break;
+        case CareKind::Tickle:
+            v.goal = kTickles;
+            if (seed_) {
+                const uint8_t round = progress_ < kTickles ? progress_ : kTickles - 1;
+                v.variant = TickleVariant(TickleTarget(seed_, round), feather_, laugh_);
+            }
+            break;
         case CareKind::Lull: v.goal = kLullStillWindows; break;
-        case CareKind::Tidy: v.goal = kToys; break;
+        case CareKind::Tidy:
+            v.goal = kToys;
+            v.toy = ctx_.toy_art ? ctx_.toy_art : static_cast<uint16_t>(CareArt::ToyBear);
+            break;
         case CareKind::Album:
             v.page = page_;
             v.pages = kAlbumPages;
             v.stickers = ctx_.stickers;
             break;
+        case CareKind::Feed: v.variant = TreatVariant(ctx_.season.treat); break;
         case CareKind::Diary:
-            v.food = ctx_.diary.last_food;
+            v.food = WishPicture(static_cast<Food>(ctx_.diary.last_food), ctx_.diary.treat);
             v.book = ctx_.diary.books != 0;
             v.game = ctx_.diary.games != 0;
             v.habit_done = ctx_.diary.habit_done;

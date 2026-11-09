@@ -62,4 +62,20 @@ Festival FestivalOn(const CivilTime& now, bool clock_ok, uint8_t birth_month, ui
     return Festival::None;
 }
 
+Season SeasonOn(const CivilTime& now, bool clock_ok) {
+    Season s{};
+    if (!clock_ok || !PlausibleWallClock(now)) return s;
+    GregorianDate spring{}, dragon{}, autumn{};
+    if (!LunarFestivalDates(now.year, &spring, &dragon, &autumn)) return s;
+    const int64_t today = DayNumber(now.year, now.month, now.day);
+    auto within = [&](const GregorianDate& d, int before, int after) {
+        const int64_t at = DayNumber(now.year, d.month, d.day);
+        return today >= at - before && today <= at + after;
+    };
+    s.dumpling = within(spring, kSeasonBeforeDays, 14);  // to the Lantern day
+    if (within(dragon, kSeasonBeforeDays, kTreatAfterDays)) s.treat = Treat::Zongzi;
+    else if (within(autumn, kSeasonBeforeDays, kTreatAfterDays)) s.treat = Treat::Mooncake;
+    return s;
+}
+
 }  // namespace kid_app

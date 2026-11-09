@@ -4032,6 +4032,7 @@ BOARD_WORKER = r'''
 
     // pet_input, every loop.
     void UpdateGame(DeviceState state) {
+        PostPendingRelief();  // V9 G5
         if (!game_active_.load()) return;
         if (!pet_mode_.load()) {
             EndGame("pet_off");
@@ -4160,9 +4161,15 @@ BOARD_WORKER = r'''
         const bool growth =
             kid_app::GameCompletedMemoryEvent(result, kid_app::kLocalEventBit, 0, &memory);
         bool posted = false;
+        uint16_t relief = 0;
         if (growth) {
+            relief = BoredReliefLine();  // V9 G5: read before the game resets boredom
             memory.id = 0;
             posted = RecordMemory(memory);
+        }
+        if (posted && relief) {  // after the game's own end line, never over it
+            pending_relief_ = relief;
+            pending_relief_ms_ = NowMs();
         }
         ESP_LOGI(TAG, "PET_GAME_END mode=%s end=%s reason=%s played=%u/%u correct=%u id=%u "
                  "growth=%d posted=%d",
@@ -4263,15 +4270,23 @@ BOARD_WORKER = r'''
         look.need = static_cast<uint8_t>(need);
         look.need_level = level;
         look.festival = static_cast<uint8_t>(festival);
+        // V9 C3 / C4 (not in self-test scripts: their pictures stay V8).
+        if (!selftest_seen_.load()) {
+            look.stage = kid_app::GrowthStageNow(care, pet_service_.MemoryNow());
+            const auto season = kid_app::SeasonOn(rtc, clock_ok);
+            const auto wish = kid_app::TodayWish(kid_app::CareDay(minute),
+                                                 pet_service_.TemperamentNow(), season);
+            look.wish = kid_app::WishPicture(wish, season.treat);
+        }
         festival_.store(static_cast<uint8_t>(festival));
         const uint32_t bits = kid_app::PackLook(look);
         if (home_look_.exchange(bits) != bits)
-            ESP_LOGI(TAG, "PET_CARE_LOOK worn=%u,%u,%u,%u,%u need=%u level=%u festival=%s",
+            ESP_LOGI(TAG, "PET_CARE_LOOK worn=%u,%u,%u,%u,%u need=%u level=%u festival=%s stage=%u",
                      static_cast<unsigned>(look.worn[0]), static_cast<unsigned>(look.worn[1]),
                      static_cast<unsigned>(look.worn[2]), static_cast<unsigned>(look.worn[3]),
                      static_cast<unsigned>(look.worn[4]),
                      static_cast<unsigned>(look.need), static_cast<unsigned>(level),
-                     kid_app::FestivalName(festival));
+                     kid_app::FestivalName(festival), static_cast<unsigned>(look.stage));
         // The festival sticker, once: the device saw the day (source Device).
         // PostCare is refused until the ledger runs; then the next tick retries.
         const uint32_t bit = festival == kid_app::Festival::Birthday
@@ -4339,9 +4354,14 @@ BOARD_WORKER = r'''
         const auto festival = kid_app::FestivalOn(rtc, clock_ok, care.BirthMonth(), care.BirthDay());
         festival_.store(static_cast<uint8_t>(festival));
         uint16_t ids[kid_app::kMaxDiaryLines] = {};
+        // V9 C3: grown up yesterday (or this morning): say so once.
+        const uint8_t grew = selftest_seen_.load()
+                                 ? 0
+                                 : kid_app::GrewOn(care, pet_service_.MemoryNow(),
+                                                   local_day_.load(), true);
         const size_t n = kid_app::ComposeMorning(pet_service_.TemperamentNow(), feel, festival,
                                                  care.GetHabit().habit, ids,
-                                                 kid_app::kMaxDiaryLines);
+                                                 kid_app::kMaxDiaryLines, grew);
         // ids[0] is the V8 hello: the V5-04 good-morning line says it already.
         size_t count = 0;
         for (size_t i = 1; i < n; ++i) out[count++] = ids[i];
@@ -4373,6 +4393,80 @@ BOARD_WORKER = r'''
         PostGameClip(out.clip);
     }
 
+    // V9 G5: "not bored any more" for a game finished while TuanTuan was
+    // bored (level >= 2), else 0. Read-only (the care snapshot). Self-test
+    // scripts never get it (their prompts stay countable).
+    uint16_t BoredReliefLine() {
+        if (selftest_seen_.load()) return 0;
+        const auto care = pet_service_.CareNow();
+        const int phase = day_phase_.load();
+        const auto needs = care.Needs(local_minute_.load(),
+                                      phase >= 0 ? static_cast<kid_app::DayPhase>(phase)
+                                                 : kid_app::DayPhase::Day);
+        return kid_app::BoredReliefClip(needs.bored, pet_service_.TemperamentNow());
+    }
+
+    // pet_input. The relief line waits until the prompt queue is empty (the
+    // game's end clip has been taken) and then follows what is playing
+    // (care_next: no cut). Dropped when a new game starts or after 10 s.
+    uint16_t pending_relief_ = 0;
+    uint32_t pending_relief_ms_ = 0;
+    void PostPendingRelief() {
+        if (!pending_relief_) return;
+        if (game_active_.load() || NowMs() - pending_relief_ms_ > 10000) {
+            pending_relief_ = 0;
+            return;
+        }
+        if (!prompt_queue_ || uxQueueMessagesWaiting(prompt_queue_)) return;
+        if (!pet_mode_.load() || napping_.load() || ParentMenuOpen() || sleep_active_.load()) {
+            pending_relief_ = 0;
+            return;
+        }
+        kid_app::PromptRequest request{};
+        request.token = care_tokens_.fetch_add(1) + 1;
+        request.care[request.care_count++] = pending_relief_;
+        request.care_next = true;
+        PostPrompt(request);
+        ESP_LOGI(TAG, "PET_CARE_RELIEF clip=%u", static_cast<unsigned>(pending_relief_));
+        pending_relief_ = 0;
+    }
+
+    // pet_input, V9 S4: a lullaby to offer at bedtime. The built-in melodies
+    // (V9-3A) come first: no card needed, no directory scan.
+    bool LullabyAvailable() {
+        kid_app::SongCatalog builtins;
+        AddBuiltinSongs(&builtins);
+        return builtins.HasLullaby() || LullabyOnCard();
+    }
+
+    // pet_input: does the card hold at least one lullaby? Stops at the first.
+    bool LullabyOnCard() {
+        if (sound_sd_.load() != kSoundSdMounted) return false;
+        DIR* dir = opendir("/sdcard/books");
+        if (!dir) return false;
+        bool found = false;
+        while (const dirent* entry = readdir(dir)) {
+            kid_app::SongCatalog one;
+            char stem[kid_app::kSongIdBytes + 1] = {};
+            const size_t n = std::strlen(entry->d_name);
+            if (n < 5 || n >= kid_app::kSongIdBytes + 4) continue;
+            for (size_t i = 0; i + 4 < n; ++i) {
+                const char c = entry->d_name[i];
+                stem[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+            }
+            const char* ext = entry->d_name + n - 4;
+            if (!(ext[0] == '.' && (ext[1] | 0x20) == 'k' && (ext[2] | 0x20) == 'p' &&
+                  (ext[3] | 0x20) == 'b'))
+                continue;
+            if (one.Offer(stem) && one.LullabiesOnly().Count()) {
+                found = true;
+                break;
+            }
+        }
+        closedir(dir);
+        return found;
+    }
+
     // pet_input: from the care / play menu or the bedtime ritual.
     void StartCare(kid_app::CareKind kind) {
         const auto care = pet_service_.CareNow();
@@ -4387,6 +4481,26 @@ BOARD_WORKER = r'''
         ctx.habit_done_today = day && care.GetHabit().last_day == day;
         ctx.clock_known = local_minute_.load() != 0;
         ctx.diary = kid_app::MakeDiaryPage(care, memory, day);
+        // V9 1C: the care of the day (C1), today's game toy and growth (G5,
+        // C3), the lullaby question (S4). Self-test scripts keep the V8 flow
+        // (no date: fixed counts) like the bedtime ritual.
+        if (!selftest_seen_.load()) {
+            const uint32_t minute = local_minute_.load();
+            const int phase = day_phase_.load();
+            const auto needs = care.Needs(minute, phase >= 0 ? static_cast<kid_app::DayPhase>(phase)
+                                                             : kid_app::DayPhase::Day);
+            ctx.day = day;
+            ctx.dirty = needs.dirty;
+            ctx.diary.grew = kid_app::GrewOn(care, memory, day, false);
+            if (day) {  // C4: the seasonal foods and today's wish
+                const auto today = kid_app::CivilFromEpoch(static_cast<int64_t>(day) * 86400 + 12 * 3600);
+                ctx.season = kid_app::SeasonOn(today, true);
+                ctx.wish = kid_app::TodayWish(day, ctx.temperament, ctx.season);
+                ctx.diary.treat = ctx.season.treat;
+            }
+        }
+        ctx.toy_art = kid_app::GameToyArt(ctx.diary.last_game);
+        if (kind == kid_app::CareKind::Diary && !battery_.LowPower()) ctx.lullaby = LullabyAvailable();
         kid_app::CareOutput out{};
         if (!care_.Start(kind, ctx, NowMs(), &out)) {
             ESP_LOGW(TAG, "PET_CARE_START_FAILED kind=%s", kid_app::CareKindName(kind));
@@ -4408,17 +4522,24 @@ BOARD_WORKER = r'''
             }
             PublishGameSceneLocked();
         }
-        ESP_LOGI(TAG, "PET_CARE_START kind=%s stickers=0x%x habit=%s", kid_app::CareKindName(kind),
-                 static_cast<unsigned>(ctx.stickers), kid_app::HabitName(ctx.habit));
+        ESP_LOGI(TAG, "PET_CARE_START kind=%s stickers=0x%x habit=%s day=%u dirty=%u lullaby=%d "
+                 "wish=%s season=%d/%u",
+                 kid_app::CareKindName(kind), static_cast<unsigned>(ctx.stickers),
+                 kid_app::HabitName(ctx.habit), static_cast<unsigned>(ctx.day),
+                 static_cast<unsigned>(ctx.dirty), ctx.lullaby ? 1 : 0,
+                 kid_app::FoodName(ctx.wish), ctx.season.dumpling ? 1 : 0,
+                 static_cast<unsigned>(ctx.season.treat));
         if (kind == kid_app::CareKind::Diary) {  // TuanTuan reads today's page
             uint16_t ids[kid_app::kMaxDiaryLines] = {};
             const size_t n = kid_app::ComposeDiary(ctx.diary, ctx.temperament, ids,
                                                    kid_app::kMaxDiaryLines);
             PostCareLines(ids, n);
-            ESP_LOGI(TAG, "PET_CARE_DIARY lines=%u food=%u books=%u games=%u cares=%u habit=%d",
+            ESP_LOGI(TAG, "PET_CARE_DIARY lines=%u food=%u books=%u games=%u cares=%u habit=%d "
+                     "game=%u grew=%u",
                      static_cast<unsigned>(n), static_cast<unsigned>(ctx.diary.last_food),
                      static_cast<unsigned>(ctx.diary.books), static_cast<unsigned>(ctx.diary.games),
-                     static_cast<unsigned>(ctx.diary.cares), ctx.diary.habit_done ? 1 : 0);
+                     static_cast<unsigned>(ctx.diary.cares), ctx.diary.habit_done ? 1 : 0,
+                     static_cast<unsigned>(ctx.diary.last_game), static_cast<unsigned>(ctx.diary.grew));
         } else {
             PostCareClip(out.clip);
         }
@@ -4454,6 +4575,11 @@ BOARD_WORKER = r'''
                      kid_app::CareKindName(out.next), out.sleep ? 1 : 0);
             if (out.next != kid_app::CareKind::None) {  // bedtime: tidy -> diary -> lullaby
                 StartCare(out.next);
+                return;
+            }
+            if (out.song) {  // V9 S4: the child chose the lullaby (10 min, then sleep)
+                care_motion_.store(false);
+                if (!StartSound(SoundKind::Songs, true)) StartCare(kid_app::CareKind::Lull);
                 return;
             }
             const bool bedtime = out.sleep && BedtimeRitualAllowed();
@@ -4607,7 +4733,9 @@ BOARD_WORKER = r'''
             catalog->OfferBuiltin(static_cast<uint8_t>(i), kid_app::BuiltinMelodyAt(i).id);
     }
 
-    void StartSound(SoundKind kind) {
+    // bedtime (V9 S4, songs only): the ritual's lullaby, no list (OpenBedtime).
+    // False when nothing opened; a bedtime caller then goes on to the lull.
+    bool StartSound(SoundKind kind, bool bedtime = false) {
         const uint32_t now = NowMs();
         kid_app::SongOutput song_out{};
         kid_app::ParrotOutput parrot_out{};
@@ -4653,7 +4781,8 @@ BOARD_WORKER = r'''
                 context.low_battery = battery_.LowPower();
                 context.voice_active = Application::GetInstance().GetDeviceState() != kDeviceStateIdle;
                 context.card_mounted = mounted;
-                ok = songs_.Open(now, context, catalog, &song_out);
+                ok = bedtime ? songs_.OpenBedtime(now, context, catalog, &song_out)
+                             : songs_.Open(now, context, catalog, &song_out);
                 if (ok && !song_worker_.Ready() &&
                     !song_worker_.Start("/sdcard/books", {&SongAudioBegin, &SongAudioPush, &SongAudioCancel}, this))
                     ESP_LOGW(TAG, "PET_SONG_AUDIO_UNAVAILABLE");
@@ -4679,8 +4808,8 @@ BOARD_WORKER = r'''
                 break;
         }
         if (!ok) {
-            EndGame("start_failed");
-            return;
+            if (!bedtime) EndGame("start_failed");
+            return false;
         }
         {
             SceneStateLock lock(scene_state_mutex_);
@@ -4694,7 +4823,9 @@ BOARD_WORKER = r'''
             }
             PublishGameSceneLocked();
         }
-        ESP_LOGI(TAG, "PET_SOUND_START kind=%s", name);
+        ESP_LOGI(TAG, "PET_SOUND_START kind=%s bedtime=%d", name, bedtime ? 1 : 0);
+        if (bedtime) ApplySongOutput(song_out);  // OpenBedtime already asks for the book
+        return true;
     }
 
     void StopSound() {
@@ -5528,6 +5659,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/activity_list.h"\n'
         '#include "kid_app/activity_recommend.h"\n'
         '#include "kid_app/care_session.h"\n'
+        '#include "kid_app/growth_stage.h"\n'
         '#include "kid_app/care_calendar.h"\n'
         '#include "kid_app/care_phrases.h"\n'
         '#include "kid_app/memory_store.h"\n'
