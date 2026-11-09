@@ -74,6 +74,8 @@ constexpr bool MenuArtValid(uint16_t id) { return id >= 201 && id <= 204; }
 //   601..660 (block 600..699) CareArt (session 1, below)
 //   701.. (block 700..799) session 3 (sound)   801.. (block 800..899) session 4
 //   201..204 MenuArt (V9 1A, below)   205..399 free; 0x4000.. never: tone clip ids (GameArtTone)
+//   0x4C15..0x4C27 (0x4C00 + game id 21..39, 30 unused): spoken game rule clips
+//   (game_rules.h, V9 1E); 0x4000..0x4BFF stay tones
 // V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
 enum class CareArt : uint16_t {
     Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,

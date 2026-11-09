@@ -32,6 +32,9 @@ on:
       - 'scripts/v4_mic_tap_patch.py'
       - 'scripts/v8_mic_frame_tap_patch.py'
       - 'tests/test_v8_sound_wiring.py'
+      - 'tests/test_v9_game_rules_wiring.py'
+      - 'tests/test_v9_game_prompts.py'
+      - 'tools/game_prompts.py'
       - 'tools/make_reader_test_book.py'
       - 'scripts/p4_audio_queue_patch.py'
       - 'scripts/p0_*'
@@ -78,6 +81,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
       - name: V4-05 book reader board contract and self-test scenario
         run: python3 -m unittest discover -s tests -p 'test_v4_book_reader.py' -v
+      - name: V9 spoken game rules board wiring and self-test scenario
+        run: python3 -m unittest discover -s tests -p 'test_v9_game_rules_wiring.py' -v
       - name: V4-08 microphone games privacy contract (loudness only) and board wiring
         run: python3 -m unittest discover -s tests -p 'test_v4_mic_games.py' -v
       - name: Clone pinned upstream and verify board config

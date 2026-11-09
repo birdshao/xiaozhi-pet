@@ -4,6 +4,7 @@
 #include "kid_app/home_menu.h"
 #include "kid_app/pet_phrases.h"
 #include "kid_app/care_phrases.h"
+#include "kid_app/game_rules.h"
 #include "kid_app/sound_bank.h"
 #include "kid_app/sound_pack_reader.h"
 
@@ -412,7 +413,15 @@ void TestToolPack(const std::string& dir) {
     // V8: every reviewed care line is in the demo pack too.
     for (size_t i = 0; i < CarePhraseCount(); ++i)
         assert(pack.Find(CarePhraseAt(i).id, &info));
-    assert(pack.ClipCount() == HomeMenu::kItemCount + phrases + CarePhraseCount());
+    // V9 1E: and the 17 spoken game rules (621..639, memory 6 shares 621).
+    size_t rules = 0;
+    for (uint16_t game = 21; game <= 39; ++game)
+        if (game != 22 && GameHasRule(game)) {
+            assert(pack.Find(GameRuleKpsId(game), &info));
+            ++rules;
+        }
+    assert(rules == 17);
+    assert(pack.ClipCount() == HomeMenu::kItemCount + phrases + CarePhraseCount() + rules);
     SoundBank bank;
     bank.UsePack(&pack);
     SoundClip clip;

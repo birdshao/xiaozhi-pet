@@ -2,6 +2,7 @@
 // rounds, memory flip, tilt maze, shake dice / tree, wooden man, day and
 // night, the four-way tilt tracker, the game list and the scenes.
 // Rewards follow ADR-012 (see docs/V8_MINI_GAMES.md).
+#include "kid_app/game_rules.h"
 #include "kid_app/gesture_detector.h"
 #include "kid_app/memory_store.h"
 #include "kid_app/mini_game.h"
@@ -376,7 +377,8 @@ void TestMemory() {
     assert(!GameCompletedMemoryEvent(s.Result(), 1, 100, &e));
     // Idle: a repeat of the prompt, then home.
     PlaySession idle = StartPlay(PlayGame::Memory4, 5, 1000);
-    assert(idle.Tick(1000 + PlaySession::kRepeatPromptMs).clip == kGameTonePrompt);
+    // V9 1E: the question again is the spoken rule (no rule: the old tone).
+    assert(idle.Tick(1000 + PlaySession::kRepeatPromptMs).clip == GameRuleClip(21));
     assert(idle.Tick(1000 + PlaySession::kRepeatPromptMs + 10).clip == 0);
     out = idle.Tick(1000 + PlaySession::kIdleExitMs);
     assert(out.finished && idle.Result().end == GameEnd::Idle);

@@ -492,6 +492,38 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   -o "$BUILD/test_play_games"
 "$BUILD/test_play_games"
 
+# V9 1E (G4): spoken game rules. Ids (KPS1 600 + game id, game clip space),
+# the sound bank lookup, and the sessions asking for the rule at the start
+# and after 12 s of silence (tones everywhere else).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/sound_bank.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_game_rules.cc" \
+  -o "$BUILD/test_game_rules"
+"$BUILD/test_game_rules"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/play_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_game_rule_clips.cc" \
+  -o "$BUILD/test_game_rule_clips"
+"$BUILD/test_game_rule_clips"
+
 # V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/voice_command.cc" \

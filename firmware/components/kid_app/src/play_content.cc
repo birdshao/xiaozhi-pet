@@ -345,18 +345,18 @@ const char* PlayGamePromptText(PlayGame game) {
     switch (game) {
         case PlayGame::Memory4:
         case PlayGame::Memory6: return "找一找，哪两张是一样的？";
-        case PlayGame::Maze: return "把板子倾斜一下，帮团团找到胡萝卜。";
+        case PlayGame::Maze: return "把团团歪一歪，帮团团找到胡萝卜吧。";
         case PlayGame::Dice: return "摇一摇骰子，数一数有几个点。";
         case PlayGame::Tree: return "摇一摇小树，数一数掉下几个果子。";
-        case PlayGame::Statue: return "先动一动，听到木头人，就一动也不动。";
-        case PlayGame::DayNight: return "天黑了，请把团团扣下睡觉；天亮了，再翻起来。";
+        case PlayGame::Statue: return "先动一动，听到“木头人”，就一动也不动。";
+        case PlayGame::DayNight: return "天黑啦，把团团扣下来睡觉；天亮啦，再翻回来。";
         case PlayGame::Shapes: return "找一找，哪个和它一样？";
         case PlayGame::Counting: return "数一数，有几个？";
-        case PlayGame::SpotDiff: return "两排图里有一个地方不一样，是第几个？";
+        case PlayGame::SpotDiff: return "两排图里，有一个不一样，是第几个？";
         case PlayGame::MamaBaby: return "哪一个是它的宝宝？";
         case PlayGame::SizeOrder: return "大、中、小排好队，缺的是哪一个？";
         case PlayGame::Pattern: return "接下来是哪一个？";
-        case PlayGame::Classify: return "哪一个能吃？哪一个不能吃？";
+        case PlayGame::Classify: return "看上面的小图，找出符合它的那一个。";
         case PlayGame::Shadow: return "哪一个是它的影子？";
         case PlayGame::LeftRight: return "箭头指向哪一边，就选哪一边。";
         case PlayGame::Clock: return "现在是这个时间，我们该做什么？";

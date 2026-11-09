@@ -1,0 +1,44 @@
+PETSELFTEST1
+# V9 1E (G4): the spoken rule of a play game. Memory4 (card 8) is entered
+# and left alone: the rule is asked when it opens and once more after 12 s
+# without input (real time, 13 s wait). Needs no recording: take
+# /sounds/default.kps off the card, or this expects PET_GAME_RULE_PACK
+# instead of _TONE (the tone is the fallback). Quiet hours refuse games,
+# so the day phase is pinned. The menu steps follow v8_play_games (1A).
+# Counted from "mark begin" (see tools/selftest_report.py).
+# expect min:PET_GAME_RULE_TONE 2
+# expect none:PET_GAME_RULE_PACK 0
+# expect min:game=memory4 1
+# expect min:end=home 1
+# expect none:PET_GAME_REFUSED 0
+# expect none:PET_GAME_START_FAILED 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# Rail Story(1) -> Game(2), press: play menu.
+tap down 2500
+tap press 6000
+# V9 1A: Brain page (card 1), memory4 is its 4th card.
+tap down 600
+tap press 3000
+tap down 600
+tap down 600
+tap down 600
+tap press 6000
+# Nobody plays: the rule at the start, again after 12 s (real time).
+wait 13000
+hold press 1500 8000
+pet
+wait 5000
+end
