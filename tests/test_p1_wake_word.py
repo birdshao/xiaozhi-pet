@@ -67,7 +67,6 @@ class WakeWordConfigContract(unittest.TestCase):
         # esp-sr: pinyin only, space separated, no digits / tones / Latin mixing.
         self.assertRegex(p1.WAKE_WORD_PINYIN, r"^[a-z]+( [a-z]+)*$")
         self.assertGreaterEqual(len(p1.WAKE_WORD_PINYIN.split()), 3)  # >= 3 syllables advised
-        self.assertTrue
         self.assertTrue(1 <= p1.WAKE_WORD_THRESHOLD <= 99)
 
     def test_pet_settings_and_upstream_line_survive(self):
@@ -152,13 +151,16 @@ class AssetsPartitionBudget(unittest.TestCase):
         self.assertGreaterEqual(kb, ASSETS_PARTITION_KB)
 
     @unittest.skipUnless(os.environ.get("UPSTREAM_SRC"), "needs UPSTREAM_SRC (CI)")
-    def test_real_multinet_model_size(self):
+    def test_real_generated_assets_fit(self):
+        # The packed image (fonts, sounds, mn7_cn and the fst directory) must leave 1 MiB free.
         src = Path(os.environ["UPSTREAM_SRC"])
-        model = src / "managed_components/espressif__esp-sr/model/multinet_model/mn7_cn"
-        if not model.is_dir():
-            self.skipTest("esp-sr not fetched yet")
-        kb = sum(f.stat().st_size for f in model.rglob("*") if f.is_file()) / 1024
-        self.assertLess(kb, ASSETS_PARTITION_KB - ASSETS_USED_NOW_KB + WN9_KB - MIN_HEADROOM_KB)
+        image = src / "build/generated_assets.bin"
+        if not image.is_file():
+            self.skipTest("assets not built yet")
+        self.assertLess(image.stat().st_size, (ASSETS_PARTITION_KB - MIN_HEADROOM_KB) * 1024)
+        if (os.environ.get(p1.WAKE_WORD_ENV) or p1.WAKE_WORD_DEFAULT).strip().lower() == "tuantuan":
+            model = src / "managed_components/espressif__esp-sr/model/multinet_model"
+            self.assertTrue((model / "mn7_cn").is_dir() and (model / "fst").is_dir())
 
     @unittest.skipUnless(os.environ.get("UPSTREAM_SRC"), "needs UPSTREAM_SRC (CI)")
     def test_patched_checkout_carries_the_wake_config(self):

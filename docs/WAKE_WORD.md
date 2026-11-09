@@ -2,16 +2,45 @@
 
 默认唤醒词是"你好团团"，用 esp-sr MultiNet7 的自定义唤醒词实现，不改小智 C++ 代码，只改构建配置（`scripts/p1_integrate.py` 的 `WAKE_WORD_PROFILES`）。这是**在一块板子上的试验**，验收达标前不当作定版。
 
-## 切换与回退
+## 重要：唤醒词由 assets 分区决定，只刷 app 不会改变
+
+上游 `afe_audio_engine.cc` 在**运行时**检查 srmodels（在 assets 分区里）有没有 MultiNet 模型来选检测器；`custom_wake_word.cc` 的唤醒词和命令都从 `index.json`（也在 assets 里）读取，`CONFIG_USE_*_WAKE_WORD` 在 C++ 里没有引用，它们只影响打包。所以：
+
+- 只刷新 app：板子行为不变（仍按板上旧 assets 走 WakeNet）。
+- 只刷新 assets：连旧 app 也会走 MultiNet。
+- 切换唤醒词 = **刷 assets 分区**（0x800000，8 MiB 分区）；app 与它同一次构建配套刷。
+
+## 切换
 
 | 方式 | 用法 |
 |---|---|
 | 环境变量 | `PET_WAKE_WORD=xiaozhi python scripts/p1_integrate.py --source ...` |
 | 命令行 | `p1_integrate.py --wake-word xiaozhi`（优先于环境变量） |
 | 改默认 | 把 `WAKE_WORD_DEFAULT` 改成 `"xiaozhi"` |
-| CI | 手动触发 `p1-integrated-firmware` 工作流，输入 `wake_word=xiaozhi` |
+| CI | 手动触发 `p1-integrated-firmware`，输入 `wake_word=xiaozhi`（大小写、空白会被规整） |
 
-`xiaozhi` 不覆盖任何唤醒词配置，回到上游默认（WakeNet9 `wn9_nihaoxiaozhi_tts`）。服务端 `deploy/xiaozhi/child.config.yaml` 的 `wakeup_words` 两个词都保留，所以回退时服务端不用动。刷回旧词需要重新编译并刷机（只刷 app 分区即可；assets 分区里的 srmodels 随固件重新打包，需按当时的刷机流程确认）。
+`xiaozhi` 不覆盖任何唤醒词配置，回到上游默认（WakeNet9）。
+
+## 部署与刷机顺序（先服务端，再板子）
+
+1. **服务端**：`child.config.yaml` 是构建镜像时 COPY 进去的，只重启容器不会生效，必须重新构建：
+   `docker compose up -d --build xiaozhi-server`。先部署，板子刷了新词之后服务端才不会把"你好团团"当聊天内容。
+2. **取构建产物**（同一次 CI 运行）：`pet-ota1-app-only-buildonly`（app + manifest）和 `pet-assets-wakeword-buildonly`（`xiaozhi-pet-assets.bin` + `assets-manifest.json`）。`assets-manifest.json` 写明偏移 `0x800000`、大小、SHA256、`paired_app_sha256`（必须等于 app manifest 的 `image_sha256`）和回退用的官方 assets 大小/SHA。核对 SHA 再继续。
+3. **先存档板上当前 assets**（只读）：
+   `esptool --chip esp32s3 -p COMx read-flash 0x800000 2900513 assets-before.bin`
+4. **只写 assets 分区**，不碰 NVS、otadata、bootloader、分区表：
+   `esptool --chip esp32s3 -p COMx write-flash 0x800000 xiaozhi-pet-assets.bin`
+   app 按既有 OTA1 流程刷同一次构建的 app。本仓库任何脚本和 CI 都不会刷机。
+5. **验收看启动日志三样**：`AfeAudioEngine: After AFE create`；`PET_PSRAM_STATS free=… min_free=…`（启动约 30 s 与 90 s 各一行）；`custom_wake_word` 打印的命令列表里含 `ni hao tuan tuan`。缺任一项就不要往下测。
+
+## 回退（两步）
+
+assets 一旦换成 mn7_cn，旧固件也会走 MultiNet，所以必须先把官方 assets 写回：
+
+1. 从全量备份截出官方 assets（2,900,513 B，SHA256 `7476fd37…2fc3e`，见 `docs/hardware/OFFICIAL_BASELINE_20261025.md`），脚本会校验 SHA：
+   `python scripts/restore_official_assets.py --image xiaozhi-pet-backups/full-flash-20261107-104847.bin --out assets-official.bin`
+2. `esptool --chip esp32s3 -p COMx write-flash 0x800000 assets-official.bin`，只写这一个分区。
+3. 然后看是否需要把 app 也换回 `PET_WAKE_WORD=xiaozhi` 构建的版本（官方 assets 配 WakeNet 构建才一致）。服务端 `wakeup_words` 两个词都保留，不用动。
 
 ## 写进 config.json 的配置
 
@@ -43,7 +72,7 @@ CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20      # 1-99，越小越灵敏
 
 ## PSRAM 预算（8 MiB，`esp_psram` 日志确认）
 
-PSRAM 剩余量**没有被固件记录过**（启动日志只有 SRAM），下面是按源码核算的估计，换词后必须上板看实测。
+PSRAM 剩余量原先没有被固件记录过。本 PR 的 p1 补丁加了 `PET_PSRAM_STATS` 启动日志（free / min_free / largest / total）。下面是按源码核算的估计，必须用这行日志核对。
 
 | 项 | 估计 | 依据 |
 |---|---|---|
@@ -73,16 +102,16 @@ PSRAM 剩余量**没有被固件记录过**（启动日志只有 SRAM），下�
 - `CUSTOM_WAKE_WORD_DISPLAY="你好团团"` 只用于唤醒后作为"检测到唤醒词"的文本发给服务器（`SendWakeWordDetected`）。板子界面不显示这个字符串；仓库里没有"嗨我在"。
 - 服务器对唤醒词的处理取决于 `wakeup_words` 列表。上游默认只含"你好小智"等，**不含"你好团团"**。`enable_greeting: false` 时，列表里的词被静默吞掉（没有欢迎语）；**不在列表里的文本会被当作普通话语交给 LLM**，团团会回一句话。所以 `child.config.yaml` 新增了 `wakeup_words: [你好团团, 你好小智]`，并有测试检查它与 `WAKE_WORD_DISPLAY` 一致。
 - 欢迎语是服务端行为：`enable_greeting` 关，所以换词前后都没有欢迎语；`wakeup_words_response_cache`（"我一直都在呢"之类缓存应答）只在 ASR 文本路径的 `checkWakeupWords` 里触发，唤醒词的 `detect` 消息不走它。
-- 部署新服务端配置需要重启 xiaozhi-server 容器；这次没有部署。
+- 部署新服务端配置需要重新构建镜像（见上），这次没有部署。
 
 ## 风险
 
 1. MultiNet 做常开唤醒，官方没有误唤醒数据，倾向比专用 WakeNet 差，必须按验收门槛实测。
 2. PSRAM 余量估计 1.5–2.3 MB，未实测。
 3. 内部 RAM 余量本来就紧（AFE 创建后最低约 33 KB）。
-4. MultiNet 初始化失败（拼音被拒、内存不足）会静默变成没有唤醒词，只能靠按键；上板看启动日志有无 `Custom wake word` 初始化错误。
+4. MultiNet 失败有两种，表现不同：(a) 引擎初始化失败（上游 `multinet_->create()` 没有判空，内存不够会直接崩溃；其它初始化失败时，连上行语音处理也不可用）；(b) 拼音被 mn7 拒绝：`esp_mn_commands_update` 的返回值没人检查，结果是永远不唤醒，没有报错。验收时必须在启动日志里看到命令列表含 `ni hao tuan tuan`。
 5. 合成声测试偏乐观，需要真人儿童录音补测。
-6. 服务端 `wakeup_words` 未部署时，"你好团团"会被当作聊天内容。
+6. 服务端 `wakeup_words` 未重新构建部署时，"你好团团"会被当作聊天内容。
 7. 4 音节"你好团团"与"你好小智"同结构，近音词（团子、桃桃）要靠实测阈值。
 
 ## 验收门槛

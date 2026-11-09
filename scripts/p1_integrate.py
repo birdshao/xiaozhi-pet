@@ -5336,6 +5336,22 @@ def patch_board(text: str) -> str:
         // until AF/AIE are cleared; on the PMIC power-on pin that would read
         // as a long PWR press, so clear it before anything else.
         ClearRtcAlarm();
+        // Wake word acceptance: PSRAM headroom was only ever estimated. Log the
+        // free / lowest-ever-free / largest block after the audio engine is up
+        // (AfeAudioEngine "After AFE create" appears at ~21 s) and again later.
+        // Read-only heap queries; the task ends itself.
+        xTaskCreate(
+            [](void*) {
+                for (const uint32_t wait_ms : {30000u, 90000u}) {
+                    vTaskDelay(pdMS_TO_TICKS(wait_ms));
+                    ESP_LOGI(TAG, "PET_PSRAM_STATS free=%u min_free=%u largest=%u total=%u",
+                             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                             static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)),
+                             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+                             static_cast<unsigned>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM)));
+                }
+                vTaskDelete(nullptr);
+            }, "pet_psram_stats", 3072, nullptr, 1, nullptr);
         // A single short-lived low-priority task repeats the marker after
         // serial monitoring can attach following esptool hard_reset.
         // No NVS, networking, GPIO, audio or EPD changes.

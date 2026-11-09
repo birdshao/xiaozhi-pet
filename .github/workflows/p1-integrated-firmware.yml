@@ -27,6 +27,9 @@ on:
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
       - 'tests/test_p1_wake_word.py'
+      - 'tests/test_p1_assets_artifact.py'
+      - 'scripts/p1_assets_artifact.py'
+      - 'scripts/restore_official_assets.py'
       - 'tests/test_p4_story_audio_contract.py'
       - 'tests/test_v4_book_reader.py'
       - 'tests/test_v4_mic_games.py'
@@ -81,7 +84,9 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
       - name: Wake word build switch contract (offline)
         shell: bash
-        run: python3 -m unittest discover -s tests -p 'test_p1_wake_word.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_p1_wake_word.py' -v
+          python3 -m unittest discover -s tests -p 'test_p1_assets_artifact.py' -v
       - name: Validate voice-exclusive story PCM queue patch before IDF build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
@@ -137,7 +142,8 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_p1_wake_word.py' -v
           cd "$UPSTREAM_SRC"
-          if [ -z "$PET_WAKE_WORD" ] || [ "$PET_WAKE_WORD" = tuantuan ]; then
+          WW="$(printf '%s' "$PET_WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [ -z "$WW" ] || [ "$WW" = tuantuan ]; then
             grep -E '^CONFIG_(USE_CUSTOM_WAKE_WORD=y|SR_MN_CN_MULTINET7_QUANT=y|CUSTOM_WAKE_WORD="ni hao tuan tuan")' sdkconfig | sort
             grep -q '^CONFIG_USE_CUSTOM_WAKE_WORD=y' sdkconfig
             grep -q '^CONFIG_SR_MN_CN_MULTINET7_QUANT=y' sdkconfig
@@ -145,7 +151,7 @@ jobs:
           else
             grep -q '^CONFIG_USE_AFE_WAKE_WORD=y' sdkconfig
           fi
-          ls -l build/generated_assets.bin build/assets.bin 2>/dev/null || true
+          ls -l build/generated_assets.bin
       - name: Validate and package immutable app-only image + SHA manifest
         shell: bash
         run: |
@@ -158,6 +164,23 @@ jobs:
             --run-id "$GITHUB_RUN_ID"
           test "$(find release -maxdepth 1 -type f | wc -l)" -eq 2
           test ! -e release/merged-binary.bin
+      - name: Package assets partition image (wake word models) + manifest
+        shell: bash
+        env:
+          PET_WAKE_WORD: ${{ inputs.wake_word }}
+        run: |
+          WW="$(printf '%s' "$PET_WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          python3 scripts/p1_assets_artifact.py             --assets "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32/build/generated_assets.bin"             --app-manifest release/manifest.json             --out "$GITHUB_WORKSPACE/release-assets"             --wake-word "${WW:-tuantuan}"             --run-id "$GITHUB_RUN_ID"
+          sha256sum release-assets/xiaozhi-pet-assets.bin
+      - name: Upload assets partition image (wake word; paired with the app of this run; never auto-flashed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-assets-wakeword-buildonly
+          path: |
+            release-assets/xiaozhi-pet-assets.bin
+            release-assets/assets-manifest.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload review-only OTA app artifact (not a flashing workflow)
         uses: actions/upload-artifact@v4
         with:
