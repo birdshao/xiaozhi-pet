@@ -68,5 +68,71 @@ class ParrotPrivacy(unittest.TestCase):
         self.assertEqual(users, [])
 
 
+# --- V9 S1 (voice effects): assertions added, none of the above relaxed -------
+# The effects (pitch, robot ring modulation, echo) are computed on the fly in
+# Render() from the one recording; they may not introduce a second buffer, any
+# persistent state beyond a few integers, or any way out of RAM.
+NEW_DRAW = KID / "src/sound_draw_v9.inc"
+SAMPLE_ARRAY = re.compile(
+    r"\b(?:int16_t|int8_t|short|float|double)\s+\w+\s*\[\s*[^\]]+\]\s*[;=]")
+BUFFER_WRITE = re.compile(r"\bbuffer_\s*\[[^\]]*\]\s*=(?!=)")
+
+
+def body_of(code: str, signature: str) -> str:
+    start = code.index(signature)
+    return code[start:code.index("\n}\n", start)]
+
+
+class ParrotVoiceEffectsPrivacy(unittest.TestCase):
+    def test_effects_add_no_second_copy_buffer_or_container(self):
+        extra = [r"\bstd::array\b", r"\bcalloc\b", r"\brealloc\b", r"\balloca\b",
+                 r"\bthread_local\b", r"\bmemmove\b", r"\bstd::copy\b", r"\bstd::unique_ptr\b",
+                 r"\bstd::make_", r"\bstd::deque\b", r"\bstd::queue\b"]
+        for path in PARROT:
+            code = code_only(path.read_text(encoding="utf-8"))
+            for pattern in extra:
+                self.assertIsNone(re.search(pattern, code), f"{path.name}: forbidden {pattern!r}")
+            self.assertIsNone(SAMPLE_ARRAY.search(code), f"{path.name}: a local/static sample array")
+
+    def test_the_session_owns_exactly_one_buffer_pointer(self):
+        header = code_only(PARROT[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(re.findall(r"int16_t\s*\*\s*\w+_\s*[=;]", header)), 1)
+        self.assertRegex(header, r"int16_t\*\s+buffer_\s*=\s*nullptr;")
+        self.assertNotRegex(header, r"\bint16_t\s+\w+_\s*\[")
+
+    def test_only_feed_writes_the_recording_effects_only_read_it(self):
+        code = code_only((KID / "src/parrot_session.cc").read_text(encoding="utf-8"))
+        writes = [m.start() for m in BUFFER_WRITE.finditer(code)]
+        feed_start = code.index("size_t ParrotSession::Feed")
+        feed_end = feed_start + len(body_of(code, "size_t ParrotSession::Feed"))
+        self.assertEqual(len(writes), 1)
+        for at in writes:
+            self.assertTrue(feed_start <= at < feed_end, "buffer_ written outside Feed()")
+        render = body_of(code, "size_t ParrotSession::Render")
+        self.assertIsNone(BUFFER_WRITE.search(render))
+        self.assertIn("Wipe();", render)  # the last block still wipes
+
+    def test_new_view_and_drawing_code_is_pure_drawing(self):
+        banned = [r"\bfopen\b", r"\bfwrite\b", r"\bnvs_", r"\bhttp", r"\bwifi\b", r"\bsocket\b",
+                  r"\bheap_caps", r"\bmalloc\b", r"\bESP_LOG", r"\bprintf\b", r"\bmemcpy\b"]
+        for path in (NEW_DRAW, KID / "src/sound_view.cc", KID / "include/kid_app/sound_view.h"):
+            self.assertTrue(path.exists(), path.name)
+            code = code_only(path.read_text(encoding="utf-8"))
+            for pattern in banned:
+                self.assertIsNone(re.search(pattern, code), f"{path.name}: forbidden {pattern!r}")
+            self.assertNotIn("parrot_buffer_", code)
+        view = code_only((KID / "src/sound_view.cc").read_text(encoding="utf-8"))
+        self.assertNotIn("Recorded(", view)
+        self.assertNotIn("Render(", view)
+
+    def test_board_parrot_wiring_logs_counts_only_and_has_no_exit_path(self):
+        src = (ROOT / "scripts/p1_integrate.py").read_text(encoding="utf-8")
+        parrot = src[src.index("void ApplyParrotOutput("):src.index("// ---- songs ----")]
+        for bad in ("fopen", "fwrite", "nvs_", "esp_http", "esp_websocket", "SendAudio", "Opus"):
+            self.assertNotIn(bad, parrot)
+        for line in re.findall(r'ESP_LOG\w\(TAG, "PET_PARROT[^;]*;', parrot):
+            self.assertNotRegex(line, r"chunk|buffer|samples\[|parrot_buffer_|Render\(")
+
+
 if __name__ == "__main__":
     unittest.main()

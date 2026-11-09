@@ -93,6 +93,27 @@ int main() {
         CleanCorners(parrot[i]);
         for (size_t j = i + 1; j < parrot.size(); ++j) assert(parrot[i] != parrot[j] && Diff(parrot[i], parrot[j]) > 50);
     }
+    // V9 S1: every voice card (and the home slot) is its own picture, in the
+    // Ready, Recording and Playing phases; the voice number travels in `sc`.
+    for (ParrotPhase ph : {ParrotPhase::Ready, ParrotPhase::Recording, ParrotPhase::Playing}) {
+        std::vector<GameView> cards;
+        for (uint8_t c = 0; c < ParrotSession::kChoices; ++c) {
+            if (c == ParrotSession::kHomeChoice && ph != ParrotPhase::Ready) continue;
+            cards.push_back(ParrotGameView({ph, ParrotHint::None, c}));
+            assert(cards.back().sc == c && Ink(cards.back()) > 2000);
+            CleanCorners(cards.back());
+        }
+        for (size_t i = 0; i < cards.size(); ++i)
+            for (size_t j = i + 1; j < cards.size(); ++j) assert(Diff(cards[i], cards[j]) > 300);
+    }
+    // Ready shows the choice row (one mark per voice plus home): moving the
+    // choice changes the row, not just the big card.
+    assert(Diff(ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 0}),
+                ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 5})) > 1500);
+    // Picture ids of the new cards stay clear of the other ranges.
+    static_assert(static_cast<uint16_t>(ParrotArt::Chipmunk) > 705 &&
+                  static_cast<uint16_t>(ParrotArt::Home) <= 710, "SoundArt range 701..710");
+
     RefreshPlanner planner;
     planner.Completed(GameModel(parrot[0]), RefreshMode::Full, true);
     assert(planner.Plan(GameModel(parrot[1])) == RefreshMode::Partial);

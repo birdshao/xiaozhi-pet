@@ -2,8 +2,8 @@ PETSELFTEST1
 # V8 sound routines without a person: tooth brushing from the care menu
 # (card 6): open, press to start, one hourglass frame, then leave early
 # with a long press (no completion, no care record); the parrot from the
-# play menu (Sound page): opened and left by turning the dial, the dial centre
-# is never held so nothing is recorded; the song player by voice command
+# play menu (Sound page): opened and left via the home slot (dial up, press:
+# V9), nothing is recorded; the song player by voice command
 # PLAY_SONG on a card WITHOUT song_ / lullaby_ books (count=5: since V9-3A
 # the 5 built-in melodies are always listed, so there is no hint picture;
 # a card with songs lists more and this scenario fails on count=5).
@@ -64,8 +64,10 @@ tap press 3000
 tap down 600
 tap down 600
 tap press 6000
-# Turning the dial leaves the parrot.
-tap down 3000
+# V9: the dial now picks the voice; up from the first voice is the home
+# slot, a press there leaves (nothing is recorded).
+tap up 1500
+tap press 3000
 wait 6000
 # Songs by voice: no song books on the card, the built-in list.
 vcmd PLAY_SONG

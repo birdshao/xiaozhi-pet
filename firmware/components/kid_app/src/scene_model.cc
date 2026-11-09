@@ -2348,16 +2348,6 @@ void SleepScene(MonoFrame& f, ScenePose pose) {
 
 // ---- V8 sound activities (sound_view.h): parrot, songs, brushing / washing --------
 
-// Microphone: capsule, cradle and stand.
-void MicIcon(MonoFrame& f, int cx, int cy, int r) {
-    auto p = [r](int percent) { return r * percent / 100; };
-    const int w = std::max(4, r / 9);
-    FillRoundRect(f, cx - p(26), cy - p(78), p(52), p(100), p(26));
-    Arc(f, cx, cy + p(2), p(48), p(46), 0, 180, w);
-    Stroke(f, cx, cy + p(48), cx, cy + p(76), w);
-    Stroke(f, cx - p(30), cy + p(78), cx + p(30), cy + p(78), w);
-}
-
 // Music note (quarter note with a flag).
 void NoteIcon(MonoFrame& f, int cx, int cy, int r) {
     auto p = [r](int percent) { return r * percent / 100; };
@@ -2440,7 +2430,13 @@ void PressCue(MonoFrame& f, int cx, int cy, bool filled) {
     else Ring(f, cx, cy, 22, 22, 5);
 }
 
+#include "sound_draw_v9.inc"  // V9: the parrot's voice cards and scene
+
 void SoundScene(MonoFrame& f, const GameView& g) {
+    if (g.sound == kSoundParrot) {  // V9
+        ParrotScene(f, g);
+        return;
+    }
     constexpr int kCardX = 336, kCardY = 26, kCardW = 292, kCardH = 252, kCx = 482, kCy = 152;
     int head_x = 150;
     Emotion emotion = Emotion::Neutral;
@@ -2453,13 +2449,6 @@ void SoundScene(MonoFrame& f, const GameView& g) {
         return;
     }
     switch (g.sound) {
-        case kSoundParrot: {
-            const auto phase = static_cast<ParrotPhase>(g.sa);
-            emotion = phase == ParrotPhase::Recording ? Emotion::Listening
-                      : phase == ParrotPhase::Playing ? Emotion::Speaking
-                                                      : Emotion::Curious;
-            break;
-        }
         case kSoundSongs: {
             const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);
             if (g.sa == static_cast<uint8_t>(SongPhase::Playing)) {
@@ -2483,26 +2472,6 @@ void SoundScene(MonoFrame& f, const GameView& g) {
     }
     CatHead(f, head_x, 172, 62, emotion, eyes);
     RoundRectRing(f, kCardX, kCardY, kCardW, kCardH, 28, 6);
-
-    if (g.sound == kSoundParrot) {
-        const auto phase = static_cast<ParrotPhase>(g.sa);
-        const auto hint = static_cast<ParrotHint>(g.sb);
-        if (phase == ParrotPhase::Playing) {
-            SoundArtIcon(f, static_cast<uint16_t>(SoundArt::Parrot), kCx, kCy, 96);
-            Heart(f, 52, 64, 20);
-            Sparkle(f, 270, 120, 14);
-        } else {
-            MicIcon(f, kCx, kCy, 96);
-            if (phase == ParrotPhase::Recording)
-                for (int k = 1; k <= 2; ++k) {  // sound arcs both sides of the mic
-                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, -50, 50, 7);
-                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, 130, 230, 7);
-                }
-        }
-        if (hint == ParrotHint::TooShort) QuestionMark(f, 274, 84, 22, 8);
-        PressCue(f, 400, 392, phase == ParrotPhase::Recording);
-        return;
-    }
 
     if (g.sound == kSoundSongs) {
         const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);

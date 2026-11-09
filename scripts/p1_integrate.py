@@ -4772,6 +4772,17 @@ BOARD_WORKER = r'''
         if (out.start_mic) {
             audio.SetMicFrameTap(true, &ParrotFrameSink, this);
             ESP_LOGI(TAG, "PET_PARROT_REC armed=1");
+            unsigned voice = 0;  // V9: which voice card (a number, never audio)
+            {
+                std::lock_guard<std::mutex> lock(parrot_mutex_);
+                voice = parrot_.View().choice;
+            }
+            ESP_LOGI(TAG, "PET_PARROT_VOICE voice=%u", voice);
+        }
+        if (out.stop_audio) {  // V9: a dial turn while it plays: stop now (already wiped)
+            parrot_play_gen_.fetch_add(1);  // the playback task stops at its next block
+            audio.CancelLocalStoryPcm();
+            ESP_LOGI(TAG, "PET_PARROT_STOP");
         }
         if (out.stop_mic) {
             audio.SetMicFrameTap(false, nullptr, nullptr);
