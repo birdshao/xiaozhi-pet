@@ -243,6 +243,14 @@ CXX="${CXX:-g++}"
   -o "$BUILD/test_power_manager"
 "$BUILD/test_power_manager"
 
+# V9 wake guard: repair gate (settled idle, rate limit, sleep) and the
+# chat-ended cue conditions (voice baseline C3 / C6).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/wake_guard.cc" \
+  "$ROOT/tests/cpp/test_wake_guard.cc" \
+  -o "$BUILD/test_wake_guard"
+"$BUILD/test_wake_guard"
+
 # Short ePaper animations (incl. the V3-04 good-morning one), idle blink
 # and deferred ghosting cleanup.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
