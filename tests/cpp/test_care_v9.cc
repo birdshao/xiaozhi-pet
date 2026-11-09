@@ -518,6 +518,7 @@ void TestGrowthFromLedger() {
     assert(GrewOn(care, mem, grew_on + 2, true) == 0);
     // Care counts too (ten cares = one point), and never makes it smaller.
     const uint8_t before = GrowthStageNow(care, mem);
+    const uint32_t score_before = GrowthScoreNow(care, mem);
     for (int i = 0; i < 50; ++i) {
         CareEvent e{};
         e.id = id++;
@@ -526,12 +527,14 @@ void TestGrowthFromLedger() {
         e.minute = day * 1440u + 600;
         assert(care.Apply(e) == CareResult::Applied);
     }
+    assert(GrowthScoreNow(care, mem) == score_before + 5);  // 50 cares = 5 points
     assert(GrowthStageNow(care, mem) >= before);
     // A parent wipe starts again from the little one (like the stickers).
     care.WipeChildData();
     MemoryEvent wipe = Mem(id++, MemoryEventKind::MemoryCleared, day, 0);
     wipe.source = MemorySource::Parent;
-    if (mem.Apply(wipe) == MemoryResult::Applied) assert(GrowthStageNow(care, mem) == 0);
+    assert(mem.Apply(wipe) == MemoryResult::Applied);
+    assert(GrowthScoreNow(care, mem) == 0 && GrowthStageNow(care, mem) == 0);
     assert(GrowthStageNow(CareStore{}, MemoryStore{}) == 0);
 }
 
@@ -925,7 +928,7 @@ void TestLookBitsAndRefresh() {
         const HomeLook u = UnpackLook(PackLook(l));
         assert(u == l && u.need == 4 && u.festival == 7 && u.wish == 9);
     }
-    // Words packed without a stage (V8 producers) read as stage 0.
+    // A look without a stage (stage defaults to 0) packs nothing into 30..31.
     HomeLook v8 = look;
     v8.stage = 0;
     assert(UnpackLook(PackLook(v8)).stage == 0 && (PackLook(v8) >> 30) == 0);

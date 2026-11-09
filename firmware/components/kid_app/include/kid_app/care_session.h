@@ -55,6 +55,7 @@ uint8_t TicklishSpot(Temperament t);
 Food TodayWish(uint32_t day, Temperament t, const Season& season);
 // CareView::variant of the feed menu and the diary: the treat's picture.
 constexpr uint16_t TreatVariant(Treat t) { return static_cast<uint16_t>(t); }
+static_assert(TreatVariant(Treat::Mooncake) == kFeedVariantMooncake, "care_view.h");
 // Food picture number (HomeLook::wish, CareView::food): 1..7 the food,
 // 8 zongzi, 9 mooncake (food 8 drawn by its season); 0 = none.
 uint8_t WishPicture(Food food, Treat treat);

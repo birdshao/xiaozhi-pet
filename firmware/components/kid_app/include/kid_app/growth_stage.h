@@ -40,8 +40,11 @@ uint8_t GrowthStageNow(const CareStore& care, const MemoryStore& memory);
 // without what the ledger still holds of those days (memory today /
 // yesterday, care today). The diary asks for its own day, the good morning
 // also for yesterday (a stage reached while the child was asleep is news
-// the next morning). Care counted on a day the care store already rolled
-// past is not known any more; it only ever makes the news a day late.
+// the next morning). Only what the ledger still holds is subtracted: care
+// counted on a day the care store already rolled past is not known any
+// more, so a stage reached by such care may never be announced (missed,
+// not late). The picture itself always shows the stage.
+// GrewOn is about announcing, never about the stage: it never stores.
 uint8_t GrewOn(const CareStore& care, const MemoryStore& memory, uint32_t day,
                bool with_yesterday);
 

@@ -115,7 +115,27 @@ void GrowthFront(MonoFrame& f, uint8_t stage, int cx, int cy) {
     FilledStar(f, cx - 58, cy + 133, 14);
 }
 
+// ---- S4: "a lullaby?" after the diary: the moon is up ----
+
+void BedsongPicture(MonoFrame& f, int px) {
+    Moon(f, px - 20, 120, 50, true);
+    Sparkle(f, px + 70, 80, 14);
+    Sparkle(f, px + 90, 190, 10);
+}
+
 // ---- C4: seasonal foods (food pictures 7..9, the FoodIcon size rules) ----
+
+void SeasonalFoodIcon(MonoFrame& f, uint8_t picture, int cx, int cy, int r);
+
+// The feed rail: food 8 is one card id whose picture follows the season
+// (CareView::variant). True when this card was drawn here.
+bool SeasonalCardIcon(MonoFrame& f, const CareView& c, uint8_t i, int cx, int cy) {
+    if (c.kind != CareKind::Feed || c.variant != kFeedVariantMooncake ||
+        c.options[i] != static_cast<uint16_t>(CareArt::FestiveTreat))
+        return false;
+    SeasonalFoodIcon(f, 9, cx, cy, 58);
+    return true;
+}
 
 void SeasonalFoodIcon(MonoFrame& f, uint8_t picture, int cx, int cy, int r) {
     auto p = [r](int percent) { return r * percent / 100; };

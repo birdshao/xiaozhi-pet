@@ -62,6 +62,9 @@ struct CareView {
 constexpr uint8_t kCareSpotSlots = 8;
 // V9 C4 food pictures: 1..7 the Food, 8 zongzi, 9 mooncake.
 constexpr uint8_t kWishPictures = 9;
+// CareView::variant of the feed menu at Mid-Autumn (care_session.h
+// TreatVariant(Treat::Mooncake)): food 8's card is drawn as a mooncake.
+constexpr uint16_t kFeedVariantMooncake = 2;
 constexpr uint8_t kTickleHead = 0, kTickleBelly = 1, kTickleFeet = 2;
 constexpr uint16_t TickleVariant(uint8_t target, uint8_t feather, bool laugh) {
     return static_cast<uint16_t>(0x20 | (target & 3) | ((feather & 3) << 2) | (laugh ? 0x10 : 0));
@@ -87,10 +90,14 @@ struct HomeLook {
     }
     bool operator!=(const HomeLook& o) const { return !(*this == o); }
 };
-// One word for board atomics: 3 bits per worn slot (0..14; items are
-// 1..7), wish 15..18 (V9), need 20..23, level 24..25, festival 26..29,
-// stage 30..31 (V9). Out-of-range values are dropped to 0. RAM only:
-// never stored, never sent.
+// One word for board atomics (RAM only: never stored, never sent).
+// Bit allocation, registered with the V9 coordinator (slice 1C):
+//    0..14  worn: 3 bits per WearSlot (V9; was 4) -> at most 7 items a slot
+//   15..18  wish: today's wish food picture 0..9 (V9 C4)
+//   19      free
+//   20..23  need    24..25 need level    26..29 festival
+//   30..31  stage: growth stage 0..3 (V9 C3)
+// Out-of-range values are dropped to 0, never smeared into a neighbour.
 uint32_t PackLook(const HomeLook& look);
 HomeLook UnpackLook(uint32_t bits);
 

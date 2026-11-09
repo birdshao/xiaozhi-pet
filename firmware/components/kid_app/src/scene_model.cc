@@ -2,7 +2,6 @@
 #include "kid_app/sound_view.h"
 
 #include "kid_app/activity_list.h"
-#include "kid_app/care_calendar.h"  // V9 C4: Treat
 
 #include <algorithm>
 #include <cmath>
@@ -2163,11 +2162,7 @@ void CareScene(MonoFrame& f, const CareView& c) {
                     }
                 }
                 break;
-            case CareKind::Bedsong:  // V9 S4: a lullaby? the moon is up
-                Moon(f, px - 20, 120, 50, true);
-                Sparkle(f, px + 70, 80, 14);
-                Sparkle(f, px + 90, 190, 10);
-                break;
+            case CareKind::Bedsong: BedsongPicture(f, px); break;  // V9 S4
             case CareKind::Tidy: {  // toys go into the box one by one
                 // V9 G5: the third toy is today's game prop (any game picture).
                 const uint16_t toys[3] = {static_cast<uint16_t>(CareArt::ToyBlock),
@@ -2192,10 +2187,7 @@ void CareScene(MonoFrame& f, const CareView& c) {
     for (uint8_t i = 0; i < n; ++i) {
         const int x = GameCardX(i, n);
         RoundRectRing(f, x, kGameCardY, kGameCardW, kGameCardH, 24, 5);
-        if (c.kind == CareKind::Feed && c.options[i] == static_cast<uint16_t>(CareArt::FestiveTreat) &&
-            c.variant == static_cast<uint16_t>(Treat::Mooncake))  // V9 C4: same id, Mid-Autumn
-            SeasonalFoodIcon(f, 9, x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
-        else
+        if (!SeasonalCardIcon(f, c, i, x + kGameCardW / 2, kGameCardY + kGameCardH / 2))  // V9 C4
             GameArtIcon(f, c.options[i], x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
         if (i == c.highlight)
             RoundRectRing(f, x - kGameFrame, kGameCardY - kGameFrame, kGameCardW + 2 * kGameFrame,
