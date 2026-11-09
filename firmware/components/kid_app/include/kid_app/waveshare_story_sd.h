@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/book_shelf.h"
 #include "kid_app/scene_model.h"
 #include "kid_app/story_pack_file_port.h"
 #include "kid_app/story_pack_reader.h"
@@ -28,6 +29,19 @@ public:
     // NoBook (card mounted, no such .kpb) or BadBook (file does not
     // validate). None once Ready().
     BookMissing Missing() const { return missing_; }
+    // V9 bookshelf: switch to another book of the card (Pet mode, never
+    // while the ePaper task reads pages: the board holds its screen lock).
+    // Failure leaves no book open (Missing() says why).
+    bool SelectBook(const char* book_id);
+    // V9 bookshelf: list /books once (a file named like a book that opens as
+    // one; songs and lullabies skipped), keep the first BookShelf::kMaxBooks
+    // in reading order (the rest are logged), read each kept book's series
+    // info and a first-page thumbnail into `thumb_pool` (kMaxBooks *
+    // ShelfView::kThumbBytes bytes, owned by the caller for the whole run).
+    // `budget_ms` bounds the whole scan: past it the books found so far are
+    // shown and the rest get no thumbnail (a plain cover).
+    // Call after Initialize() on the Pet mode worker. Returns the book count.
+    size_t ScanShelf(BookShelf* shelf, uint8_t* thumb_pool, uint32_t budget_ms = 6000) const;
     // V8 series: is the book with this content id on the card? Looked up by
     // the catalog's card name /books/c<content_id>.kpb (existence only).
     bool ContentBookPresent(uint16_t content_id) const;

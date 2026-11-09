@@ -27,12 +27,24 @@ namespace kid_app {
 // the sleep flow; nursery rhymes and everything else stay closed.
 enum class SongKind : uint8_t { Song, Lullaby };
 
-constexpr size_t kMaxSongs = 12;
+constexpr size_t kMaxSongs = 16;  // card songs plus the built-in melodies
+// Room kept for the built-in melodies (melody_synth.h has at most this many),
+// so a card full of songs can never push them out of the list. The card gets
+// the rest. The built-in lullaby therefore always stays on the list, which is
+// all that is offered in quiet hours.
+constexpr size_t kMaxBuiltinSongs = 6;
+constexpr size_t kMaxCardSongs = kMaxSongs - kMaxBuiltinSongs;
 constexpr size_t kSongIdBytes = 40;
 
 struct SongEntry {
     char id[kSongIdBytes] = {};
     SongKind kind = SongKind::Song;
+    // V9-3A: 0 = a KPB book on the card; n > 0 = built-in melody n - 1
+    // (melody_synth.h), synthesised, nothing on the card.
+    uint8_t builtin = 0;
+    // A card book that has a built-in melody of the same id: if the book turns
+    // out to be unreadable the player falls back to this melody (index + 1).
+    uint8_t fallback = 0;
 };
 
 // Collects the files the board saw in /sdcard/books: Offer() each stem.
@@ -45,10 +57,28 @@ public:
     size_t Count() const { return count_; }
     const SongEntry& At(size_t i) const { return entries_[i]; }
     void Clear() { count_ = 0; }
+    // V9-3A: adds built-in melody `index` (0-based) under `id` (same prefix and
+    // id rules as Offer; `lullaby` must match the prefix). A card book with
+    // the same id wins: the duplicate is refused (false) but remembered as the
+    // entry's fallback melody. Offer the card first. The card holds at most
+    // kMaxCardSongs entries, the built-ins kMaxBuiltinSongs.
+    bool OfferBuiltin(uint8_t index, const char* id);
     // Quiet hours: only lullabies stay.
     SongCatalog LullabiesOnly() const;
+    // V9 S4: any lullaby, on the card or built in (the bedtime ritual asks).
+    bool HasLullaby() const {
+        for (size_t i = 0; i < count_; ++i)
+            if (entries_[i].kind == SongKind::Lullaby) return true;
+        return false;
+    }
+    // The player's own copy only: entry `i` becomes its fallback melody.
+    void MakeBuiltin(size_t i) {
+        entries_[i].builtin = entries_[i].fallback;
+        entries_[i].fallback = 0;
+    }
 
 private:
+    bool Insert(const char* stem, uint8_t builtin);
     std::array<SongEntry, kMaxSongs> entries_{};
     size_t count_ = 0;
 };
@@ -105,11 +135,21 @@ public:
     // The catalogue is copied: later scans do not disturb a running player.
     bool Open(uint32_t now_ms, const SongContext& context, const SongCatalog& catalog,
               SongOutput* out);
+    // V9 S4, the bedtime ritual: the child already said "a lullaby" (care
+    // session Bedsong), so no list and no timer pick: the first lullaby,
+    // kTimerMinutes[0] (10 min), then the sleep flow. If the book cannot be
+    // opened the player leaves into the sleep flow too (never a list at
+    // bedtime). False (nothing opened) without a lullaby, on low battery or
+    // during a voice turn, like Open.
+    bool OpenBedtime(uint32_t now_ms, const SongContext& context, const SongCatalog& catalog,
+                     SongOutput* out);
     // Dial: Up/Down move the cursor (list) or the timer choice; Press picks;
     // Long = home. While playing, Press stops (back to the list), Up/Down are
     // ignored (no accidental skips).
     SongOutput Input(GameInput input, uint32_t now_ms);
-    // The board opened the chosen book (pages >= 1) or failed (0 -> list again).
+    // The board opened the chosen book (pages >= 1) or failed (0 -> list again;
+    // an unreadable card book with a same-id built-in melody asks once for that
+    // melody instead: `load` is set again, read Chosen().builtin).
     SongOutput Loaded(uint8_t pages, uint32_t now_ms);
     // The stream of `page` ended on its own.
     SongOutput PageFinished(uint32_t now_ms);
@@ -154,6 +194,7 @@ private:
     uint32_t last_input_ms_ = 0;
     uint32_t sway_ms_ = 0;
     uint32_t end_ms_ = 0;       // lullaby: when to stop
+    bool ritual_ = false;       // opened by OpenBedtime
 };
 
 }  // namespace kid_app

@@ -13,7 +13,8 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import distribution
+from . import chat_provider, distribution
+from .open_chat import OpenChat
 from .config import Settings
 from .auth import ParentAuth
 from . import pairing
@@ -46,6 +47,8 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.state.quiz_engine = quiz
     app.state.story_reader = reader
     app.state.voice_turns = VoiceTurns(store, database, settings)
+    # S6: swappable provider (tests put a FakeChatProvider here); read on every turn.
+    app.state.chat_provider = chat_provider.from_settings(settings)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -96,6 +99,8 @@ def create_app(filename: str | Path | None = None, *, settings: Settings | None 
     app.include_router(distribution.create_router(app, database))
     app.include_router(profile.create_router(app, database))
     app.include_router(panel.create_router(app, database))
+    app.state.voice_turns.open_chat = OpenChat(database, settings, lambda: app.state.chat_provider,
+                                               summary=app.state.state_sync.summary)
 
     return app
 

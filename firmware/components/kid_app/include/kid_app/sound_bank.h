@@ -60,6 +60,10 @@ public:
     // V8 care line (care_phrases.h, ids 1000..1999): the pack clip, else the
     // chime of the nearest pet context. False for an unknown id.
     bool LoadCareLine(uint16_t care_id, SoundClip* out) const;
+    // V9 1E: the spoken rule of a play game (game_rules.h), only when the
+    // pack really holds it. False without a pack, for a game that has no
+    // rule, or when not recorded: the game then plays its old prompt tone.
+    bool LoadGameRule(uint16_t game_id, SoundClip* out) const;
 
 private:
     bool FromPack(uint16_t id, SoundClip* out) const;

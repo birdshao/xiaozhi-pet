@@ -59,7 +59,7 @@ VERSION = 1
 RATE = 24000
 HEADER = struct.Struct("<4sHHIIIIII")  # 32 B
 RECORD = struct.Struct("<HHIII")  # 16 B
-MAX_CLIPS = 192  # V8: room for the care lines (was 96; older packs still load)
+MAX_CLIPS = 256  # V9: game rules + more care lines (V8: 192, V2: 96; older packs still load)
 MAX_ID = 1999    # V8: care lines use 1000..1999 (was 999)
 MAX_BYTES = 8 * 1024 * 1024
 OPTION_SECONDS = 2
@@ -97,7 +97,7 @@ _CONTEXT_OF = {"Greeting": "greeting", "MorningRecap": "morning",
 class Clip:
     id: int
     name: str  # recording / clip file stem
-    kind: str  # option | phrase
+    kind: str  # option | phrase | care | game_rule
     text: str  # reviewed wording
     max_seconds: int
     temperament: str = ""
@@ -126,10 +126,17 @@ def care_table() -> list[Clip]:
                  r.line) for r in care_phrases.table()]
 
 
+def game_rule_table() -> list[Clip]:
+    """V9 spoken game rules (tools/game_prompts.py, ids 600..999), file stem = id."""
+    from tools import game_prompts
+    return [Clip(r.id, str(r.id), "game_rule", r.text, game_prompts.MAX_SECONDS, "",
+                 ",".join(r.names)) for r in game_prompts.table()]
+
+
 def catalog() -> list[Clip]:
     options = [Clip(1 + i, name, "option", zh, OPTION_SECONDS)
                for i, (name, zh) in enumerate(OPTIONS)]
-    return options + phrase_table() + care_table()
+    return options + phrase_table() + care_table() + game_rule_table()
 
 
 def _by_name() -> dict[str, Clip]:
@@ -320,7 +327,7 @@ def demo(out_dir: Path) -> dict:
         clips = Path(tmp)
         for name, _ in OPTIONS:
             shutil.copyfile(PROMPT_DIR / f"prompt_{name}.wav", clips / f"{name}.wav")
-        for clip in phrase_table() + care_table():
+        for clip in phrase_table() + care_table() + game_rule_table():
             # Temperament shifts the pitch so a listener hears which one played
             # (V8 care lines shared by every temperament: no shift).
             shift = 1 + 0.12 * (TEMPERAMENTS.index(clip.temperament) if clip.temperament else 0)
@@ -351,6 +358,10 @@ def checklist(temperament: str = "all") -> str:
             when, kind = care_phrases.WHEN[clip.context], "护理短句"
             rows.append(f"| {clip.name} | {kind} | {TEMPERAMENT_ZH.get(clip.temperament, '全部')} | "
                         f"{when} | {clip.text} | {clip.max_seconds} 秒 |")
+            continue
+        if clip.kind == "game_rule":  # V9: `python -m tools.game_prompts checklist`
+            rows.append(f"| {clip.name} | 游戏规则 | 全部 | 进入游戏时（{clip.context}） | "
+                        f"{clip.text} | {clip.max_seconds} 秒 |")
             continue
         when = "拨轮停在该选项时" if clip.kind == "option" else PLAYED[clip.context]
         kind = "选项名" if clip.kind == "option" else "宠物短句"

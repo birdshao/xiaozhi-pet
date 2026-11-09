@@ -26,18 +26,30 @@ on:
       - 'tests/test_decode_panic.py'
       - 'tools/selftest/**'
       - 'tests/test_p4_board_sd_overlay.py'
+      - 'tests/test_p1_wake_word.py'
+      - 'tests/test_p1_assets_artifact.py'
+      - 'scripts/p1_assets_artifact.py'
+      - 'scripts/restore_official_assets.py'
       - 'tests/test_p4_story_audio_contract.py'
       - 'tests/test_v4_book_reader.py'
       - 'tests/test_v4_mic_games.py'
       - 'scripts/v4_mic_tap_patch.py'
       - 'scripts/v8_mic_frame_tap_patch.py'
       - 'tests/test_v8_sound_wiring.py'
+      - 'tests/test_v9_game_rules_wiring.py'
+      - 'tests/test_v9_game_prompts.py'
+      - 'tools/game_prompts.py'
       - 'tools/make_reader_test_book.py'
       - 'scripts/p4_audio_queue_patch.py'
       - 'scripts/p0_*'
       - 'version-lock.json'
       - '.github/workflows/p1-integrated-firmware.yml'
   workflow_dispatch:
+    inputs:
+      wake_word:
+        description: 'Wake word: tuantuan (你好团团, default) or xiaozhi (你好小智)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -73,11 +85,18 @@ jobs:
       - name: Check SD GPIOs and EPD story fallback before board build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_board_sd_overlay.py' -v
+      - name: Wake word build switch contract (offline)
+        shell: bash
+        run: |
+          python3 -m unittest discover -s tests -p 'test_p1_wake_word.py' -v
+          python3 -m unittest discover -s tests -p 'test_p1_assets_artifact.py' -v
       - name: Validate voice-exclusive story PCM queue patch before IDF build
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_p4_story_audio_contract.py' -v
       - name: V4-05 book reader board contract and self-test scenario
         run: python3 -m unittest discover -s tests -p 'test_v4_book_reader.py' -v
+      - name: V9 spoken game rules board wiring and self-test scenario
+        run: python3 -m unittest discover -s tests -p 'test_v9_game_rules_wiring.py' -v
       - name: V4-08 microphone games privacy contract (loudness only) and board wiring
         run: python3 -m unittest discover -s tests -p 'test_v4_mic_games.py' -v
       - name: Clone pinned upstream and verify board config
@@ -85,6 +104,8 @@ jobs:
         run: bash scripts/p0_checkout.sh "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
       - name: Apply narrow integration patch (disposable checkout only)
         shell: bash
+        env:
+          PET_WAKE_WORD: ${{ inputs.wake_word }}
         run: python3 scripts/p1_integrate.py --source "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
       - name: Review integration diff for whitespace errors
         shell: bash
@@ -118,6 +139,24 @@ jobs:
           cd "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32"
           python scripts/build.py waveshare/esp32-s3-epaper-3.97 --name esp32-s3-epaper-3.97
           ccache --show-stats
+      - name: Check wake word in the built config, models and assets partition
+        shell: bash
+        env:
+          UPSTREAM_SRC: ${{ github.workspace }}/.upstream/xiaozhi-esp32
+          PET_WAKE_WORD: ${{ inputs.wake_word }}
+        run: |
+          python3 -m unittest discover -s tests -p 'test_p1_wake_word.py' -v
+          cd "$UPSTREAM_SRC"
+          WW="$(printf '%s' "$PET_WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [ -z "$WW" ] || [ "$WW" = tuantuan ]; then
+            grep -E '^CONFIG_(USE_CUSTOM_WAKE_WORD=y|SR_MN_CN_MULTINET7_QUANT=y|CUSTOM_WAKE_WORD="ni hao tuan tuan")' sdkconfig | sort
+            grep -q '^CONFIG_USE_CUSTOM_WAKE_WORD=y' sdkconfig
+            grep -q '^CONFIG_SR_MN_CN_MULTINET7_QUANT=y' sdkconfig
+            grep -q '^# CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS is not set' sdkconfig
+          else
+            grep -q '^CONFIG_USE_AFE_WAKE_WORD=y' sdkconfig
+          fi
+          ls -l build/generated_assets.bin
       - name: Validate and package immutable app-only image + SHA manifest
         shell: bash
         run: |
@@ -130,6 +169,23 @@ jobs:
             --run-id "$GITHUB_RUN_ID"
           test "$(find release -maxdepth 1 -type f | wc -l)" -eq 2
           test ! -e release/merged-binary.bin
+      - name: Package assets partition image (wake word models) + manifest
+        shell: bash
+        env:
+          PET_WAKE_WORD: ${{ inputs.wake_word }}
+        run: |
+          WW="$(printf '%s' "$PET_WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          python3 scripts/p1_assets_artifact.py             --assets "$GITHUB_WORKSPACE/.upstream/xiaozhi-esp32/build/generated_assets.bin"             --app-manifest release/manifest.json             --out "$GITHUB_WORKSPACE/release-assets"             --wake-word "${WW:-tuantuan}"             --run-id "$GITHUB_RUN_ID"
+          sha256sum release-assets/xiaozhi-pet-assets.bin
+      - name: Upload assets partition image (wake word; paired with the app of this run; never auto-flashed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-assets-wakeword-buildonly
+          path: |
+            release-assets/xiaozhi-pet-assets.bin
+            release-assets/assets-manifest.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload review-only OTA app artifact (not a flashing workflow)
         uses: actions/upload-artifact@v4
         with:

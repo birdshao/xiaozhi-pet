@@ -88,7 +88,7 @@ pet_input 任务                       kid_epd 任务
 ## 6. 真板自测（只由协调会话执行）
 
 1. 生成测试书（非儿童内容）：`python -m tools.make_reader_test_book --output build/reader-test`（CI 的 p4-story-pack 也会上传 artifact `waveshare-tf-reader-test-only`）。
-2. 把 `build/reader-test/books/reader_test.kpb` 复制到 TF 卡 `/books/reader_test.kpb`，**保留** `/books/forest_friends.kpb`。设备平时仍读 `forest_friends`；只有自测脚本里的 `book reader_test`（必须在第一个 `pet` 之前）才改读测试书。
+2. 把 `build/reader-test/books/reader_test.kpb` 复制到 TF 卡 `/books/reader_test.kpb`，**保留** `/books/forest_friends.kpb`。卡上只有一本书时设备直接读它（平时是 `forest_friends`）；V9 起卡上有两本及以上，“讲故事”先出书架（见 `docs/V9_BOOKSHELF.md`），所以这里留着两本书时，自测脚本里的 `book reader_test`（必须在第一个 `pet` 之前）会跳过书架直接读测试书，行为不变。
 3. 场景 `tools/selftest/v4_book_reader.pettest`（约 2.5 分钟）：打开书 → 第 1 页灰度 → 出题 → 移动高亮 → 选蓝色（喜好 2:3）→ 第 2 题答错 → 恢复本页 → 再读一遍 → 第 2、3 页来回 → 读完 → 回到第 3 页 → 回家。重点看：灰度是否正确（4 条横带由黑到白）、卡片局刷是否干净、灰度残影、`PET_DIAG_EPD` 的全刷耗时（含读卡）。
 4. `tools/selftest/v2_home_rail.pettest` 的 `commits` 期望从 4 改为 3（阅读器翻页不再提交）。
 5. 无书场景 `tools/selftest/v4_book_missing.pettest`（约 1.5 分钟，监视 ≈ 100 s）：`book no_such_book`（卡上不存在的 id，必须在第一个 `pet` 之前）→ 打开故事看到“没有书”画面 → 拨轮转动无反应 → 按下回家 → 再进一次 → 长按回家。期望 `PET_BOOK_MISSING` ×2、`reason=no_book`、`PET_BOOK_HOME` ×2、无 `PET_BOOK_AUDIO`/`PET_BOOK_MEMORY`、提交数 4。需要卡已插好；没卡时原因是 `no_card`，改期望即可。`v4_book_reader` 的期望不变。

@@ -18,6 +18,8 @@ namespace kid_app {
 // Rules for other sessions:
 //  - Ids are stable: append a GameChoice value, never renumber or reuse.
 //  - Append the row at the end of its group: the order is the card order.
+//  - A Play row names its menu page (`category`, V9 1A); a Care row has none.
+//    A new Play row goes to the page where a child would look for it.
 //  - `art` is a picture SceneComposer already draws (GameArt / MicArt /
 //    CareArt ids); a new picture is appended to its own enum first.
 //  - `needs` lets the board refuse a card the parents switched off
@@ -43,17 +45,44 @@ enum class GameChoice : uint8_t {
 enum class ActivityGroup : uint8_t { Play, Care };
 enum class ActivityNeeds : uint8_t { None, Motion, Mic };
 
+// V9 1A: the play menu's first level. Every Play row names the page it is
+// listed on (Care rows: None). Today is the virtual first page, the games
+// recommend picks (activity_recommend.h): no row belongs to it. Album is a
+// page of one: its card opens the sticker album directly.
+enum class ActivityCategory : uint8_t { None, Today, Brain, Move, Sound, Album };
+
+constexpr const char* ActivityCategoryName(ActivityCategory c) {
+    switch (c) {
+        case ActivityCategory::Today: return "today";
+        case ActivityCategory::Brain: return "brain";
+        case ActivityCategory::Move: return "move";
+        case ActivityCategory::Sound: return "sound";
+        case ActivityCategory::Album: return "album";
+        case ActivityCategory::None: break;
+    }
+    return "none";
+}
+
+// Category card pictures (V9 1A, block 200..299 was free): drawn by
+// menu_draw.inc next to the other game pictures.
+enum class MenuArt : uint16_t { Today = 201, Brain = 202, Move = 203, Sound = 204 };
+constexpr bool MenuArtValid(uint16_t id) { return id >= 201 && id <= 204; }
+
 // Picture id ranges (one per session, docs/V8_CARE_AND_GROWTH.md §5):
 //   1..99 GameArt (KPG1 catalogue)   101..199 MicArt (V4-08)
 //   401..513 (block 400..599) and 0x2000..0x3FFF PlayArt (session 2, game_view.h)
 //   601..660 (block 600..699) CareArt (session 1, below)
 //   701.. (block 700..799) session 3 (sound)   801.. (block 800..899) session 4
-//   200..399 free; 0x4000.. never: tone clip ids (GameArtTone)
+//   201..204 MenuArt (V9 1A, below)   205..399 free; 0x4000.. never: tone clip ids (GameArtTone)
+//   0x4C15..0x4C27 (0x4C00 + game id 21..39, 30 unused): spoken game rule clips
+//   (game_rules.h, V9 1E); 0x4000..0x4BFF stay tones
 // V8 care pictures (append-only, drawn by SceneComposer next to GameArt).
 enum class CareArt : uint16_t {
     Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,
     // Foods (FoodId 1..6 -> 611..616).
     Fish = 611, Milk = 612, Apple = 613, Carrot = 614, Cookie = 615, RiceBall = 616,
+    // V9 seasonal foods (FoodId 7, 8; the treat's picture follows the season).
+    Dumpling = 617, FestiveTreat = 618,
     // Toys for the bedtime tidy-up.
     ToyBlock = 621, ToyBall = 622, ToyBear = 623,
     // Wardrobe cards: 631 + index in the wardrobe table (care_store.cc).
@@ -63,7 +92,7 @@ enum class CareArt : uint16_t {
     Lock = 660,  // nothing unlocked yet
 };
 constexpr bool CareArtValid(uint16_t id) {
-    return (id >= 601 && id <= 606) || (id >= 611 && id <= 616) || (id >= 621 && id <= 623) ||
+    return (id >= 601 && id <= 606) || (id >= 611 && id <= 618) || (id >= 621 && id <= 623) ||
            (id >= 631 && id <= 642) || (id >= 651 && id <= 658) || id == 660;
 }
 
@@ -73,60 +102,64 @@ struct Activity {
     uint16_t art;
     ActivityNeeds needs;
     const char* name;  // log / doc name, lower case ASCII
+    ActivityCategory category = ActivityCategory::None;  // Play rows: the menu page
 };
 
 constexpr Activity kActivities[] = {
     {GameChoice::Quiz, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Star),
-     ActivityNeeds::None, "quiz"},
+     ActivityNeeds::None, "quiz", ActivityCategory::Brain},
     {GameChoice::Ball, ActivityGroup::Play, static_cast<uint16_t>(GameArt::BallBig),
-     ActivityNeeds::Motion, "ball"},
+     ActivityNeeds::Motion, "ball", ActivityCategory::Move},
     {GameChoice::Peekaboo, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Cat),
-     ActivityNeeds::Motion, "peekaboo"},
+     ActivityNeeds::Motion, "peekaboo", ActivityCategory::Move},
     {GameChoice::Candle, ActivityGroup::Play, static_cast<uint16_t>(MicArt::CandleLit),
-     ActivityNeeds::Mic, "candle"},
+     ActivityNeeds::Mic, "candle", ActivityCategory::Sound},
     {GameChoice::Clap, ActivityGroup::Play, static_cast<uint16_t>(MicArt::Hand),
-     ActivityNeeds::Mic, "clap"},
+     ActivityNeeds::Mic, "clap", ActivityCategory::Sound},
     // V8 mini games (session ②), in menu order: age, then level (play_content.cc).
     {GameChoice::Shapes, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Triangle),
-     ActivityNeeds::None, "shapes"},
+     ActivityNeeds::None, "shapes", ActivityCategory::Brain},
     {GameChoice::Counting, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Dots3),
-     ActivityNeeds::None, "counting"},
+     ActivityNeeds::None, "counting", ActivityCategory::Brain},
     {GameChoice::DayNight, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Moon),
-     ActivityNeeds::Motion, "day_night"},
+     ActivityNeeds::Motion, "day_night", ActivityCategory::Move},
     {GameChoice::Memory4, ActivityGroup::Play, static_cast<uint16_t>(GameArt::Blocks4),
-     ActivityNeeds::None, "memory4"},
+     ActivityNeeds::None, "memory4", ActivityCategory::Brain},
     {GameChoice::MamaBaby, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::BabyCat),
-     ActivityNeeds::None, "mama_baby"},
+     ActivityNeeds::None, "mama_baby", ActivityCategory::Brain},
     {GameChoice::Classify, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Apple),
-     ActivityNeeds::None, "classify"},
-    {GameChoice::Tree, ActivityGroup::Play, PlayTreeArt(3), ActivityNeeds::Motion, "shake_tree"},
+     ActivityNeeds::None, "classify", ActivityCategory::Brain},
+    {GameChoice::Tree, ActivityGroup::Play, PlayTreeArt(3), ActivityNeeds::Motion,
+     "shake_tree", ActivityCategory::Move},
     {GameChoice::Shadow, ActivityGroup::Play, PlayShadowArt(static_cast<uint16_t>(GameArt::Star)),
-     ActivityNeeds::None, "shadow"},
+     ActivityNeeds::None, "shadow", ActivityCategory::Brain},
     {GameChoice::Statue, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Statue),
-     ActivityNeeds::Motion, "statue"},
+     ActivityNeeds::Motion, "statue", ActivityCategory::Move},
     {GameChoice::Weather, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Sun),
-     ActivityNeeds::None, "weather"},
+     ActivityNeeds::None, "weather", ActivityCategory::Brain},
     {GameChoice::LeftRight, ActivityGroup::Play, PlayArrowArt(0, 3), ActivityNeeds::None,
-     "left_right"},
+     "left_right", ActivityCategory::Brain},
     {GameChoice::SpotDiff, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Pos2),
-     ActivityNeeds::None, "spot_diff"},
-    {GameChoice::Dice, ActivityGroup::Play, PlayDiceArt(5), ActivityNeeds::Motion, "shake_dice"},
+     ActivityNeeds::None, "spot_diff", ActivityCategory::Brain},
+    {GameChoice::Dice, ActivityGroup::Play, PlayDiceArt(5), ActivityNeeds::Motion,
+     "shake_dice", ActivityCategory::Move},
     {GameChoice::Memory6, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Dots6),
-     ActivityNeeds::None, "memory6"},
+     ActivityNeeds::None, "memory6", ActivityCategory::Brain},
     {GameChoice::SizeOrder, ActivityGroup::Play, PlaySizedArt(0, 2), ActivityNeeds::None,
-     "size_order"},
+     "size_order", ActivityCategory::Brain},
     {GameChoice::Pattern, ActivityGroup::Play, PlayPatternArt(0, 0, 1, 0), ActivityNeeds::None,
-     "pattern"},
+     "pattern", ActivityCategory::Brain},
     {GameChoice::Maze, ActivityGroup::Play, static_cast<uint16_t>(PlayArt::Carrot),
-     ActivityNeeds::Motion, "maze"},
-    {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None, "clock"},
+     ActivityNeeds::Motion, "maze", ActivityCategory::Move},
+    {GameChoice::Clock, ActivityGroup::Play, PlayClockArt(3, false), ActivityNeeds::None,
+     "clock", ActivityCategory::Brain},
     {GameChoice::Stickers, ActivityGroup::Play, static_cast<uint16_t>(CareArt::Sticker),
-     ActivityNeeds::None, "stickers"},
+     ActivityNeeds::None, "stickers", ActivityCategory::Album},
     // V8 sound (session 3): the parrot and the song player.
     {GameChoice::Parrot, ActivityGroup::Play, static_cast<uint16_t>(SoundArt::Parrot),
-     ActivityNeeds::Mic, "parrot"},
+     ActivityNeeds::Mic, "parrot", ActivityCategory::Sound},
     {GameChoice::Songs, ActivityGroup::Play, static_cast<uint16_t>(SoundArt::Song),
-     ActivityNeeds::None, "songs"},
+     ActivityNeeds::None, "songs", ActivityCategory::Sound},
     // ---- other sessions: append Play rows above this line ----
     {GameChoice::Feed, ActivityGroup::Care, static_cast<uint16_t>(CareArt::Fish),
      ActivityNeeds::None, "feed"},
@@ -164,6 +197,21 @@ constexpr const Activity* ActivityAt(ActivityGroup group, size_t index) {
     }
     return nullptr;
 }
+// Rows of one category page, in table order (the page's card order).
+constexpr size_t ActivityCountIn(ActivityCategory category) {
+    size_t n = 0;
+    for (const Activity& a : kActivities)
+        if (a.group == ActivityGroup::Play && a.category == category) ++n;
+    return n;
+}
+constexpr const Activity* ActivityInCategory(ActivityCategory category, size_t index) {
+    for (const Activity& a : kActivities) {
+        if (a.group != ActivityGroup::Play || a.category != category) continue;
+        if (index == 0) return &a;
+        --index;
+    }
+    return nullptr;
+}
 constexpr const Activity* FindActivity(GameChoice id) {
     for (const Activity& a : kActivities)
         if (a.id == id) return &a;
@@ -190,11 +238,16 @@ constexpr bool ActivityTableValid() {
         if (!GameArtIsOption(a.art) && !MicArtValid(a.art) && !CareArtValid(a.art) &&
             !PlayArtValid(a.art) && !SoundArtValid(a.art))
             return false;
+        // V9: Play rows sit on a real page, Care rows on none.
+        if ((a.group == ActivityGroup::Care) != (a.category == ActivityCategory::None))
+            return false;
+        if (a.category == ActivityCategory::Today) return false;
         for (size_t j = 0; j < i; ++j)
             if (kActivities[j].id == a.id) return false;
     }
     return ActivityCount(ActivityGroup::Play) >= 3 && ActivityCount(ActivityGroup::Care) >= 3;
 }
-static_assert(ActivityTableValid(), "activity table: unique ids, known art, >= 3 cards a menu");
+static_assert(ActivityTableValid(),
+              "activity table: unique ids, known art, categories, >= 3 cards a menu");
 
 }  // namespace kid_app

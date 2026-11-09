@@ -41,12 +41,12 @@ int main() {
         d.Offer("lullaby_moon");
         for (size_t i = 0; i < 3; ++i) assert(std::strcmp(c.At(i).id, d.At(i).id) == 0);
         SongCatalog full;
-        for (size_t i = 0; i < kMaxSongs; ++i) {
+        for (size_t i = 0; i < kMaxCardSongs; ++i) {
             char name[20];
             std::snprintf(name, sizeof(name), "song_n%02zu", i);
             assert(full.Offer(name));
         }
-        assert(!full.Offer("song_extra"));
+        assert(!full.Offer("song_extra"));  // the card is full: room kept for the built-ins
     }
 
     // Refusals: low battery, a voice session (quiet hours are handled below).
@@ -287,6 +287,133 @@ int main() {
         assert(calm.SetQuiet(false).accepted);
         assert(calm.StartStory(3).accepted);   // an ordinary story replaces it ...
         assert(calm.SetQuiet(true).count == 1);  // ... and is no longer exempt
+    }
+
+    // V9-3A built-in melodies: offered like card books, no card needed.
+    {
+        SongCatalog c;
+        assert(c.Offer("song_twinkle"));             // a card book ...
+        assert(!c.OfferBuiltin(0, "song_twinkle"));  // ... wins over the built-in
+        assert(c.OfferBuiltin(1, "song_xingxing") && c.OfferBuiltin(2, "lullaby_moon"));
+        assert(!c.OfferBuiltin(3, "forest_x") && !c.OfferBuiltin(3, nullptr));
+        assert(!c.OfferBuiltin(255, "song_zzz"));
+        assert(c.Count() == 3);
+        assert(std::strcmp(c.At(0).id, "lullaby_moon") == 0 && c.At(0).builtin == 3);
+        assert(std::strcmp(c.At(1).id, "song_twinkle") == 0 && c.At(1).builtin == 0);
+        assert(std::strcmp(c.At(2).id, "song_xingxing") == 0 && c.At(2).builtin == 2);
+        assert(c.LullabiesOnly().At(0).builtin == 3);
+        c.Clear();
+        assert(c.OfferBuiltin(0, "song_a1") && c.Count() == 1);  // Clear forgets all
+
+        // No card at all: a list of the built-ins, not the "no songs" picture.
+        SongCatalog only;
+        only.OfferBuiltin(0, "song_xingxing");
+        only.OfferBuiltin(1, "lullaby_moon");
+        SongPlayer p;
+        SongOutput o;
+        SongContext none;
+        none.card_mounted = false;
+        assert(p.Open(0, none, only, &o) && p.View(0).phase == SongPhase::List);
+        assert(p.View(0).count == 2);
+        // lullaby_moon is first: pick, 20 min, load asks for the built-in entry.
+        assert(p.Input(GameInput::Press, 1).redraw);
+        o = p.Input(GameInput::Press, 2);
+        assert(o.load == 1 && p.Chosen().builtin == 2);
+        o = p.Loaded(1, 3);  // a built-in melody is one "page", looped for bedtime
+        assert(o.play_page == 1 && p.Bedtime());
+        o = p.PageFinished(4);
+        assert(o.play_page == 1 && !o.leave);
+        // A built-in song plays once, then back to the list.
+        p.Input(GameInput::Press, 5);
+        p.Input(GameInput::Down, 6);
+        o = p.Input(GameInput::Press, 7);
+        assert(o.load == 2 && p.Chosen().builtin == 1);
+        assert(p.Loaded(1, 8).play_page == 1 && !p.Bedtime());
+        o = p.PageFinished(9);
+        assert(o.play_page == 0 && p.View(9).phase == SongPhase::List);
+    }
+
+    // A card full of songs never pushes the built-in melodies (and with them
+    // the quiet-hours lullaby) out of the list.
+    {
+        static_assert(kMaxCardSongs + kMaxBuiltinSongs == kMaxSongs, "split");
+        SongCatalog c;
+        for (size_t i = 0; i < kMaxSongs; ++i) {  // more than the card may hold
+            char name[24];
+            std::snprintf(name, sizeof(name), i % 2 ? "song_c%02zu" : "lullaby_c%02zu", i);
+            if (i < kMaxCardSongs) assert(c.Offer(name));
+            else assert(!c.Offer(name));
+        }
+        assert(c.Count() == kMaxCardSongs);
+        for (size_t i = 0; i < kMaxBuiltinSongs; ++i) {
+            char name[24];
+            std::snprintf(name, sizeof(name), "lullaby_b%02zu", i);
+            assert(c.OfferBuiltin(static_cast<uint8_t>(i), name));
+        }
+        assert(!c.OfferBuiltin(9, "lullaby_b99"));  // only kMaxBuiltinSongs of them
+        assert(c.Count() == kMaxSongs);
+        size_t builtin = 0;
+        for (size_t i = 0; i < c.Count(); ++i) builtin += c.At(i).builtin ? 1 : 0;
+        assert(builtin == kMaxBuiltinSongs);
+        // Quiet hours: the built-in lullabies are still there.
+        const SongCatalog quiet = c.LullabiesOnly();
+        size_t quiet_builtin = 0;
+        for (size_t i = 0; i < quiet.Count(); ++i) quiet_builtin += quiet.At(i).builtin ? 1 : 0;
+        assert(quiet_builtin == kMaxBuiltinSongs);
+        // The same set offered builtin-first or card-first: nothing is lost.
+        SongCatalog d;
+        for (size_t i = 0; i < kMaxBuiltinSongs; ++i) {
+            char name[24];
+            std::snprintf(name, sizeof(name), "lullaby_b%02zu", i);
+            assert(d.OfferBuiltin(static_cast<uint8_t>(i), name));
+        }
+        for (size_t i = 0; i < kMaxSongs; ++i) {
+            char name[24];
+            std::snprintf(name, sizeof(name), "song_x%02zu", i);
+            if (i < kMaxCardSongs) assert(d.Offer(name));
+        }
+        assert(d.Count() == kMaxSongs);
+    }
+
+    // A broken card book with a same-id built-in melody: one retry with the
+    // melody, nothing scolded; without a same-id melody the list returns.
+    {
+        SongCatalog c;
+        assert(c.Offer("song_twinkle") && c.Offer("song_plain"));
+        assert(!c.OfferBuiltin(4, "song_twinkle"));  // refused, remembered
+        SongPlayer p;
+        SongOutput o;
+        assert(p.Open(0, SongContext{}, c, &o));
+        // Sorted: song_plain, song_twinkle.
+        p.Input(GameInput::Down, 1);
+        assert(std::strcmp(p.Chosen().id, "song_twinkle") == 0 && p.Chosen().builtin == 0);
+        o = p.Input(GameInput::Press, 2);
+        assert(o.load == 2 && p.View(2).phase == SongPhase::Loading);
+        o = p.Loaded(0, 3);  // the book on the card is unreadable
+        assert(o.load == 2 && !o.redraw && p.Chosen().builtin == 5);
+        assert(p.View(3).phase == SongPhase::Loading);
+        o = p.Loaded(1, 4);  // the melody opens: it plays
+        assert(o.play_page == 1 && p.View(4).phase == SongPhase::Playing);
+        // A second failure is final (the entry is now the melody itself).
+        p.Input(GameInput::Press, 5);
+        o = p.Input(GameInput::Press, 6);
+        assert(o.load == 2 && p.Chosen().builtin == 5);
+        o = p.Loaded(0, 7);
+        assert(o.load == 0 && o.redraw && p.View(7).phase == SongPhase::List);
+        // No same-id melody: back to the list at once.
+        p.Input(GameInput::Up, 8);
+        assert(std::strcmp(p.Chosen().id, "song_plain") == 0);
+        assert(p.Input(GameInput::Press, 9).load == 1);
+        o = p.Loaded(0, 10);
+        assert(o.load == 0 && o.redraw && p.View(10).phase == SongPhase::List);
+        // The retry itself can time out like any load.
+        SongPlayer q;
+        q.Open(0, SongContext{}, c, nullptr);
+        q.Input(GameInput::Down, 1);
+        q.Input(GameInput::Press, 2);
+        q.Loaded(0, 100000);
+        assert(q.Tick(100000 + SongPlayer::kLoadTimeoutMs).redraw);
+        assert(q.View(0).phase == SongPhase::List);
     }
 
     std::cout << "song player tests passed\n";

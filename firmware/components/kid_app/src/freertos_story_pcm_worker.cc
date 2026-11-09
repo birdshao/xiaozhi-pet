@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include <algorithm>
 #include <array>
+#include <cstring>
 
 namespace kid_app {
 namespace {
@@ -14,11 +15,18 @@ constexpr size_t kFrameSamples = 480; // 20ms at 24kHz.
 bool FreertosStoryPcmWorker::Start(
         const char* book_dir, const char* book_id,
         StoryPcmHooks hooks, void* context) {
-    if (task_ || queue_ || !hooks.begin || !hooks.push || !hooks.cancel ||
-        !file_.OpenBook(book_dir, book_id)) return false;
-    if (!reader_.Open(file_)) {
-        file_.Close();
+    if (task_ || queue_ || !hooks.begin || !hooks.push || !hooks.cancel || !book_dir ||
+        std::strlen(book_dir) >= sizeof(book_dir_))
         return false;
+    std::strcpy(book_dir_, book_dir);
+    // V9: no book yet is fine (the shelf picks one later via RequestBook).
+    const bool with_book = book_id && *book_id;
+    if (with_book) {
+        if (!file_.OpenBook(book_dir, book_id)) return false;
+        if (!reader_.Open(file_)) {
+            file_.Close();
+            return false;
+        }
     }
     queue_ = xQueueCreate(1, sizeof(Request));
     if (!queue_) { file_.Close(); return false; }
@@ -32,6 +40,18 @@ bool FreertosStoryPcmWorker::Start(
         return false;
     }
     return true;
+}
+
+bool FreertosStoryPcmWorker::RequestBook(const char* book_id) {
+    if (!queue_ || !book_id || !*book_id || std::strlen(book_id) >= sizeof(pending_book_))
+        return false;
+    pending_seq_.fetch_add(1);  // odd: being written
+    std::strcpy(pending_book_, book_id);
+    pending_seq_.fetch_add(1);  // even: complete
+    book_pending_.store(true);
+    // Wake the task with a stop; the switch is applied before any request.
+    Request request{};
+    return xQueueOverwrite(queue_, &request) == pdPASS;
 }
 
 bool FreertosStoryPcmWorker::RequestPage(uint16_t page) {
@@ -98,6 +118,25 @@ void FreertosStoryPcmWorker::Run() {
         }
         // Invalidate the previous clip's queued buffers in AudioService.
         hooks_.cancel(context_);
+        if (book_pending_.exchange(false)) {  // V9 bookshelf: another book
+            char name[sizeof(pending_book_)] = {};
+            for (unsigned tries = 0; tries < 50; ++tries) {  // a consistent copy
+                const uint32_t before = pending_seq_.load();
+                if (before & 1u) {
+                    vTaskDelay(1);
+                    continue;
+                }
+                std::memcpy(name, pending_book_, sizeof(name));
+                name[sizeof(name) - 1] = '\0';
+                if (pending_seq_.load() == before) break;
+                name[0] = '\0';
+            }
+            if (!name[0] || !file_.OpenBook(book_dir_, name) || !reader_.Open(file_)) {
+                file_.Close();
+                reader_.Content().Close();
+                ESP_LOGW(kTag, "Story audio book unavailable: %s", name);
+            }
+        }
         if (!request.page) continue;
         ContentQuestion question{};
         const uint32_t total = ClipBytes(request, &question);

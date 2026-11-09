@@ -43,7 +43,7 @@
 - 系列信息在书头（§2.2）：系列 id、第几本、共几本、下一本的内容 id。
 - **读完一本提示下一本**：结局画面右下角出现“一本书 + 箭头”（`book_page` 第 14 位），板端打 `PET_BOOK_NEXT content=<id>`。**只有卡上真有下一本才显示**：板端用 `WaveshareStorySd::ContentBookPresent` 检查 `/books/c<内容id>.kpb`（服务端目录的卡上命名；手工拷贝的书想被提示就用这个文件名），没有就不画箭头、不打日志。
 - **书架排序**：同一系列排在一起，按阅读顺序；其他按 id。`ShelfBefore`（C++）和 `kpb2.shelf_order`（Python）是同一个键；`python -m tools.story_pack shelf --dir <卡上的 books 目录>` 打印顺序。
-- **本批没做的**：板子目前固定打开 `forest_friends`（V4 起如此），没有书目列表和换书；提示的“下一本”也只是画面和日志提示，真正换书要等书架（不在这批范围）。服务端目录用 `/books/c<content_id>.kpb` 命名，系列元数据已经在 `inspect()` 里提供。
+- **本批没做的**：V8 板子固定打开 `forest_friends`；V9 起“讲故事”先进书架（卡上两本及以上时，见 `docs/V9_BOOKSHELF.md`），分支书和系列书从书架进入。结局页的“下一本”仍只是画面和日志提示，不会自动换书，靠回书架选（系列书挨在一起）。服务端目录用 `/books/c<content_id>.kpb` 命名，系列元数据已经在 `inspect()` 里提供。
 
 ## 2. 格式变化：KPB2 版本 3（向后兼容）
 

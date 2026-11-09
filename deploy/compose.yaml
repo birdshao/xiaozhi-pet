@@ -34,6 +34,12 @@ services:
       # S5 voice route: only the XiaoZhi container's fixed address may call it, signed with this token.
       KID_PET_VOICE_TOKEN: ${KID_PET_VOICE_TOKEN:?set KID_PET_VOICE_TOKEN}
       KID_PET_VOICE_ALLOWED_PEERS: 172.28.0.20
+    env_file:
+      # S6: KID_PET_GLM_API_KEY / KID_PET_GLM_MODEL for open chat (the user keeps them in providers.env,
+      # ADR-015). compose cannot pick single lines from an env_file, so this container also sees the XZ__
+      # lines (ignored here) and xiaozhi-server sees the GLM key (its own chat path is off in child mode).
+      - path: providers.env
+        required: false
     volumes:
       - pet-data:/data
       - pet-backups:/backups
@@ -79,7 +85,9 @@ services:
       XZ_TTS_MODULE: ${XZ_TTS_MODULE:-}
     env_file:
       - path: providers.env   # only provider settings: XZ__<section>__<module>__<key>=value lines
-        required: false       # (kept apart from .env so the voice container never sees other secrets)
+        required: false       # and, since S6, KID_PET_GLM_*. Kept apart from .env so this container never
+                              # sees the panel/voice/TOTP secrets, but it does see the GLM key (compose
+                              # cannot pick single lines); its own chat path is off in child mode.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8003/xiaozhi/ota/', timeout=3)"]
       interval: 15s

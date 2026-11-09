@@ -137,6 +137,21 @@ class BoardWiring(unittest.TestCase):
         self.assertIn("HandleSleepAction(sleep_flow_.Request(NowMs()));", songs)
         self.assertLess(songs.index("out.stop_audio"), songs.index("out.sleep_now"))
 
+    def test_builtin_melodies_are_always_listed_and_opened_without_the_card(self):
+        # V9-3A: offered after the card scan (a card book with the same id wins).
+        start = SOUND[SOUND.index("case SoundKind::Songs: {"):]
+        start = start[:start.index("songs_.Open(")]
+        self.assertLess(start.index("ScanSongs(&catalog)"), start.index("AddBuiltinSongs(&catalog)"))
+        self.assertIn("OfferBuiltin(", SOUND)
+        songs = SOUND[SOUND.index("void ApplySongOutput("):SOUND.index("// ---- brushing / washing ----")]
+        self.assertIn("song_worker_.OpenBuiltin(", songs)
+        self.assertIn("song_worker_.Open(id)", songs)
+        # The synthesised stream is pushed through the same hooks (volume path) as the
+        # card songs; its retry / give-up / interrupt rules are host-tested in
+        # tests/cpp/test_melody_synth.cc (MelodyStreamer), not matched here.
+        worker = (KID / "src/freertos_song_worker.cc").read_text(encoding="utf-8")
+        self.assertIn("hooks_.push(self->synth_token_,", worker)
+
     def test_routine_record_is_device_sourced_and_never_from_voice(self):
         routine = SOUND[SOUND.index("void ApplyRoutineOutput("):SOUND.index("// pet_input: the dial while a sound activity runs.")]
         self.assertIn("source=device", routine)

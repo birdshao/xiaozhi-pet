@@ -46,20 +46,24 @@ BookMissing BookMissingOf(const SceneModel& scene) {
 uint32_t PackLook(const HomeLook& look) {
     uint32_t bits = 0;
     for (size_t i = 0; i < look.worn.size(); ++i)
-        if (look.worn[i] < 16) bits |= uint32_t(look.worn[i]) << (4 * i);
+        if (look.worn[i] < 8) bits |= uint32_t(look.worn[i]) << (3 * i);
+    if (look.wish <= kWishPictures) bits |= uint32_t(look.wish) << 15;  // V9 C4
     if (look.need < 16) bits |= uint32_t(look.need) << 20;
     if (look.need_level < 4) bits |= uint32_t(look.need_level) << 24;
     if (look.festival < 16) bits |= uint32_t(look.festival) << 26;
+    if (look.stage < 4) bits |= uint32_t(look.stage) << 30;  // V9 C3
     return bits;
 }
 
 HomeLook UnpackLook(uint32_t bits) {
     HomeLook look{};
     for (size_t i = 0; i < look.worn.size(); ++i)
-        look.worn[i] = static_cast<uint8_t>((bits >> (4 * i)) & 0x0F);
+        look.worn[i] = static_cast<uint8_t>((bits >> (3 * i)) & 0x07);
+    look.wish = static_cast<uint8_t>((bits >> 15) & 0x0F);
     look.need = static_cast<uint8_t>((bits >> 20) & 0x0F);
     look.need_level = static_cast<uint8_t>((bits >> 24) & 0x03);
     look.festival = static_cast<uint8_t>((bits >> 26) & 0x0F);
+    look.stage = static_cast<uint8_t>((bits >> 30) & 0x03);
     return look;
 }
 
@@ -1321,12 +1325,17 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
 }
 
 #include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
+#include "menu_draw.inc"      // V9 1A: the play menu category cards
 
 void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8, below
 void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8 sound, below
 void SoundScene(MonoFrame& f, const GameView& g);
 
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (MenuArtValid(art)) {  // V9 1A: play menu category cards
+        MenuArtIcon(f, art, cx, cy, r);
+        return;
+    }
     if (SoundArtValid(art)) {  // V8 sound activities
         SoundArtIcon(f, art, cx, cy, r);
         return;
@@ -1737,15 +1746,18 @@ void FestivalProp(MonoFrame& f, uint8_t festival) {
 }
 
 // "I would like ...": a thought bubble left of the head (level >= 2).
-void NeedBubble(MonoFrame& f, uint8_t need, uint8_t level) {
+void FoodIcon(MonoFrame& f, uint8_t food, int cx, int cy, int r);  // below
+
+void NeedBubble(MonoFrame& f, uint8_t need, uint8_t level, uint8_t wish) {
     if (!need || level < 2) return;
     const int bx = 214, by = 104, w = level >= 3 ? 7 : 4;
     Blob(f, bx, by, 46, 38, w);
     Ring(f, 262, 140, 8, 8, 3);
     Ring(f, 278, 156, 5, 5, 3);
     switch (need) {
-        case 1:  // hungry: a fish
-            GameArtIcon(f, static_cast<uint16_t>(GameArt::Fish), bx, by, 26);
+        case 1:  // hungry: today's wish (V9 C4), else a fish
+            if (wish) FoodIcon(f, wish, bx, by, 26);
+            else GameArtIcon(f, static_cast<uint16_t>(GameArt::Fish), bx, by, 26);
             break;
         case 2:  // sleepy: moon and a Z
             Moon(f, bx - 8, by + 2, 18, true);
@@ -1817,6 +1829,8 @@ void HabitIcon(MonoFrame& f, uint8_t habit, int cx, int cy, int r) {
     }
 }
 
+void SeasonalFoodIcon(MonoFrame& f, uint8_t picture, int cx, int cy, int r);  // V9 C4
+
 void FoodIcon(MonoFrame& f, uint8_t food, int cx, int cy, int r) {
     auto p = [r](int percent) { return r * percent / 100; };
     const int w = std::max(3, r / 10);
@@ -1862,7 +1876,8 @@ void FoodIcon(MonoFrame& f, uint8_t food, int cx, int cy, int r) {
             Stroke(f, cx - p(80), cy + p(60), cx + p(80), cy + p(60), w);
             FillRect(f, cx - p(30), cy + p(10), p(60), p(50));
             break;
-        default:
+        default:  // V9 C4: 7 dumplings, 8 zongzi, 9 mooncake (care_draw_v9.inc)
+            SeasonalFoodIcon(f, food, cx, cy, r);
             break;
     }
 }
@@ -1870,7 +1885,9 @@ void FoodIcon(MonoFrame& f, uint8_t food, int cx, int cy, int r) {
 void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
     auto p = [r](int percent) { return r * percent / 100; };
     const int w = std::max(3, r / 10);
-    if (art >= static_cast<uint16_t>(CareArt::Fish) && art <= static_cast<uint16_t>(CareArt::RiceBall)) {
+    if (art >= static_cast<uint16_t>(CareArt::Fish) && art <= static_cast<uint16_t>(CareArt::FestiveTreat)) {
+        // Foods 1..8 (V9: the treat card defaults to zongzi; the feed rail
+        // draws a mooncake itself in its season, see CareScene).
         FoodIcon(f, static_cast<uint8_t>(art - static_cast<uint16_t>(CareArt::Fish) + 1), cx, cy, r);
         return;
     }
@@ -2072,6 +2089,8 @@ void DiaryScene(MonoFrame& f, const CareView& c) {
     }
 }
 
+#include "care_draw_v9.inc"  // V9: daily care variations, growth, seasonal foods
+
 void CareScene(MonoFrame& f, const CareView& c) {
     if (c.kind == CareKind::Album) {
         AlbumScene(f, c);
@@ -2103,6 +2122,7 @@ void CareScene(MonoFrame& f, const CareView& c) {
                 if (c.hearts) Hearts(f, c.hearts, px, 100);
                 break;
             case CareKind::Bath:
+                MudSpots(f, c, hx, hy);  // V9 (dated baths only)
                 Ring(f, px, 230, 140, 46, 7);
                 ShadeRect(f, px - 120, 232, 240, 30, 4);
                 for (uint8_t i = 0; i < c.progress && i < 3; ++i)
@@ -2114,10 +2134,15 @@ void CareScene(MonoFrame& f, const CareView& c) {
                 }
                 break;
             case CareKind::Brush:
+                FurKnots(f, c, hx, hy);  // V9 (dated only)
                 CareArtIcon(f, static_cast<uint16_t>(CareArt::Comb), px, 130, 70);
                 ProgressDots(f, c.progress, c.goal, px, 250);
                 break;
             case CareKind::Tickle:
+                if (c.variant) {  // V9: the feather goes to today's itch
+                    TickleBody(f, c, hx, hy);
+                    break;
+                }
                 CareArtIcon(f, static_cast<uint16_t>(CareArt::Feather), px, 130, 70);
                 ProgressDots(f, c.progress, c.goal, px, 250);
                 break;
@@ -2137,17 +2162,19 @@ void CareScene(MonoFrame& f, const CareView& c) {
                     }
                 }
                 break;
+            case CareKind::Bedsong: BedsongPicture(f, px); break;  // V9 S4
             case CareKind::Tidy: {  // toys go into the box one by one
+                // V9 G5: the third toy is today's game prop (any game picture).
                 const uint16_t toys[3] = {static_cast<uint16_t>(CareArt::ToyBlock),
                                           static_cast<uint16_t>(CareArt::ToyBall),
-                                          static_cast<uint16_t>(CareArt::ToyBear)};
+                                          c.toy ? c.toy : static_cast<uint16_t>(CareArt::ToyBear)};
                 for (uint8_t i = 0; i < 3; ++i) {  // in the box: peeking over the edge
-                    if (i < c.progress) CareArtIcon(f, toys[i], 520 + i * 80, 160, 34);
+                    if (i < c.progress) GameArtIcon(f, toys[i], 520 + i * 80, 160, 34);
                 }
                 FillRoundRect(f, 460, 178, 260, 100, 16);
                 FillRoundRect(f, 476, 194, 228, 20, 8, false);
                 for (uint8_t i = 0; i < 3; ++i) {  // still on the floor
-                    if (i >= c.progress) CareArtIcon(f, toys[i], 380 + (i % 2) * 40, 80 + i * 90, 38);
+                    if (i >= c.progress) GameArtIcon(f, toys[i], 380 + (i % 2) * 40, 80 + i * 90, 38);
                 }
                 break;
             }
@@ -2160,7 +2187,8 @@ void CareScene(MonoFrame& f, const CareView& c) {
     for (uint8_t i = 0; i < n; ++i) {
         const int x = GameCardX(i, n);
         RoundRectRing(f, x, kGameCardY, kGameCardW, kGameCardH, 24, 5);
-        GameArtIcon(f, c.options[i], x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
+        if (!SeasonalCardIcon(f, c, i, x + kGameCardW / 2, kGameCardY + kGameCardH / 2))  // V9 C4
+            GameArtIcon(f, c.options[i], x + kGameCardW / 2, kGameCardY + kGameCardH / 2, 58);
         if (i == c.highlight)
             RoundRectRing(f, x - kGameFrame, kGameCardY - kGameFrame, kGameCardW + 2 * kGameFrame,
                           kGameCardH + 2 * kGameFrame, 24 + kGameFrame, 10);
@@ -2198,9 +2226,11 @@ void HomeScene(MonoFrame& f, const SceneModel& model) {
     const bool resting = model.pose == ScenePose::Still && emotion == Emotion::Neutral;
     if (resting && bubble && look.need == 2) emotion = Emotion::Sleepy;   // Need::Sleepy
     if (resting && bubble && look.need == 4) emotion = Emotion::Curious;  // Need::Bored
+    GrowthBehind(f, look.stage, 400, 158);  // V9 C3: longer ears, fluffier tail, bigger
     SittingCat(f, 400, 158, emotion, model.pose);
+    GrowthFront(f, look.stage, 400, 158);
     Accessories(f, look.worn, look.festival, 400, 158, 100);
-    if (bubble && model.pose == ScenePose::Still) NeedBubble(f, look.need, look.need_level);
+    if (bubble && model.pose == ScenePose::Still) NeedBubble(f, look.need, look.need_level, look.wish);
     ActionRail(f, model.home_selection);
     StatusBand(f, model.status);
 }
@@ -2343,16 +2373,6 @@ void SleepScene(MonoFrame& f, ScenePose pose) {
 
 // ---- V8 sound activities (sound_view.h): parrot, songs, brushing / washing --------
 
-// Microphone: capsule, cradle and stand.
-void MicIcon(MonoFrame& f, int cx, int cy, int r) {
-    auto p = [r](int percent) { return r * percent / 100; };
-    const int w = std::max(4, r / 9);
-    FillRoundRect(f, cx - p(26), cy - p(78), p(52), p(100), p(26));
-    Arc(f, cx, cy + p(2), p(48), p(46), 0, 180, w);
-    Stroke(f, cx, cy + p(48), cx, cy + p(76), w);
-    Stroke(f, cx - p(30), cy + p(78), cx + p(30), cy + p(78), w);
-}
-
 // Music note (quarter note with a flag).
 void NoteIcon(MonoFrame& f, int cx, int cy, int r) {
     auto p = [r](int percent) { return r * percent / 100; };
@@ -2435,7 +2455,13 @@ void PressCue(MonoFrame& f, int cx, int cy, bool filled) {
     else Ring(f, cx, cy, 22, 22, 5);
 }
 
+#include "sound_draw_v9.inc"  // V9: the parrot's voice cards and scene
+
 void SoundScene(MonoFrame& f, const GameView& g) {
+    if (g.sound == kSoundParrot) {  // V9
+        ParrotScene(f, g);
+        return;
+    }
     constexpr int kCardX = 336, kCardY = 26, kCardW = 292, kCardH = 252, kCx = 482, kCy = 152;
     int head_x = 150;
     Emotion emotion = Emotion::Neutral;
@@ -2448,13 +2474,6 @@ void SoundScene(MonoFrame& f, const GameView& g) {
         return;
     }
     switch (g.sound) {
-        case kSoundParrot: {
-            const auto phase = static_cast<ParrotPhase>(g.sa);
-            emotion = phase == ParrotPhase::Recording ? Emotion::Listening
-                      : phase == ParrotPhase::Playing ? Emotion::Speaking
-                                                      : Emotion::Curious;
-            break;
-        }
         case kSoundSongs: {
             const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);
             if (g.sa == static_cast<uint8_t>(SongPhase::Playing)) {
@@ -2479,26 +2498,6 @@ void SoundScene(MonoFrame& f, const GameView& g) {
     CatHead(f, head_x, 172, 62, emotion, eyes);
     RoundRectRing(f, kCardX, kCardY, kCardW, kCardH, 28, 6);
 
-    if (g.sound == kSoundParrot) {
-        const auto phase = static_cast<ParrotPhase>(g.sa);
-        const auto hint = static_cast<ParrotHint>(g.sb);
-        if (phase == ParrotPhase::Playing) {
-            SoundArtIcon(f, static_cast<uint16_t>(SoundArt::Parrot), kCx, kCy, 96);
-            Heart(f, 52, 64, 20);
-            Sparkle(f, 270, 120, 14);
-        } else {
-            MicIcon(f, kCx, kCy, 96);
-            if (phase == ParrotPhase::Recording)
-                for (int k = 1; k <= 2; ++k) {  // sound arcs both sides of the mic
-                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, -50, 50, 7);
-                    Arc(f, kCx, kCy - 20, 70 + 26 * k, 70 + 26 * k, 130, 230, 7);
-                }
-        }
-        if (hint == ParrotHint::TooShort) QuestionMark(f, 274, 84, 22, 8);
-        PressCue(f, 400, 392, phase == ParrotPhase::Recording);
-        return;
-    }
-
     if (g.sound == kSoundSongs) {
         const bool lullaby = (g.sb & 0x0F) == static_cast<uint8_t>(SongKind::Lullaby);
         SoundArtIcon(f, static_cast<uint16_t>(lullaby ? SoundArt::Lullaby : SoundArt::Song), kCx,
@@ -2511,7 +2510,7 @@ void SoundScene(MonoFrame& f, const GameView& g) {
             GameDots(f, std::max<int>(1, g.sd), 400, 392, 56);
         } else if (g.sa == static_cast<uint8_t>(SongPhase::List)) {
             // One dot per song, the chosen one big and ringed.
-            const int n = std::min<int>(g.option_count, 12);
+            const int n = std::min<int>(g.option_count, static_cast<int>(kMaxSongs));
             const int pitch = n > 1 ? std::min(64, 640 / n) : 0;
             const int x0 = 400 - pitch * (n - 1) / 2;
             for (int i = 0; i < n; ++i) {
@@ -2545,6 +2544,8 @@ void SoundScene(MonoFrame& f, const GameView& g) {
     }
 }
 
+#include "shelf_draw.inc"  // V9: the bookshelf picture
+
 }  // namespace
 
 void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
@@ -2561,6 +2562,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
         GameScene(output, model.game);
     } else if (model.kind == SceneKind::Care) {
         CareScene(output, model.care);  // V8
+    } else if (model.kind == SceneKind::Shelf) {
+        ShelfPicture(output, model.shelf);  // V9
     } else {
         HomeScene(output, model);
     }

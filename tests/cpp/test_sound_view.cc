@@ -93,6 +93,24 @@ int main() {
         CleanCorners(parrot[i]);
         for (size_t j = i + 1; j < parrot.size(); ++j) assert(parrot[i] != parrot[j] && Diff(parrot[i], parrot[j]) > 50);
     }
+    // V9 S1: every voice card (and the home slot) is its own picture, in the
+    // Ready, Recording and Playing phases; the voice number travels in `sc`.
+    for (ParrotPhase ph : {ParrotPhase::Ready, ParrotPhase::Recording, ParrotPhase::Playing}) {
+        std::vector<GameView> cards;
+        for (uint8_t c = 0; c < ParrotSession::kChoices; ++c) {
+            if (c == ParrotSession::kHomeChoice && ph != ParrotPhase::Ready) continue;
+            cards.push_back(ParrotGameView({ph, ParrotHint::None, c}));
+            assert(cards.back().sc == c && Ink(cards.back()) > 2000);
+            CleanCorners(cards.back());
+        }
+        for (size_t i = 0; i < cards.size(); ++i)
+            for (size_t j = i + 1; j < cards.size(); ++j) assert(Diff(cards[i], cards[j]) > 300);
+    }
+    // Ready shows the choice row (one mark per voice plus home): moving the
+    // choice changes the row, not just the big card.
+    assert(Diff(ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 0}),
+                ParrotGameView({ParrotPhase::Ready, ParrotHint::None, 5})) > 1500);
+
     RefreshPlanner planner;
     planner.Completed(GameModel(parrot[0]), RefreshMode::Full, true);
     assert(planner.Plan(GameModel(parrot[1])) == RefreshMode::Partial);
@@ -104,6 +122,37 @@ int main() {
     SongView next = list;
     next.selected = 2;
     assert(SongGameView(list) != SongGameView(next) && Diff(SongGameView(list), SongGameView(next)) > 50);
+    // A full list (kMaxSongs = 16 dots, 40 px apart): every dot is drawn, the
+    // cursor on the last one is visible, and neighbours do not touch the ring.
+    {
+        static_assert(kMaxSongs > 12, "the list draws more than the old 12 dots");
+        SongView full;
+        full.phase = SongPhase::List;
+        full.count = static_cast<uint8_t>(kMaxSongs);
+        const int pitch = 640 / static_cast<int>(kMaxSongs);
+        const int x0 = 400 - pitch * (static_cast<int>(kMaxSongs) - 1) / 2;
+        assert(pitch >= 26 + 8 + 4);  // ring radius + neighbour dot + a gap
+        for (uint8_t sel = 0; sel < kMaxSongs; ++sel) {
+            full.selected = sel;
+            MonoFrame f;
+            SceneComposer::Render(GameModel(SongGameView(full)), f);
+            for (int i = 0; i < static_cast<int>(kMaxSongs); ++i) {
+                const int x = x0 + i * pitch;
+                assert(f.IsBlack(x, 392));                       // every dot is there
+                if (i != sel) assert(!f.IsBlack(x, 392 - 20));   // only the chosen one is ringed
+                if (i == sel) assert(f.IsBlack(x, 392 - 26 + 3));
+            }
+            if (sel > 0) {
+                SongView prev = full;
+                prev.selected = static_cast<uint8_t>(sel - 1);
+                assert(Diff(SongGameView(prev), SongGameView(full)) > 50);
+            }
+        }
+        // More options than the list holds never draw past the last dot.
+        SongView over = full;
+        over.count = 200;
+        assert(Diff(SongGameView(over), SongGameView(full)) == 0);
+    }
     SongView timer;
     timer.phase = SongPhase::Timer;
     timer.kind = SongKind::Lullaby;

@@ -1,5 +1,6 @@
 #include "kid_app/play_game.h"
 
+#include "kid_app/game_rules.h"
 #include "kid_app/selftest_clock.h"
 
 #include <algorithm>
@@ -46,6 +47,9 @@ bool PlaySession::Start(PlayGame game, uint32_t seed, uint32_t now_ms, GameOutpu
                      : game == PlayGame::Maze    ? kMazeRounds
                                                  : kDefaultRounds;
     BeginRound(now_ms, out);
+    // V9 1E: the game opens with its spoken rule (also instead of the first
+    // cue of day / night); the later rounds keep their tones.
+    if (const uint16_t rule = GameRuleClip(info->id)) out->clip = rule;
     return true;
 }
 
@@ -418,7 +422,9 @@ GameOutput PlaySession::Tick(uint32_t now_ms) {
             } else if (!repeated_ &&
                        Reached(now_ms, last_input_ms_ + SelfTestClock::Scaled(kRepeatPromptMs))) {
                 repeated_ = true;
-                out.clip = phase_ == Phase::DayCue ? kClipDay : kClipPrompt;
+                // V9 1E: the question again is the rule again (tone without a rule).
+                const uint16_t rule = GameRuleClip(result_.game_id);
+                out.clip = phase_ == Phase::DayCue ? kClipDay : rule ? rule : kClipPrompt;
             }
             break;
         case Phase::Night:

@@ -3,7 +3,8 @@
 Business logic stays in the S1-S3 services (pairing, sync, profile, notes). This module only
 adds the browser edge: form login (password + TOTP), the same cookie session the JSON API uses,
 form CSRF, and HTML responses. Only firmware-supported actions are exposed: no content packs,
-voice packs, parent-settings push or open chat.
+voice packs or parent-settings push. Open chat (S6) has its own tab: switch with risk text and
+password + TOTP step-up, the model's allowed actions, and the breaker state.
 """
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ from ..auth import AuthError, CSRF_COOKIE, SESSION_COOKIE, SESSION_SECONDS
 from ..db import connect
 from ..pairing import DEVICE_RE, PAIRING_ID_RE, CODE_RE, PairingError
 # Notes are reached only through profile.py (the isolation test pins who imports notes.py).
-from ..profile import InitBody, NotesError, ProfileBody, ProfileError, validate_notes
+from ..open_chat import LLM_ACTIONS as LLM_ACTION_LABELS
+from ..profile import InitBody, NotesError, PolicyBody, ProfileBody, ProfileError, validate_notes
 from ..routers.parent import check_origin, client_ip
 from ..sync import SyncError, TOMBSTONED  # noqa: F401  (TOMBSTONED documents the tombstone states shown)
 from . import render
@@ -53,6 +55,9 @@ FLASH = {
     "notes_saved": ("备注已保存。", "ok"),
     "notes_deleted": ("备注已删除。", "ok"),
     "logged_out": ("已退出登录。", "ok"),
+    "chat_enabled": ("开放问答已打开。", "ok"),
+    "chat_disabled": ("开放问答已关闭。", "ok"),
+    "chat_actions_saved": ("允许大模型执行的动作已保存。", "ok"),
 }
 ERRORS = {
     "PAIRING_THROTTLED": "操作过于频繁，请稍后再试。",
@@ -75,6 +80,11 @@ ERRORS = {
     "PARENT_REAUTH_FAILED": "密码或验证码不正确（验证码不能重复使用，请等待刷新）。",
     "PARENT_LOGIN_THROTTLED": "尝试次数过多，请 15 分钟后再试。",
     "PARENT_AUTH_REQUIRED": "用户名、密码或验证码不正确。",
+    "CHAT_FORM_INVALID": "请勾选已阅读风险说明，并填写密码和 6 位验证码。",
+    "OPEN_CHAT_UNAVAILABLE": "开放问答现在不能打开（没有配置智谱 GLM 密钥）。",
+    "POLICY_REV_CONFLICT": "设置刚刚被修改过，请刷新页面后重试。",
+    "LLM_ACTIONS_INVALID": "动作选择无效。",
+    "PARENT_REAUTH_REQUIRED": "请重新输入密码和验证码。",
 }
 
 
@@ -591,6 +601,79 @@ def create_router(app, database) -> APIRouter:
         except (NotesError, ProfileError) as error:
             return service_error(error, back)
         return redirect(back, flash="notes_deleted")
+
+    # -- open chat (S6) ---------------------------------------------------
+
+    @router.get("/devices/{device_id}/chat")
+    def chat(device_id: str, request: Request):
+        if (denied := get_page(request)) is not None:
+            return denied
+        device = find(device_id)
+        if device is None:
+            return not_found()
+        try:
+            view = request.app.state.profile_service.get_policy(device_id)
+        except ProfileError as error:
+            return service_error(error, "/parent/devices")
+        csrf = panel.csrf(request)
+        body = render.chat_page(device, view, LLM_ACTION_LABELS, panel.tz(), csrf)
+        return page(render.layout("开放问答", body, active="devices", csrf=csrf, notice=panel.notice(request)))
+
+    async def chat_update(device_id: str, request: Request, make_body, flash: str):
+        got = await write(request)
+        if isinstance(got, Response):
+            return got
+        account, fields = got
+        back = f"/parent/devices/{device_id}/chat"
+        if find(device_id) is None:
+            return not_found()
+        try:
+            body = make_body(int(fields.get("base_rev", "")), fields)
+        except (ValueError, ValidationError):
+            return error_page(422, ERRORS["CHAT_FORM_INVALID"], back)
+
+        def reauth() -> None:
+            # Called by the service only when the change needs it (turning chat on, adding actions).
+            if body.reauth is None:
+                raise ProfileError(403, "PARENT_REAUTH_REQUIRED")
+            try:
+                request.app.state.parent_auth.reauth(account, body.reauth.password, body.reauth.otp,
+                                                     client_ip(request))
+            except AuthError as error:
+                raise ProfileError(error.status, error.code) from None
+        try:
+            await run_in_threadpool(request.app.state.profile_service.update_policy, device_id, body,
+                                    client_ip(request), reauth, f"parent:{account}")
+        except ProfileError as error:
+            return service_error(error, back)
+        return redirect(back, flash=flash)
+
+    @router.post("/devices/{device_id}/chat/enable")
+    async def chat_enable(device_id: str, request: Request):
+        def body(rev, fields):
+            if fields.get("ack") != "1":
+                raise ValueError("risk not acknowledged")
+            return PolicyBody(base_rev=rev, open_chat=True,
+                              reauth={"password": fields.get("password", ""), "otp": fields.get("otp", "").strip()})
+        return await chat_update(device_id, request, body, "chat_enabled")
+
+    @router.post("/devices/{device_id}/chat/disable")
+    async def chat_disable(device_id: str, request: Request):
+        return await chat_update(device_id, request, lambda rev, _: PolicyBody(base_rev=rev, open_chat=False),
+                                 "chat_disabled")
+
+    @router.post("/devices/{device_id}/chat/actions")
+    async def chat_actions(device_id: str, request: Request):
+        def body(rev, fields):
+            unknown = {k for k in fields if k.startswith("act_")} - {f"act_{a}" for a in LLM_ACTION_LABELS}
+            if unknown:
+                raise ValueError("unknown action")
+            proof = None
+            if fields.get("password") or fields.get("otp"):  # only adding actions needs them
+                proof = {"password": fields.get("password", ""), "otp": fields.get("otp", "").strip()}
+            return PolicyBody(base_rev=rev, llm_actions=[a for a in LLM_ACTION_LABELS if fields.get(f"act_{a}") == "1"],
+                              reauth=proof)
+        return await chat_update(device_id, request, body, "chat_actions_saved")
 
     # -- audit -----------------------------------------------------------
 

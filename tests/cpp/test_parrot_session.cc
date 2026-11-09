@@ -31,14 +31,22 @@ bool AllZero(const std::vector<int16_t>& v) {
 }
 
 
-// Open + hold + speak `ms` of voice + release.
-ParrotOutput Take(ParrotSession& p, uint32_t t0, size_t samples, int peak, uint32_t seed = 0) {
+// V9: the child picks the voice with the dial before holding (index 5 = home).
+void Choose(ParrotSession& p, uint8_t choice) {
+    for (int guard = 0; p.View().choice != choice && guard < 8; ++guard)
+        p.Input(GameInput::Down, 0);
+    assert(p.View().choice == choice);
+}
+
+// Choose the voice, hold, speak `samples` of voice, release.
+ParrotOutput Take(ParrotSession& p, uint32_t t0, size_t samples, int peak, uint8_t which = 0) {
     ParrotContext ctx;
-    ParrotOutput o = p.Hold(true, t0, ctx, seed);
+    Choose(p, which);
+    ParrotOutput o = p.Hold(true, t0, ctx, 0);
     assert(o.start_mic && p.Phase() == ParrotPhase::Recording);
     const auto voice = Voice(samples, peak);
     assert(p.Feed(voice.data(), voice.size()) == std::min(samples, ParrotSession::kMaxSamples));
-    return p.Hold(false, t0 + 1000, ctx, seed);
+    return p.Hold(false, t0 + 1000, ctx, 0);
 }
 
 size_t Drain(ParrotSession& p, std::vector<int16_t>* all) {
@@ -183,15 +191,16 @@ int main() {
         });
         expect_clean_after([&](ParrotSession& p) {  // dial turn while playing
             Take(p, 0, 16000, 9000);
-            assert(p.Input(GameInput::Down, 5).leave);
+            const ParrotOutput o = p.Input(GameInput::Down, 5);
+            assert(o.stop_audio && !o.leave && p.Phase() == ParrotPhase::Ready);
         });
         expect_clean_after([&](ParrotSession& p) {  // the arbiter refused the playback
             Take(p, 0, 16000, 9000);
             p.PlaybackRefused();
             assert(p.Phase() == ParrotPhase::Ready);
         });
-        expect_clean_after([&](ParrotSession& p) {  // dial turn while ready
-            assert(p.Input(GameInput::Up, 5).leave);
+        expect_clean_after([&](ParrotSession& p) {  // Long while ready leaves
+            assert(p.Input(GameInput::Long, 5).leave);
         });
         expect_clean_after([&](ParrotSession& p) {  // idle for a minute
             assert(!p.Tick(ParrotSession::kIdleExitMs - 1).leave);
@@ -240,6 +249,210 @@ int main() {
         assert(!p.Hold(true, 4, c, 0).start_mic);
         assert(!p.Hold(false, 5, ok, 0).play);  // release without a press does nothing
     }
+
+    // ---- V9 S1: the child chooses the voice -------------------------------
+    // Turning the dial in Ready cycles parrot, chipmunk, bear, robot, echo,
+    // then the home slot; Hold on the home slot leaves instead of recording.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        ParrotSession p;
+        p.Bind(g_buffer.data(), g_buffer.size());
+        assert(p.Open(0, ok, nullptr));
+        assert(p.View().choice == 0 && p.Selected() == ParrotVoice::Parrot);
+        ParrotOutput o = p.Input(GameInput::Down, 1);
+        assert(o.redraw && !o.leave && p.View().choice == 1 && p.Phase() == ParrotPhase::Ready);
+        for (uint8_t want : {2, 3, 4, 5, 0}) {  // 5 = home, then it wraps
+            assert(p.Input(GameInput::Down, 1).redraw && p.View().choice == want);
+        }
+        assert(p.Input(GameInput::Up, 1).redraw && p.View().choice == ParrotSession::kHomeChoice);
+        assert(p.Input(GameInput::Up, 1).redraw && p.View().choice == 4);
+        assert(p.Selected() == ParrotVoice::Echo);
+        // Re-opening starts on the parrot again.
+        p.Interrupt();
+        assert(p.Open(2, ok, nullptr) && p.View().choice == 0);
+        // The selection survives a take (no need to pick again for a second go).
+        Take(p, 10, 16000, 9000, 3);
+        std::vector<int16_t> out;
+        Drain(p, &out);
+        assert(p.Phase() == ParrotPhase::Ready && p.Selected() == ParrotVoice::Robot);
+        assert(AllZero(g_buffer));
+    }
+
+    // The home slot leaves with a press: nothing is recorded, nothing to wipe.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        ParrotSession p;
+        p.Bind(g_buffer.data(), g_buffer.size());
+        assert(p.Open(0, ok, nullptr));
+        Choose(p, ParrotSession::kHomeChoice);
+        const ParrotOutput o = p.Hold(true, 5, ok, 0);
+        assert(o.leave && !o.start_mic && !p.Active() && AllZero(g_buffer));
+    }
+
+    // A turn while recording changes nothing.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        ParrotSession p;
+        p.Bind(g_buffer.data(), g_buffer.size());
+        assert(p.Open(0, ok, nullptr));
+        Choose(p, 2);
+        assert(p.Hold(true, 0, ok, 0).start_mic);
+        assert(!p.Input(GameInput::Up, 1).redraw && p.View().choice == 2);
+        p.Interrupt();
+    }
+
+    // Every voice: length, level cap, privacy wipe. Speed factors order the
+    // lengths; the quiet input is boosted at most 3x; nothing is left in RAM.
+    {
+        const size_t spoken = 2 * ParrotSession::kInRate;
+        size_t len[5] = {};
+        for (uint8_t v = 0; v < 5; ++v) {
+            std::vector<int16_t> buf(ParrotSession::kMaxSamples);
+            ParrotSession p;
+            p.Bind(buf.data(), buf.size());
+            assert(p.Open(0, ok, nullptr));
+            assert(Take(p, 0, spoken, 30000, v).play);
+            len[v] = p.PlaybackSamples();
+            std::vector<int16_t> out;
+            assert(Drain(p, &out) == len[v] && out.size() == len[v]);
+            int peak = 0;
+            for (int16_t s : out) peak = std::max(peak, std::abs(static_cast<int>(s)));
+            assert(peak > 3000 && peak <= ParrotSession::kOutPeak);
+            assert(AllZero(buf) && p.BufferClean() && p.Phase() == ParrotPhase::Ready);
+        }
+        const size_t plain = spoken * ParrotSession::kOutRate / ParrotSession::kInRate;
+        assert(len[1] < len[0] && len[0] < plain);             // chipmunk < parrot < plain
+        assert(len[3] + 2 >= plain && len[3] <= plain + 2);    // robot keeps the speed
+        assert(len[2] > plain * 5 / 4);                        // bear: slower, deeper
+        assert(len[4] > plain);                                // echo: the tail
+        assert(len[4] - plain + 4 >= ParrotSession::kEchoDelay2 &&
+               len[4] - plain <= ParrotSession::kEchoDelay2 + 4);
+    }
+
+    // Echo: first the voice, then two quieter copies after kEchoDelay1/2 and
+    // nothing beyond the last copy. Computed on the fly from the same
+    // recording: no second buffer.
+    {
+        std::vector<int16_t> buf(ParrotSession::kMaxSamples);
+        ParrotSession p;
+        p.Bind(buf.data(), buf.size());
+        assert(p.Open(0, ok, nullptr));
+        const size_t loud = 2000;  // 3000 output samples, shorter than the delay
+        const size_t burst = ParrotSession::kMinSamples;  // then silence up to a take
+        ParrotContext c;
+        Choose(p, 4);
+        assert(p.Hold(true, 0, c, 0).start_mic);
+        std::vector<int16_t> v(burst, 0);
+        std::fill(v.begin(), v.begin() + loud, static_cast<int16_t>(8000));
+        p.Feed(v.data(), v.size());
+        assert(p.Hold(false, 500, c, 0).play);
+        std::vector<int16_t> out;
+        Drain(p, &out);
+        const size_t body = burst * ParrotSession::kOutRate / ParrotSession::kInRate;
+        auto level = [&](size_t at) { return std::abs(static_cast<int>(out[at])); };
+        const int a = level(1500);                                   // voice only
+        const int b = level(ParrotSession::kEchoDelay1 + 1500);      // 1st copy, quieter
+        const int d = level(ParrotSession::kEchoDelay2 + 1500);      // 2nd copy, quieter still
+        assert(a > 0 && b > 0 && d > 0 && b < a && d < b);
+        assert(level(3500) == 0);  // silence between the voice and its first copy
+        assert(out.size() + 4 >= body + ParrotSession::kEchoDelay2 && out.size() <= body + ParrotSession::kEchoDelay2);
+        assert(AllZero(buf));
+    }
+
+    // Robot: a ring-modulated copy at the plain speed. Deterministic (same
+    // take, same sound), and the loud stretch has the carrier's breathing.
+    {
+        std::vector<int16_t> b1(ParrotSession::kMaxSamples), b2(ParrotSession::kMaxSamples);
+        ParrotSession robot, again;
+        robot.Bind(b1.data(), b1.size());
+        again.Bind(b2.data(), b2.size());
+        assert(robot.Open(0, ok, nullptr) && again.Open(0, ok, nullptr));
+        const size_t n = ParrotSession::kInRate;
+        std::vector<int16_t> flat(n, 9000);  // constant input: any wobble is the carrier
+        for (ParrotSession* s : {&robot, &again}) {
+            ParrotContext c;
+            Choose(*s, 3);
+            assert(s->Hold(true, 0, c, 0).start_mic);
+            s->Feed(flat.data(), flat.size());
+            assert(s->Hold(false, 100, c, 0).play);
+        }
+        std::vector<int16_t> r1, r2;
+        Drain(robot, &r1);
+        Drain(again, &r2);
+        assert(r1 == r2 && r1.size() > 10000);
+        int lo = 0, hi = 0;
+        for (size_t i = 1000; i < 9000; ++i) {
+            const int a = std::abs(static_cast<int>(r1[i]));
+            lo += a < 3000;
+            hi += a > 9000;
+        }
+        assert(lo > 500 && hi > 500);
+    }
+
+    // Choosing is activity: turning every 30 s keeps the screen open past
+    // 60 s; 60 s after the last turn it goes home.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        ParrotSession p;
+        p.Bind(g_buffer.data(), g_buffer.size());
+        assert(p.Open(0, ok, nullptr));
+        uint32_t t = 0;
+        for (int i = 0; i < 6; ++i) {  // 3 minutes of picking
+            t += 30000;
+            assert(!p.Tick(t).leave);
+            assert(p.Input(GameInput::Down, t).redraw);
+        }
+        assert(!p.Tick(t + ParrotSession::kIdleExitMs - 1).leave);
+        assert(p.Tick(t + ParrotSession::kIdleExitMs).leave);
+    }
+
+    // The home slot leaves even while XiaoZhi or a cue holds the speaker.
+    {
+        g_buffer.assign(g_buffer.size(), 0);
+        for (int which = 0; which < 2; ++which) {
+            ParrotSession p;
+            p.Bind(g_buffer.data(), g_buffer.size());
+            assert(p.Open(0, ok, nullptr));
+            Choose(p, ParrotSession::kHomeChoice);
+            ParrotContext c = ok;
+            (which ? c.voice_active : c.audio_busy) = true;
+            const ParrotOutput o = p.Hold(true, 5, c, 0);
+            assert(o.leave && !o.start_mic && !p.Active());
+        }
+    }
+
+    // Interpolation between far apart neighbours must not overflow: compare
+    // with a 64-bit reference of the parrot voice (1.3x).
+    {
+        std::vector<int16_t> buf(ParrotSession::kMaxSamples);
+        ParrotSession p;
+        p.Bind(buf.data(), buf.size());
+        assert(p.Open(0, ok, nullptr));
+        const size_t n = ParrotSession::kInRate;
+        std::vector<int16_t> jump(n);
+        for (size_t i = 0; i < n; ++i) jump[i] = (i & 1) ? 32767 : -32768;
+        assert(p.Hold(true, 0, ok, 0).start_mic);
+        p.Feed(jump.data(), n);
+        assert(p.Hold(false, 100, ok, 0).play);
+        std::vector<int16_t> out;
+        Drain(p, &out);
+        const uint64_t step = (1300ull * ParrotSession::kInRate * 65536ull) /
+                              (1000ull * ParrotSession::kOutRate);
+        const int64_t gain = (static_cast<int64_t>(ParrotSession::kOutPeak) * 256) / 32768;
+        for (size_t k = 0; k < 400; ++k) {
+            const uint64_t pos = k * step;
+            const size_t i = pos >> 16;
+            const int64_t frac = pos & 0xFFFF;
+            const int64_t a = jump[i], b = jump[i + 1];
+            int64_t v = (a + (((b - a) * frac) >> 16)) * gain >> 8;
+            v = std::max<int64_t>(-ParrotSession::kOutPeak, std::min<int64_t>(ParrotSession::kOutPeak, v));
+            assert(out[k] == v);
+        }
+    }
+
+    // RAM: five voices live in the same small object (no extra buffer).
+    static_assert(sizeof(ParrotSession) <= 96, "voices must not add buffers to ParrotSession");
+    static_assert(ParrotSession::kChoices == 6 && ParrotSession::kHomeChoice == 5, "5 voices + home");
 
     // The staging block Render() fills is scrubbed on request (it is a copy of the voice).
     {

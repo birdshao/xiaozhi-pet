@@ -7,6 +7,7 @@ GameView ParrotGameView(const ParrotView& view) {
     g.sound = kSoundParrot;
     g.sa = static_cast<uint8_t>(view.phase);
     g.sb = static_cast<uint8_t>(view.hint);
+    g.sc = view.choice;
     return g;
 }
 

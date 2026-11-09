@@ -150,7 +150,7 @@ python -m tools.sound_pack demo --output build/sound-smoke
 
 小端，固定布局，Python `tools/sound_pack.py`（`encode`/`decode`）与 C++ `sound_pack_reader.h` 按同一规则检查，`scripts/p2_test.sh` 用 Python 生成的包跑 C++ 读取器。
 
-- 包头 32 B（`<4sHHIIIIII`）：`KPS1`、版本 1、片段数 1–192（V8 起；原为 1–96，旧包仍可读）、采样率 24000、revision、数据起始（= 32 + 16 × 片段数）、总字节数（= 文件大小）、目录 CRC32、包头前 28 字节的 CRC32。
+- 包头 32 B（`<4sHHIIIIII`）：`KPS1`、版本 1、片段数 1–256（V9 起；V8 为 1–192，原为 1–96，旧包仍可读）、采样率 24000、revision、数据起始（= 32 + 16 × 片段数）、总字节数（= 文件大小）、目录 CRC32、包头前 28 字节的 CRC32。
 - 目录每段 16 B（`<HHIII`）：片段 id（严格递增，1–1999）、保留 0、偏移、字节数（偶数，≤ 6 秒）、CRC32。
 - 数据：去掉 RIFF 头的 24 kHz 单声道 little-endian PCM16，每段从 4 字节对齐处开始，中间只有补零，最后一段结束即文件结束。整包 ≤ 8 MiB。
 - 片段 id：`1 + 首页项序号`（1 聊天 … 5 睡觉）是选项名；`100–999` 是 `personality.cc` 话术 id；`1000–1999` 是 V8 `care_phrases.cc` 护理话术 id；6–99 留给以后的音效。
@@ -167,4 +167,6 @@ python -m tools.sound_pack demo --output build/sound-smoke
 
 ## V8 追加：护理话术
 
-V8 的护理话术（`firmware/components/kid_app/src/care_phrases.cc`，片段 id 1000–1999）也放进同一个包：读取器接受的片段 id 上限由 999 放宽到 1999、片段数上限由 96 放宽到 192，格式版本不变。审核清单和 TTS 草稿见 `python -m tools.care_phrases`，说明见 `docs/V8_CARE_AND_GROWTH.md` 第 7 节。
+V8 的护理话术（`firmware/components/kid_app/src/care_phrases.cc`，片段 id 1000–1999）也放进同一个包：读取器接受的片段 id 上限由 999 放宽到 1999、片段数上限由 96 放宽到 192（V9 再放宽到 256，见下），格式版本不变。审核清单和 TTS 草稿见 `python -m tools.care_phrases`，说明见 `docs/V8_CARE_AND_GROWTH.md` 第 7 节。
+
+V9 的游戏口头规则（`tools/game_prompts.py`，片段 id 621–639，即 600 加游戏 id）也放进同一个包。片段 id 上限（1999）不用再放宽，但**片段数**要放宽：默认包的目录已有 131 条，V9 照料话术并入后约 199 条，会超过 192，整个包会被读取器拒收，所有话术退回提示音。所以 `kMaxClips` 与 `tools/sound_pack.py` 的 `MAX_CLIPS` 一起提到 256（旧包照常可读，格式版本不变）。读取器的 `clips_` 与 `candidate_` 各从 3 KiB 增到 4 KiB，静态内存共多 2 KiB。游戏规则缺录音时游戏回退成原来的两音提示。

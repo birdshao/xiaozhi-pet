@@ -4,6 +4,8 @@
 #include "sdmmc_cmd.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "sdkconfig.h"
 
@@ -13,6 +15,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace kid_app {
 namespace {
@@ -73,6 +77,97 @@ bool WaveshareStorySd::ContentBookPresent(uint16_t content_id) const {
     std::snprintf(path, sizeof(path), "%s/c%u.kpb", kBooks, static_cast<unsigned>(content_id));
     struct stat info {};
     return stat(path, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+bool WaveshareStorySd::SelectBook(const char* book_id) {
+    if (!mounted_ || !book_id) return false;
+    ready_ = false;
+    missing_ = BookMissing::NoBook;
+    if (!file_.OpenBook(kBooks, book_id)) {
+        reader_.Content().Close();
+        ESP_LOGW(kTag, "SHELF_BOOK_ABSENT id=%s", book_id);
+        return false;
+    }
+    if (!reader_.Open(file_)) {
+        file_.Close();
+        missing_ = BookMissing::BadBook;
+        ESP_LOGW(kTag, "SHELF_BOOK_BAD id=%s", book_id);
+        return false;
+    }
+    ready_ = true;
+    missing_ = BookMissing::None;
+    ESP_LOGI(kTag, "SHELF_BOOK_READY id=%s pages=%u", book_id,
+             static_cast<unsigned>(reader_.PageCount()));
+    return true;
+}
+
+size_t WaveshareStorySd::ScanShelf(BookShelf* shelf, uint8_t* thumb_pool,
+                                   uint32_t budget_ms) const {
+    if (!mounted_ || !shelf || !thumb_pool) return 0;
+    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(budget_ms) * 1000;
+    auto late = [deadline]() { return esp_timer_get_time() > deadline; };
+    DIR* dir = opendir(kBooks);
+    if (!dir) return 0;
+    // The reader holds the page tables (kilobytes): heap, not this task's stack.
+    std::unique_ptr<ContentPackReader> content(new (std::nothrow) ContentPackReader());
+    if (!content) {
+        closedir(dir);
+        ESP_LOGW(kTag, "SHELF_SCAN_NO_MEMORY");
+        return 0;
+    }
+    StoryPackFilePort port;
+    // Pass 1: names and headers only (cheap), collected beyond the shelf size
+    // so that sorting, not directory order, decides which books are kept.
+    while (const dirent* entry = readdir(dir)) {
+        ShelfBook book{};
+        if (!ShelfBookId(entry->d_name, book.id)) continue;
+        if (late()) {
+            ESP_LOGW(kTag, "SHELF_SCAN_TIMEOUT budget_ms=%u found=%u",
+                     static_cast<unsigned>(budget_ms), static_cast<unsigned>(shelf->Count()));
+            break;
+        }
+        if (!port.OpenBook(kBooks, book.id) || !content->Open(port)) {
+            ESP_LOGI(kTag, "SHELF_SKIP name=%s", entry->d_name);
+            continue;
+        }
+        book.entry.content_id = content->ContentId();
+        book.entry.series_id = content->SeriesId();
+        book.entry.series_index = content->SeriesIndex();
+        book.series_count = static_cast<uint8_t>(content->SeriesCount());
+        if (!shelf->Add(book)) ESP_LOGW(kTag, "SHELF_SKIP_FULL id=%s", book.id);
+    }
+    closedir(dir);
+    shelf->Sort();
+    for (size_t i = BookShelf::kMaxBooks; i < shelf->Count(); ++i)
+        ESP_LOGW(kTag, "SHELF_DROP id=%s (more than %u books)", shelf->At(i).id,
+                 static_cast<unsigned>(BookShelf::kMaxBooks));
+    shelf->Truncate(BookShelf::kMaxBooks);
+    // Pass 2: thumbnails of the kept books.
+    auto* page = static_cast<uint8_t*>(
+        heap_caps_malloc(ContentPackReader::kMonoBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!page) {
+        ESP_LOGW(kTag, "SHELF_SCAN_NO_MEMORY");
+        return shelf->Count();
+    }
+    for (size_t i = 0; i < shelf->Count(); ++i) {
+        if (late()) {
+            ESP_LOGW(kTag, "SHELF_THUMB_TIMEOUT done=%u", static_cast<unsigned>(i));
+            break;
+        }
+        uint8_t* slot = thumb_pool + i * ShelfView::kThumbBytes;
+        if (port.OpenBook(kBooks, shelf->At(i).id) && content->Open(port) &&
+            content->ReadMono(1, page, ContentPackReader::kMonoBytes) &&
+            DownsampleThumb(page, slot))
+            shelf->SetThumb(i, slot);
+        const ShelfBook& book = shelf->At(i);
+        ESP_LOGI(kTag, "SHELF_BOOK id=%s content=%u series=%u:%u/%u thumb=%d", book.id,
+                 static_cast<unsigned>(book.entry.content_id),
+                 static_cast<unsigned>(book.entry.series_id),
+                 static_cast<unsigned>(book.entry.series_index),
+                 static_cast<unsigned>(book.series_count), book.thumb ? 1 : 0);
+    }
+    heap_caps_free(page);
+    return shelf->Count();
 }
 
 bool WaveshareStorySd::Initialize(const char* book_id) {

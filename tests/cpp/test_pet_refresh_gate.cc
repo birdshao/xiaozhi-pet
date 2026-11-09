@@ -135,5 +135,24 @@ int main() {
         assert(menu_gate.Request(b));
     }
 
+    // V9 bookshelf: frames that differ only in the shelf (the moon in the
+    // evening, a read tick) are different scenes; the packed word has neither.
+    {
+        kid_app::PetRefreshGate shelf_gate(0);
+        kid_app::SceneModel a{kid_app::SceneKind::Shelf};
+        a.shelf.count = 4;
+        a.shelf.cards[0].present = true;
+        kid_app::SceneModel moon = a;
+        moon.shelf.bedtime = true;
+        kid_app::SceneModel tick = a;
+        tick.shelf.cards[0].read = true;
+        assert(shelf_gate.Request(a));
+        kid_app::SceneModel got{};
+        assert(shelf_gate.Acquire(0, &got) && shelf_gate.Complete(true, 1));
+        assert(!shelf_gate.Request(a));
+        assert(shelf_gate.Request(moon));
+        assert(shelf_gate.Request(tick));
+    }
+
     std::cout << "PASS: ePaper cooldown, latest-scene wins, BUSY, retry and mode re-entry\n";
 }

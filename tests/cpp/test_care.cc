@@ -153,7 +153,8 @@ void TestGuards() {
            CareResult::Rejected);  // id 0
     assert(c.Apply(Ev(1, CareEventKind::Fed, MemorySource::DialChoice, m, 0, 0)) ==
            CareResult::Rejected);
-    assert(c.Apply(Ev(1, CareEventKind::Fed, MemorySource::DialChoice, m, 0, 7)) ==
+    // Foods 7 and 8 are the V9 seasonal foods (test_care_v9); 9 never is.
+    assert(c.Apply(Ev(1, CareEventKind::Fed, MemorySource::DialChoice, m, 0, 9)) ==
            CareResult::Rejected);
     assert(c.Apply(Ev(1, CareEventKind::Bathed, MemorySource::Device, m, 0, 3)) ==
            CareResult::Rejected);

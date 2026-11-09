@@ -75,9 +75,9 @@ class FormatTests(unittest.TestCase):
         bad(b"KPB2" + bytes(blob[4:]), "not a KPS1")
 
     def test_encoder_limits(self):
-        with self.assertRaisesRegex(ValueError, "1..192"):
+        with self.assertRaisesRegex(ValueError, "1..256"):
             encode({})
-        with self.assertRaisesRegex(ValueError, "1..192"):
+        with self.assertRaisesRegex(ValueError, "1..256"):
             encode({i: b"\0\0" for i in range(1, MAX_CLIPS + 2)})
         with self.assertRaisesRegex(ValueError, "bad id"):
             encode({2000: b"\0\0"})

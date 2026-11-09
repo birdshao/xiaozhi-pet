@@ -66,6 +66,13 @@ CXX="${CXX:-g++}"
 "$BUILD/test_song_player"
 
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/melody_synth.cc" \
+  "$ROOT/firmware/components/kid_app/src/song_player.cc" \
+  "$ROOT/tests/cpp/test_melody_synth.cc" \
+  -o "$BUILD/test_melody_synth"
+"$BUILD/test_melody_synth"
+
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
   "$ROOT/firmware/components/kid_app/src/routine_timer.cc" \
   "$ROOT/tests/cpp/test_routine_timer.cc" \
   -o "$BUILD/test_routine_timer"
@@ -451,6 +458,21 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   -o "$BUILD/test_motion_game"
 "$BUILD/test_motion_game"
 
+# V9 1A: today's pick for the play menu (pure, deterministic): categories,
+# evening / bored rules, parent switches, the age band slot, memory id map.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/activity_recommend.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/refresh_planner.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_activity_recommend.cc" \
+  -o "$BUILD/test_activity_recommend"
+"$BUILD/test_activity_recommend"
+
 # V8 mini games: 20+ round banks per game, live clock / weather rounds,
 # memory flip, tilt maze (always solvable), shake dice / tree, wooden man,
 # day and night, four-way tilt, resting board stays quiet, the game list and
@@ -469,6 +491,38 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
   "$ROOT/tests/cpp/test_play_games.cc" \
   -o "$BUILD/test_play_games"
 "$BUILD/test_play_games"
+
+# V9 1E (G4): spoken game rules. Ids (KPS1 600 + game id, game clip space),
+# the sound bank lookup, and the sessions asking for the rule at the start
+# and after 12 s of silence (tones everywhere else).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/sound_pack_reader.cc" \
+  "$ROOT/firmware/components/kid_app/src/sound_bank.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/care_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/rtc_clock.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_phrases.cc" \
+  "$ROOT/firmware/components/kid_app/src/personality.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/wav_clip.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_game_rules.cc" \
+  -o "$BUILD/test_game_rules"
+"$BUILD/test_game_rules"
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
+  "$ROOT/firmware/components/kid_app/src/play_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/play_content.cc" \
+  "$ROOT/firmware/components/kid_app/src/mini_game.cc" \
+  "$ROOT/firmware/components/kid_app/src/icon_choice.cc" \
+  "$ROOT/firmware/components/kid_app/src/memory_store.cc" \
+  "$ROOT/firmware/components/kid_app/src/scene_model.cc" \
+  "$ROOT/firmware/components/kid_app/src/pet_controller.cc" \
+  "$ROOT/tests/cpp/test_game_rule_clips.cc" \
+  -o "$BUILD/test_game_rule_clips"
+"$BUILD/test_game_rule_clips"
 
 # V6-02 fixed voice commands: pure dispatcher (scene x quiet hours x battery).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC" \
@@ -522,3 +576,13 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
 # care, diary and album scenes stay in their ePaper regions.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/care_session.cc"   "$ROOT/firmware/components/kid_app/src/care_store.cc"   "$ROOT/firmware/components/kid_app/src/care_phrases.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/tests/cpp/test_care_scene.cc"   -o "$BUILD/test_care_scene"
 "$BUILD/test_care_scene"
+
+# V9 bookshelf (1B): book file filter and order, dial, paging, thumbnails,
+# the Shelf picture and its refresh rules.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/book_shelf.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_controller.cc"   "$ROOT/firmware/components/kid_app/src/sound_view.cc"   "$ROOT/tests/cpp/test_book_shelf.cc"   -o "$BUILD/test_book_shelf"
+"$BUILD/test_book_shelf"
+
+# V9 slice 1C: care that differs by day (C1), seasonal foods (C4), care and
+# games linked (G5), TuanTuan growing up (C3), the lullaby at bedtime (S4).
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/care_store.cc"   "$ROOT/firmware/components/kid_app/src/care_calendar.cc"   "$ROOT/firmware/components/kid_app/src/care_phrases.cc"   "$ROOT/firmware/components/kid_app/src/care_session.cc"   "$ROOT/firmware/components/kid_app/src/growth_stage.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/firmware/components/kid_app/src/rhythm_scheduler.cc"   "$ROOT/firmware/components/kid_app/src/play_content.cc"   "$ROOT/firmware/components/kid_app/src/mini_game.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/pet_controller.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/song_player.cc"   "$ROOT/firmware/components/kid_app/src/melody_synth.cc"   "$ROOT/firmware/components/kid_app/src/audio_coordinator.cc"   "$ROOT/tests/cpp/test_care_v9.cc"   -o "$BUILD/test_care_v9"
+"$BUILD/test_care_v9"

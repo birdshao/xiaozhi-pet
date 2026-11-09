@@ -8,7 +8,15 @@
 namespace kid_app {
 
 // V8-01 "parrot": the child holds the dial centre and says something (up to
-// 5 s); on release TuanTuan repeats it in a higher, faster voice.
+// 5 s); on release TuanTuan repeats it in the voice the child chose.
+//
+// V9 S1 voices: before holding, the dial cycles five voices (parrot, chipmunk,
+// bear, robot, echo) and a sixth "home" slot (a press there leaves). The
+// effects are all computed on the fly inside Render() from the ONE recording:
+// resampling speed (parrot 1.3x, chipmunk 1.55x, bear 0.75x), ring modulation
+// by an integer triangle carrier (robot), and two decaying copies read from
+// the same recording kEchoDelay1 / kEchoDelay2 samples later (echo). No extra
+// buffer, no filter state, no heap: the session object stays a few integers.
 //
 // PRIVACY (ADR-011, PRD section 2 item 7). The recording lives ONLY in the
 // caller's RAM buffer handed to Bind(); this module has no file, flash,
@@ -33,7 +41,7 @@ namespace kid_app {
 // caller's seed). Single owner (board input task); the mic task only calls
 // Feed() through the board's own queue.
 enum class ParrotPhase : uint8_t { Idle, Ready, Recording, Playing };
-enum class ParrotVoice : uint8_t { Parrot = 0, Chipmunk = 1 };
+enum class ParrotVoice : uint8_t { Parrot = 0, Chipmunk = 1, Bear = 2, Robot = 3, Echo = 4 };
 enum class ParrotHint : uint8_t { None, Quiet, LowBattery, Busy, TooShort };
 const char* ParrotHintName(ParrotHint hint);
 
@@ -48,6 +56,7 @@ struct ParrotOutput {
     bool redraw = false;     // draw View() (one partial refresh)
     bool start_mic = false;  // arm the microphone tap
     bool stop_mic = false;   // disarm it
+    bool stop_audio = false; // cancel the playback in flight (already wiped)
     bool play = false;       // PlaybackSamples() of 24 kHz PCM from Render()
     bool leave = false;      // back home
     ParrotHint hint = ParrotHint::None;
@@ -56,6 +65,7 @@ struct ParrotOutput {
 struct ParrotView {
     ParrotPhase phase = ParrotPhase::Idle;
     ParrotHint hint = ParrotHint::None;
+    uint8_t choice = 0;  // 0..4 voice (ParrotVoice), 5 = home
 };
 
 class ParrotSession {
@@ -68,7 +78,13 @@ public:
     static constexpr uint32_t kIdleExitMs = 60000;  // nobody holds: quietly home
     static constexpr int16_t kOutPeak = 14000;      // hard cap (about 43 % of full scale)
     static constexpr uint32_t kMaxGainQ8 = 3 * 256; // never boost more than 3x
-    static constexpr uint32_t kPermille[2] = {1300, 1550};  // speed/pitch factor
+    static constexpr uint32_t kPermille[5] = {1300, 1550, 750, 1000, 1000};  // speed/pitch factor
+    static constexpr uint8_t kVoices = 5;
+    static constexpr uint8_t kChoices = 6;      // five voices + home
+    static constexpr uint8_t kHomeChoice = 5;
+    static constexpr size_t kEchoDelay1 = kOutRate * 18 / 100;  // 180 ms
+    static constexpr size_t kEchoDelay2 = kOutRate * 36 / 100;  // 360 ms
+    static constexpr uint32_t kCarrierStep = 191;  // 65536 * 70 Hz / kOutRate
 
     ParrotSession() = default;
     ~ParrotSession() { Wipe(); }
@@ -82,15 +98,16 @@ public:
 
     // False (and `out->hint` says why) when the activity may not start.
     bool Open(uint32_t now_ms, const ParrotContext& context, ParrotOutput* out);
-    // Raw dial-centre edge (see "Button design"). `seed` picks the voice
-    // variant of this take (e.g. the take counter); `context` is re-checked
-    // at every press.
+    // Raw dial-centre edge (see "Button design"). `seed` is unused since V9
+    // (the child picks the voice); `context` is re-checked at every press.
+    // A press on the home slot leaves instead of recording.
     ParrotOutput Hold(bool down, uint32_t now_ms, const ParrotContext& context, uint32_t seed);
     // Mic samples at kInRate while Recording; extra samples beyond the cap are
     // dropped. Returns how many were taken.
     size_t Feed(const int16_t* samples, size_t count);
-    // Dial turn leaves (not while recording). Long is not used here: the long
-    // press is the recording itself.
+    // Dial turn: Ready cycles the choice (voices, then home); Playing stops the
+    // voice and goes back to Ready; Recording ignores it. Long leaves from
+    // Ready (the board never forwards it: the long press is the recording).
     ParrotOutput Input(GameInput input, uint32_t now_ms);
     ParrotOutput Tick(uint32_t now_ms);
     // BOOT talk, PWR sleep, a voice session, quiet hours, Pet mode off: stop
@@ -114,7 +131,11 @@ public:
     static void Scrub(int16_t* block, size_t count);
 
     ParrotPhase Phase() const { return phase_; }
-    ParrotView View() const { return {phase_, hint_}; }
+    ParrotView View() const { return {phase_, hint_, choice_}; }
+    // The voice the next take will use (home counts as the parrot).
+    ParrotVoice Selected() const {
+        return static_cast<ParrotVoice>(choice_ < kVoices ? choice_ : 0);
+    }
     bool Active() const { return phase_ != ParrotPhase::Idle; }
     size_t Recorded() const { return length_; }
     // Test hook for the privacy assertion: true when nothing but zeros is left.
@@ -124,6 +145,7 @@ private:
     void Wipe();
     ParrotOutput Stop(bool leave);
     ParrotOutput Release(uint32_t now_ms);
+    int32_t Resampled(size_t index) const;  // body sample `index`, 0 outside
     static bool Reached(uint32_t now_ms, uint32_t at_ms) {
         return static_cast<int32_t>(now_ms - at_ms) >= 0;
     }
@@ -133,11 +155,13 @@ private:
     size_t length_ = 0;
     ParrotPhase phase_ = ParrotPhase::Idle;
     ParrotHint hint_ = ParrotHint::None;
-    ParrotVoice voice_ = ParrotVoice::Parrot;
+    uint8_t choice_ = 0;  // what the dial points at; survives takes, reset by Open()
     uint32_t record_start_ms_ = 0;
     uint32_t last_activity_ms_ = 0;
     // Playback plan, fixed when the key is released.
     size_t out_samples_ = 0;
+    size_t body_samples_ = 0;  // out_samples_ without the echo tail
+    ParrotVoice voice_ = ParrotVoice::Parrot;
     uint32_t step_q16_ = 0;
     uint32_t gain_q8_ = 256;
 };

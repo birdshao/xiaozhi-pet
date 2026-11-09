@@ -105,6 +105,11 @@ def normalize_speech(text: str) -> str:
 NEUTRAL = "好的，我们来准备一下。"
 
 
+# The reviewed confirmation for each action (its first row below): open chat speaks this,
+# never model text, when the model asks the device for an action (ADR-016).
+ACTION_REPLIES: dict[str, str] = {}
+
+
 def _commands() -> dict[str, FixedMatch]:
     rows = {
         ("SLEEP_REQUEST", "好的，我们准备睡觉啦。"): ("团团睡觉", "团团睡觉吧", "我们睡觉吧", "我们睡觉了"),
@@ -112,7 +117,7 @@ def _commands() -> dict[str, FixedMatch]:
         ("PAGE_PREV", "我们翻到上一页。"): ("上一页", "上一页吧", "翻到上一页", "返回上一页"),
         ("OPEN_READER", "好呀，我们来讲故事。"): ("讲故事", "讲故事吧", "讲个故事", "读绘本", "读绘本吧"),
         ("OPEN_GAME", "好呀，我们来玩游戏。"): ("玩游戏", "玩游戏吧", "玩个游戏", "我要玩游戏"),
-        ("PET_FEED", "好呀，我们给团团喂一口。"): ("喂宠物", "喂团团", "喂食", "喂宠物吧", "喂团团吧"),
+        ("PET_FEED", "好呀，选一样好吃的喂团团吧。"): ("喂宠物", "喂团团", "喂食", "喂宠物吧", "喂团团吧"),
         ("PET_GROOM", "好呀，我们给团团梳梳毛。"): ("给团团梳毛", "团团梳毛", "梳毛", "给团团梳梳毛"),
         ("GO_HOME", "好的，我们回首页。"): ("回家", "回首页", "回到首页", "回家吧"),
         ("ASK_NEEDS", "我来看看团团的小肚子。"): ("团团饿了吗", "团团饿不饿", "团团饿了没有", "团团肚子饿吗"),
@@ -125,6 +130,7 @@ def _commands() -> dict[str, FixedMatch]:
     table = {}
     for (action, reply), phrases in rows.items():
         assert action in ACTIONS
+        ACTION_REPLIES.setdefault(action, reply)
         for phrase in phrases:
             table[normalize_speech(phrase)] = FixedMatch("local_command", "fixed_command", action, reply)
     for phrase in ("几点了", "现在几点", "现在几点了", "现在几点钟", "几点钟了"):

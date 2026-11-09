@@ -30,4 +30,20 @@ bool LunarFestivalDates(uint16_t year, GregorianDate* spring, GregorianDate* dra
 // lasts lunar 1/1..1/3, the others one day. clock_ok false -> None.
 Festival FestivalOn(const CivilTime& now, bool clock_ok, uint8_t birth_month, uint8_t birth_day);
 
+// V9 C4: the seasonal foods on the menu that day. Dumplings from a week
+// before the Spring Festival to the Lantern day (lunar 1/15); the festival
+// treat from a week before to two days after the Dragon Boat (zongzi) or
+// the Mid-Autumn (mooncake) festival. The windows never overlap. Unknown
+// clock or a year outside the lunar table: none.
+enum class Treat : uint8_t { None, Zongzi, Mooncake };
+struct Season {
+    bool dumpling = false;
+    Treat treat = Treat::None;
+    bool operator==(const Season& o) const { return dumpling == o.dumpling && treat == o.treat; }
+    bool operator!=(const Season& o) const { return !(*this == o); }
+};
+constexpr int kSeasonBeforeDays = 7;
+constexpr int kTreatAfterDays = 2;
+Season SeasonOn(const CivilTime& now, bool clock_ok);
+
 }  // namespace kid_app
