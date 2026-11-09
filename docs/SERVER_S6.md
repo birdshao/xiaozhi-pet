@@ -65,7 +65,7 @@ ASR 文本 → 长度/字符检查 → 安静时段? → 固定命令 → 页问
 | #9 | `core/handle/helloHandle.py:116` 唤醒词缓存回复 | 守卫之后 | 守卫在前；配置 `enable_wakeup_words_response_cache: false` |
 | #10 | `helloHandle.py:144` 后台刷新唤醒词回复 | 只由 #9 启动 | 同 #9 |
 | #11 | `helloHandle.py:61` hello | — | 不出声 |
-| #12 | `listenMessageHandler.py:101` 唤醒词 + 关闭问候 | — | 不出声 |
+| #12 | `listenMessageHandler.py:101` 唤醒词 + 关闭问候 | — | 上游这里只发 stt + tts start + tts stop，板子同一毫秒 speaking→listening，第一次唤醒没有回应（2026-11-09 真机）。**overlay：儿童模式下把板子发来的唤醒词原文交给守卫**（`startToChat`），PetLearning 回固定句"我在呢。"；同时像上游问候分支一样静音 VAD 2 s。见 [SERVER_S5](SERVER_S5.md)"有字没声" |
 | #13 | `listenMessageHandler.py:110` 唤醒词 + 打开问候（“嘿，你好呀”进聊天） | `enable_greeting: true` | 配置为 false，checklist 检查 |
 | #14 | `listenMessageHandler.py:116` 客户端 `detect` 文本 | — | 进守卫 |
 | #15 | `listenMessageHandler.py:86` `[device_call]` 前缀文本**原样播报**，绕过守卫 | 客户端发送 | **overlay：儿童模式下直接丢弃** |

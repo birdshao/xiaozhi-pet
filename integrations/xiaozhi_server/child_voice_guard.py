@@ -24,6 +24,8 @@ NO_SERVICE = "现在还不能语音聊天，我们可以先用按键和小宠物
 NOT_BOUND = "请让家长帮忙连接儿童模式。"
 LOCAL_ACTION_HINT = "我听到了，我们用设备上的按键完成这个动作吧。"
 GOODBYE = "我们下次再聊吧，拜拜。"
+# Ends a run of unclear turns: also tells the child how to get the pet back.
+UNCLEAR_GOODBYE = "想找我就再叫我一声哦，拜拜。"
 # PetLearning may wait up to 6 s for the open-chat model (S6); fixed answers come back at once.
 SERVICE_TIMEOUT_S = 9.0
 
@@ -36,6 +38,15 @@ DEVICE_TIMEOUT_S = 3
 # sentence still playing before starting ours (bounded).
 SPEAK_WAIT_S = 4.0
 SPEAK_WAIT_STEP_S = 0.1
+# Room noise keeps an auto-listening board sending ASR text, and each one used to get
+# "没听清" back, so the chat never ended (2026-11-09 serial log). After this many
+# no-intent replies in a row the guard says goodbye and ends the chat. no_match is also
+# a real question the pet cannot answer (open chat off), so a child gets two of those
+# and a third try before the goodbye (docs/SERVER_S5.md, "会话结束").
+UNCLEAR_LIMIT = 3
+# PetLearning reasons that mean "no valid intent" (noise, mis-heard speech). Other
+# fallback kinds (quiz / story prompts, open-chat errors) are real turns and do not count.
+_UNCLEAR_REASONS = ("no_match", "text_invalid")
 _log = logging.getLogger(__name__)
 _ACTION_RE = re.compile(r"[A-Z_]{1,15}")
 # What the pet answered decides the sentence: the server's reviewed sentence only
@@ -96,6 +107,14 @@ def _approved_local_url() -> str | None:
     return raw
 
 
+class _Unclear(str):
+    """A sentence that answered no valid intent (fallback, service down, not bound)."""
+
+
+class _Closing(str):
+    """A valid reply after which the chat ends (quiet hours: every utterance gets it)."""
+
+
 class _Command:
     """A signed local_command: the action name and the server's reviewed sentence."""
 
@@ -118,9 +137,9 @@ async def _voice_reply(conn, text: str):
     if (not upstream_id or not business_id or len(token) < 32
             or not base or not getattr(conn, "device_id", None)
             or conn.device_id != upstream_id):
-        return NOT_BOUND
+        return _Unclear(NOT_BOUND)
     if not isinstance(text, str):
-        return REVIEWED_FALLBACK
+        return _Unclear(REVIEWED_FALLBACK)
     turn_id = uuid.uuid4().hex
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(SERVICE_TIMEOUT_S, connect=1.0),
@@ -136,21 +155,25 @@ async def _voice_reply(conn, text: str):
         expected = hmac.new(token.encode("utf-8"), turn_id.encode("ascii") + b"\n" + response.content,
                             hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, response.headers.get("x-voice-signature", "")):
-            return NO_SERVICE
+            return _Unclear(NO_SERVICE)
         data = response.json()
         if not isinstance(data, dict):
-            return NO_SERVICE
+            return _Unclear(NO_SERVICE)
         kind, spoken = data.get("kind"), data.get("tts_text")
         if kind == "local_command":
             action = data.get("action")
             if not isinstance(action, str) or not _ACTION_RE.fullmatch(action):
-                return NO_SERVICE
+                return _Unclear(NO_SERVICE)
             return _Command(action, spoken)
         if kind in _ALLOWED_KINDS and isinstance(spoken, str) and 0 < len(spoken) <= 320:
+            if kind == "fallback" and data.get("reason") in _UNCLEAR_REASONS:
+                return _Unclear(spoken)
+            if data.get("reason") == "quiet_hours":
+                return _Closing(spoken)
             return spoken
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
         pass
-    return NO_SERVICE
+    return _Unclear(NO_SERVICE)
 
 
 async def _device_result(conn, action: str) -> str | None:
@@ -174,10 +197,10 @@ async def _device_result(conn, action: str) -> str | None:
     return result if result in _ACCEPTED or result in _DEVICE_SENTENCES else None
 
 
-async def _carry_out(conn, command: _Command) -> None:
+async def _carry_out(conn, command: _Command, turn: int) -> None:
     """Run on its own task: the device's reply arrives on the websocket loop."""
     try:
-        await _carry_out_unsafe(conn, command)
+        await _carry_out_unsafe(conn, command, turn)
     except Exception:  # noqa: BLE001 - never leave an unhandled task error behind
         _log.exception("child guard: local_command %s failed", command.action)
 
@@ -187,32 +210,83 @@ def _closed(conn) -> bool:
     return bool(stop is not None and stop.is_set())
 
 
-async def _carry_out_unsafe(conn, command: _Command) -> None:
+async def _carry_out_unsafe(conn, command: _Command, turn: int) -> None:
     result = await _device_result(conn, command.action)
+    # deferred: a game / care screen opens once XiaoZhi is idle; pending: the board may
+    # still defer it (a busy pet_input). Either way end the chat after the sentence.
+    close = result in ("deferred", "pending")
     if result in _ACCEPTED:
         answer = command.spoken or DEVICE_OK
-        if result == "deferred":
-            # A game / care screen opens once XiaoZhi is idle: end the chat after this.
-            conn.close_after_chat = True
     else:
         answer = _DEVICE_SENTENCES.get(result, LOCAL_ACTION_HINT)
-        if result == "pending":
-            # The board may still defer it (a busy pet_input): only an idle XiaoZhi lets it run.
-            conn.close_after_chat = True
     waited = 0.0
     while getattr(conn, "client_is_speaking", False) and waited < SPEAK_WAIT_S and not _closed(conn):
         await asyncio.sleep(SPEAK_WAIT_STEP_S)
         waited += SPEAK_WAIT_STEP_S
     if _closed(conn):
         return
-    _speak(conn, answer)
+    await _speak(conn, answer, turn, close=close)
 
 
-def _speak(conn, answer: str) -> None:
+def _live(conn, turn: int) -> bool:
+    """This turn is still the newest one and the child has not interrupted it."""
+    return getattr(conn, "child_guard_turn", 0) == turn and not getattr(conn, "client_abort", False)
+
+
+async def _speak(conn, answer: str, turn: int, *, close: bool = False) -> None:
+    """Speak one reviewed sentence as its own turn: tts start, audio, tts stop.
+
+    Upstream sends {"type":"tts","state":"start"} only from send_stt_message, i.e. on
+    the normal chat path that the guard short-circuits; speak_txt alone sends just
+    sentence_start + audio + stop. The board (xiaozhi-esp32 v2.5.2) enters speaking
+    only on "start" and decodes downlink audio only while speaking, so without it every
+    reply was shown as text, played silently, and the board stayed listening.
+
+    The sentence is dropped when the child interrupted (abort) or spoke again (a newer
+    turn) while the guard waited for PetLearning or the board. close (end the chat
+    after this sentence) is set only once the sentence really plays: upstream's abort
+    clears close_after_chat, and a flag left by a dropped sentence would end the next
+    normal reply and disable the no-voice timeout.
+    """
     # Imported lazily to avoid circular import when upstream loads the hook.
     from core.handle.intentHandler import speak_txt
+    from core.handle.sendAudioHandle import send_tts_message
+    if not _live(conn, turn):
+        return
     conn.sentence_id = uuid.uuid4().hex
-    speak_txt(conn, answer)
+    await send_tts_message(conn, "start")
+    if not _live(conn, turn):
+        # An abort or a newer turn raced the start. Upstream's abort "stop" may have gone
+        # out first and its TTS threads drop our sentence (no stop of their own): leave
+        # the board out of speaking ourselves.
+        await conn.websocket.send(json.dumps(
+            {"type": "tts", "state": "stop", "session_id": getattr(conn, "session_id", None)}))
+        conn.clearSpeakStatus()
+        return
+    conn.client_is_speaking = True  # as send_stt_message does; cleared by the "stop"
+    if close:
+        # Upstream closes the connection after this sentence's stop (sendAudioMessage, LAST).
+        conn.close_after_chat = True
+    speak_txt(conn, str(answer))
+
+
+def _end_unclear_run(conn, answer):
+    """Count no-intent replies in a row; the UNCLEAR_LIMIT-th says goodbye and ends the chat.
+
+    Returns (answer, close).
+    """
+    if not isinstance(answer, _Unclear):
+        conn.child_guard_unclear = 0
+        # Quiet hours answer every utterance alike: say it once, then end the chat
+        # (room noise at night would otherwise repeat it every few seconds).
+        return answer, isinstance(answer, _Closing)
+    count = getattr(conn, "child_guard_unclear", 0) + 1
+    if count < UNCLEAR_LIMIT:
+        conn.child_guard_unclear = count
+        return answer, False
+    conn.child_guard_unclear = 0
+    _log.info("child guard: %d unclear turns in a row, ending the chat", count)
+    return UNCLEAR_GOODBYE, True
 
 
 def _is_end_prompt(conn, text) -> bool:
@@ -238,15 +312,26 @@ async def handle_child_guard(conn, text: str) -> bool:
     if previous is not None and not previous.done():
         previous.cancel()
     conn.child_guard_task = None
+    # Every turn gets a number; only the newest may speak. A reply to an older turn
+    # (still waiting for PetLearning when the child interrupted and spoke again) is stale.
+    turn = getattr(conn, "child_guard_turn", 0) + 1
+    conn.child_guard_turn = turn
+    # Clear an earlier abort at the same point upstream's chat path does (startToChat
+    # aborts a playing reply, then clears client_abort before answering). An abort that
+    # arrives while this turn waits stays set and drops its sentence.
+    conn.client_abort = False
     if _is_end_prompt(conn, text):
         # Not the child speaking: never forward upstream's model prompt to PetLearning.
-        _speak(conn, GOODBYE)
+        await _speak(conn, GOODBYE, turn)
         return True
-    answer = await _voice_reply(conn, text)
+    reply = await _voice_reply(conn, text)
+    if not _live(conn, turn):
+        return True  # interrupted or superseded: neither spoken nor counted
+    answer, close = _end_unclear_run(conn, reply)
     if isinstance(answer, _Command):
         # Manual listen mode awaits the ASR inside the websocket receive loop, which
         # is also where the device's tool reply arrives: never wait for it here.
-        conn.child_guard_task = asyncio.get_running_loop().create_task(_carry_out(conn, answer))
+        conn.child_guard_task = asyncio.get_running_loop().create_task(_carry_out(conn, answer, turn))
         return True
-    _speak(conn, answer)
+    await _speak(conn, answer, turn, close=close)
     return True
