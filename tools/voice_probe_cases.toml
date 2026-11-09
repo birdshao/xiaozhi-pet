@@ -83,7 +83,43 @@ action = "PET_FEED"
 kind_quiet = "fixed"
 reason_quiet = "quiet_hours"
 action_quiet = "none"
+skip = "PET_FEED 只开选菜画面，测试者无法代按退出；孩子正式使用的板子默认不跑，需要时加 --include-skipped"
 notes = "会改宠物账本！设备一旦接通 PET_FEED，在孩子正式使用的板子上不要跑这一条"
+
+[[case]]
+id = "groom"
+say = "给团团梳毛"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PET_GROOM"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+skip = "PET_GROOM 会真正执行照顾动作，孩子正式使用的板子上不跑"
+
+[[case]]
+id = "page_flip"
+say = "翻页"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "PAGE_NEXT"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+
+[[case]]
+id = "shelf"
+say = "打开书架"
+group = "command"
+kind = "local_command"
+reason = "fixed_command"
+action = "OPEN_READER"
+kind_quiet = "fixed"
+reason_quiet = "quiet_hours"
+action_quiet = "none"
+notes = "命令表里没有这个说法；书架就是讲故事入口，期望同 OPEN_READER，不通过说明缺同义词"
 
 [[case]]
 id = "game"

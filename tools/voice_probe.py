@@ -87,6 +87,7 @@ class Case:
     reason_quiet: str = ""
     action_quiet: str = ""    # "none" = the device must not act
     tts_contains_quiet: str = ""
+    skip: str = ""            # non-empty: never played (reason shown in the report); --include-skipped overrides
     notes: str = ""
 
 
@@ -246,6 +247,7 @@ class Observation:
     reason: str = ""
     turn_ms: int | None = None
     tts_text: str = ""
+    t_asr: float | None = None            # server logged the ASR text, PC clock
     t_tts_server: float | None = None     # server first-sentence time, PC clock
     t_tts_device: float | None = None     # device speaking-state / '<<' time, PC clock
     device_cmds: list = dataclasses.field(default_factory=list)  # (name, result, action)
@@ -260,6 +262,8 @@ def build_observation(speech_start: float, speech_end: float, window_end: float,
             continue
         if ev["ev"] == "asr":
             obs.asr_texts.append((ev["t"], ev["text"]))
+            if obs.t_asr is None and norm(ev["text"]) not in ("", norm(WAKE_PHRASE)):
+                obs.t_asr = ev["t"]
         elif ev["ev"] == "tts_first" and obs.t_tts_server is None and ev["t"] >= speech_end - 0.5:
             obs.t_tts_server, obs.tts_text = ev["t"], ev["text"]
     for ev in pl:
@@ -287,6 +291,49 @@ SLOW_S = 3.0
 def latency(obs: Observation):
     ts = [t for t in (obs.t_tts_server, obs.t_tts_device) if t is not None]
     return round(min(ts) - obs.speech_end, 2) if ts else None
+
+
+def stages(obs: Observation) -> dict:
+    """Split speech-end -> first reply audio into ASR / server (guard+PetLearning) / TTS first packet.
+
+    asr  = end of speech -> server logged the recognised text
+    server = ASR text -> TTS asked to speak (guard + PetLearning turn, ``turn_ms`` is PetLearning alone)
+    tts  = server asks to speak -> device starts speaking (serial); needs both sides, else None
+    """
+    out = {"asr_s": None, "server_s": None, "tts_s": None}
+    if obs.t_asr is not None:
+        out["asr_s"] = round(obs.t_asr - obs.speech_end, 2)
+        if obs.t_tts_server is not None:
+            out["server_s"] = round(obs.t_tts_server - obs.t_asr, 2)
+    if obs.t_tts_server is not None and obs.t_tts_device is not None:
+        out["tts_s"] = round(obs.t_tts_device - obs.t_tts_server, 2)
+    return out
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    s = sorted(values)
+    k = (len(s) - 1) * p / 100
+    lo, hi = int(k), min(int(k) + 1, len(s) - 1)
+    return round(s[lo] + (s[hi] - s[lo]) * (k - lo), 2)
+
+
+def summarize(results: list[dict]) -> dict:
+    """Success rate per group plus median/P90 of the total latency and of each stage."""
+    ran = [r for r in results if r.get("status") == "ran"]
+    groups: dict[str, dict] = {}
+    for r in ran:
+        g = groups.setdefault(r.get("group", "misc"), {"n": 0, "passed": 0})
+        g["n"] += 1
+        g["passed"] += 1 if r["passed"] else 0
+
+    def stat(key: str, src=lambda r: r):
+        vals = [src(r)[key] for r in ran if src(r).get(key) is not None]
+        return {"n": len(vals), "median": percentile(vals, 50), "p90": percentile(vals, 90)}
+
+    return {"groups": groups, "total": stat("latency_s"),
+            "stages": {k: stat(k, lambda r: r.get("stages", {})) for k in ("asr_s", "server_s", "tts_s")}}
 
 
 def effective_case(case: Case, quiet: bool | None) -> Case:
@@ -371,6 +418,15 @@ def render_report(results: list[dict], meta: dict) -> str:
         verdict = "通过" if r["passed"] else "不通过"
         out.append(f"| {i} | {_cell(r['say'])} | {_cell(r['asr'])} | {_cell(kind)} | {_cell(r['tts_text'])} "
                    f"| {_cell(acts)} | {_cell(r['latency_s'])} | {verdict} |")
+    s = summarize(results)
+    out += ["", "## 汇总", ""]
+    for name, g in s["groups"].items():
+        out.append(f"- {name}：{g['passed']}/{g['n']} 通过（{100 * g['passed'] // max(g['n'], 1)}%）")
+    fmt = lambda d: f"n={d['n']} 中位数 {d['median']}s P90 {d['p90']}s" if d["n"] else "无数据"
+    out.append(f"- 说完到开始播报：{fmt(s['total'])}")
+    for key, label in (("asr_s", "ASR（说完→识别文本）"), ("server_s", "服务端（识别→请求播报）"),
+                       ("tts_s", "TTS 首包（请求播报→板子开口）")):
+        out.append(f"- {label}：{fmt(s['stages'][key])}")
     issues = [(worst_severity(r["issues"]), r) for r in results if r.get("issues")]
     out += ["", "## 问题清单（按严重程度）", ""]
     if not issues:
@@ -557,6 +613,17 @@ class Remote:
         t1 = time.time()
         return float(out) - (t0 + t1) / 2
 
+    def device_quiet(self, business_id: str) -> bool | None:
+        """Read-only: the quiet flag PetLearning holds for the device (what the voice turn really uses)."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", business_id):
+            raise ValueError("bad business id")
+        code = ("import sqlite3;c=sqlite3.connect('file:/data/pet_learning.sqlite3?mode=ro',uri=True);"
+                f"r=c.execute('select quiet from devices where device_id=?',('{business_id}',)).fetchone();"
+                "print('Q=%s'%(r[0] if r else 'none'))")
+        out = self._ssh(f'docker exec pet-server-pet-learning-1 python -c "{code}"')
+        m = re.search(r"Q=(\d|none)", out)
+        return None if not m or m[1] == "none" else m[1] != "0"
+
     def logs(self, name: str, since_epoch: float) -> list[tuple[float, str]]:
         since = dt.datetime.fromtimestamp(since_epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         raw = self._ssh(f"docker logs --timestamps --since {since} {self.containers[name]} 2>&1", timeout=60)
@@ -618,6 +685,54 @@ def cmd_noise(args) -> int:
     return 0 if ok else 3
 
 
+def wake_hits(attempts: list[tuple[float, float]], xz: list, ser: list) -> list[dict]:
+    """attempts = [(t_play_start, t_window_end)]; a hit = server 'detect' or serial wake/listening state."""
+    rows = []
+    for t0, t1 in attempts:
+        det = [e for e in xz if e["ev"] == "wake" and t0 <= e["t"] <= t1]
+        ser_hit = [e for e in ser if t0 <= e["t"] <= t1 and (e["ev"] == "wake" or
+                   (e["ev"] == "state" and e["text"].lower() in ("listening", "connecting")))]
+        hit = bool(det or ser_hit)
+        first = min([e["t"] for e in det + ser_hit], default=None)
+        rows.append({"hit": hit, "delay_s": round(first - t0, 2) if first is not None else None})
+    return rows
+
+
+def cmd_wake(args) -> int:
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    wav = out / "wav" / "_wake.wav"
+    if not wav.exists():
+        synth_wav(WAKE_PHRASE, wav, args.voice, args.rate)
+    tail = SerialTail(args.port) if args.port else None
+    remote = Remote(args.ssh_host, args.ssh_key) if args.ssh_host else None
+    offset = remote.clock_offset() if remote else 0.0
+    if tail:
+        tail.start()
+        time.sleep(1.0)
+    attempts = []
+    for i in range(args.attempts):
+        t0 = time.time()
+        play_wav(wav)
+        time.sleep(args.settle)
+        attempts.append((t0, time.time()))
+        print(f"wake attempt {i + 1}/{args.attempts} done", flush=True)
+        time.sleep(args.gap)
+    xz = _events_from(remote.logs("xiaozhi", attempts[0][0] - 2), parse_xiaozhi_line, offset) if remote else []
+    ser = _events_from(tail.snapshot(), parse_serial_line) if tail else []
+    if tail:
+        tail.stop()
+        (out / "serial.log").write_text("\n".join(redact(line) for _, line in tail.snapshot()), encoding="utf-8")
+    rows = wake_hits(attempts, xz, ser)
+    delays = [r["delay_s"] for r in rows if r["delay_s"] is not None]
+    summary = {"attempts": len(rows), "hits": sum(r["hit"] for r in rows),
+               "delay_median_s": percentile(delays, 50), "delay_p90_s": percentile(delays, 90), "rows": rows}
+    (out / "wake.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"唤醒命中 {summary['hits']}/{summary['attempts']}，延迟中位数 {summary['delay_median_s']}s "
+          f"P90 {summary['delay_p90_s']}s")
+    return 0
+
+
 def cmd_run(args) -> int:
     cases = load_cases(Path(args.cases))
     if args.only:
@@ -638,6 +753,7 @@ def cmd_run(args) -> int:
         print(f"dry run: synthesised {len(wavs) + 1} wav files into {wavdir}")
         return 0
 
+    noise_note = "未检测"
     if not args.no_noise_check:
         try:
             level = measure_noise(args.noise_seconds)
@@ -646,8 +762,11 @@ def cmd_run(args) -> int:
             return 3
         ok, msg = noise_verdict(level, args.noise_max_dbfs)
         print(msg)
+        noise_note = f"{level:.1f} dBFS"
         if not ok:
             return 3
+    elif args.noise_note:
+        noise_note = args.noise_note
     tail = SerialTail(args.port) if args.port else None
     remote = Remote(args.ssh_host, args.ssh_key) if args.ssh_host else None
     offset = remote.clock_offset() if remote else 0.0
@@ -658,13 +777,29 @@ def cmd_run(args) -> int:
     ser_text = "\n".join(line for _, line in tail.snapshot()) if tail else ""
     # PET_PARENT_SETTINGS is only printed at boot; a running board falls back to the parent default window.
     window = parse_quiet_window(ser_text) or parse_quiet_window(args.quiet_window_line)
-    quiet = in_quiet(window, dt.datetime.now()) if args.quiet == "auto" else (args.quiet == "yes")
+    quiet_src = "时钟+默认窗口"
+    if args.quiet != "auto":
+        quiet = args.quiet == "yes"
+        quiet_src = "命令行指定"
+    else:
+        quiet = None
+        if remote and args.business_id:
+            quiet = remote.device_quiet(args.business_id)
+            quiet_src = "服务端设备投影"
+        if quiet is None:
+            quiet = in_quiet(window, dt.datetime.now())
+            quiet_src = "时钟+默认窗口"
+    print(f"quiet={quiet}（来源：{quiet_src}）")
 
     results = []
-    for c in cases:
+    plan = [c for c in cases for _ in range(args.repeat)]
+    for c in plan:
         ok, why = case_applicable(c, quiet)
+        if c.skip and not args.include_skipped:
+            ok, why = False, c.skip
         if not ok:
-            results.append({"id": c.id, "say": c.say, "status": "skipped", "skip_reason": why})
+            if not any(r["id"] == c.id and r["status"] == "skipped" for r in results):
+                results.append({"id": c.id, "say": c.say, "status": "skipped", "skip_reason": why})
             continue
         ser_events = _events_from(tail.snapshot(), parse_serial_line) if tail else []
         needs_wake = latest_state(ser_events, time.time()) != "listening"
@@ -688,6 +823,7 @@ def cmd_run(args) -> int:
         res = {"id": c.id, "say": c.say, "group": c.group, "status": "ran", "woke": needs_wake,
                "asr": verdict["asr"], "kind": obs.kind, "reason": obs.reason, "tts_text": obs.tts_text,
                "device_cmds": obs.device_cmds, "latency_s": latency(obs), "turn_ms": obs.turn_ms,
+               "stages": stages(obs),
                "passed": verdict["passed"], "issues": verdict["issues"]}
         results.append(res)
         print(f"[{'PASS' if res['passed'] else 'FAIL'}] {c.id}: asr={res['asr']!r} kind={obs.kind or '?'} "
@@ -703,7 +839,8 @@ def cmd_run(args) -> int:
                 "\n".join(redact(f"{dt.datetime.fromtimestamp(t - offset).strftime('%H:%M:%S.%f')[:-3]} {m}")
                           for t, m in rows if "/healthz" not in m), encoding="utf-8")
     meta = {"时间": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "音色": args.voice or "SAPI zh-CN 默认",
-            "安静时段": {None: "未知", True: "是", False: "否"}[quiet], "服务器时钟偏差(s)": round(offset, 2)}
+            "安静时段": {None: "未知", True: "是", False: "否"}[quiet] + f"（{quiet_src}）",
+            "环境底噪": noise_note, "服务器时钟偏差(s)": round(offset, 2)}
     (out / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "report.md").write_text(render_report(results, meta), encoding="utf-8")
     print(f"report: {out / 'report.md'}")
@@ -741,7 +878,22 @@ def main(argv=None) -> int:
                    help="refuse to run when the 2 s ambient level is above this (see the 'noise' command)")
     p.add_argument("--noise-seconds", type=float, default=2.0)
     p.add_argument("--no-noise-check", action="store_true")
+    p.add_argument("--noise-note", default="", help="free text for the report when noise is not measured")
+    p.add_argument("--business-id", help="PetLearning device id: read its quiet flag from the server")
+    p.add_argument("--repeat", type=int, default=1, help="play every case N times")
+    p.add_argument("--include-skipped", action="store_true", help="also play cases marked skip")
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("wake", help="wake-word hit rate: play the wake phrase N times, count server 'detect' events")
+    p.add_argument("--port")
+    p.add_argument("--ssh-host")
+    p.add_argument("--ssh-key")
+    p.add_argument("--out", required=True)
+    p.add_argument("--attempts", type=int, default=10)
+    p.add_argument("--settle", type=float, default=6.0, help="seconds to watch after each wake phrase")
+    p.add_argument("--gap", type=float, default=25.0, help="idle seconds so the board is back to idle")
+    p.add_argument("--voice", default="")
+    p.add_argument("--rate", type=int, default=-1)
+    p.set_defaults(fn=cmd_wake)
     p = sub.add_parser("noise", help="measure ambient level with the PC microphone and print it (calibration)")
     p.add_argument("--seconds", type=float, default=2.0)
     p.add_argument("--max-dbfs", type=float, default=DEFAULT_NOISE_MAX_DBFS)

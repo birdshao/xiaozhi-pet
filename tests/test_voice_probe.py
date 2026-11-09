@@ -176,3 +176,33 @@ def test_wav_dbfs_and_noise_verdict(tmp_path):
     assert vp.noise_verdict(q, -45)[0]
     ok, msg = vp.noise_verdict(lo, -45)
     assert not ok and "太吵" in msg
+
+
+def test_stages_percentile_and_summary():
+    obs = vp.Observation(speech_end=10.0, t_asr=11.0, t_tts_server=11.8, t_tts_device=12.5)
+    assert vp.stages(obs) == {"asr_s": 1.0, "server_s": 0.8, "tts_s": 0.7}
+    assert vp.stages(vp.Observation(speech_end=1.0)) == {"asr_s": None, "server_s": None, "tts_s": None}
+    assert vp.percentile([1, 2, 3, 4, 5], 50) == 3 and vp.percentile([1, 2, 3, 4, 5], 90) == 4.6
+    assert vp.percentile([], 50) is None
+    rows = [{"status": "ran", "group": "command", "passed": True, "latency_s": 2.0,
+             "stages": {"asr_s": 1.0, "server_s": None, "tts_s": None}},
+            {"status": "ran", "group": "command", "passed": False, "latency_s": 4.0, "stages": {}},
+            {"status": "skipped"}]
+    s = vp.summarize(rows)
+    assert s["groups"]["command"] == {"n": 2, "passed": 1}
+    assert s["total"]["median"] == 3.0 and s["stages"]["asr_s"]["n"] == 1
+    assert "汇总" in vp.render_report([], {})
+
+
+def test_wake_hits():
+    xz = [{"t": 12.0, "ev": "wake", "text": "你好小智"}]
+    ser = [{"t": 33.0, "ev": "state", "text": "listening"}]
+    rows = vp.wake_hits([(10.0, 16.0), (30.0, 36.0), (50.0, 56.0)], xz, ser)
+    assert [r["hit"] for r in rows] == [True, True, False]
+    assert rows[0]["delay_s"] == 2.0 and rows[2]["delay_s"] is None
+
+
+def test_skip_cases_in_shipped_file():
+    cases = {c.id: c for c in vp.load_cases(vp.DEFAULT_CASES)}
+    assert cases["feed"].skip and cases["groom"].skip
+    assert not cases["time"].skip
