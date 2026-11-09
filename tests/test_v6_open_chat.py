@@ -58,9 +58,11 @@ class ChatBase(S3Base):
     def policy_view(self):
         return self.client.get(f"{BASE_URL}/policy").json()
 
-    def set_actions(self, actions):
-        return self.parent("PUT", f"{BASE_URL}/policy",
-                           json={"base_rev": self.policy_view()["rev"], "llm_actions": actions})
+    def set_actions(self, actions, *, proof=True):
+        body = {"base_rev": self.policy_view()["rev"], "llm_actions": actions}
+        if proof:
+            body["reauth"] = self.proof()
+        return self.parent("PUT", f"{BASE_URL}/policy", json=body)
 
 
 class GateTests(ChatBase):
@@ -260,6 +262,33 @@ class ToolTests(ChatBase):
             self.assertIn(result.status_code, (409, 422), bad)
         self.assertEqual(self.policy_view()["llm_actions"], DEFAULT)
 
+    def test_widening_the_subset_needs_step_up_narrowing_does_not(self):
+        """Review #3: adding an action is as sensitive as turning chat on."""
+        result = self.set_actions(DEFAULT + ["SLEEP_REQUEST"], proof=False)
+        self.assertEqual((result.status_code, result.json()["detail"]), (403, "PARENT_REAUTH_REQUIRED"))
+        self.assertEqual(self.policy_view()["llm_actions"], DEFAULT)
+        result = self.parent("PUT", f"{BASE_URL}/policy", json={
+            "base_rev": self.policy_view()["rev"], "llm_actions": ["SLEEP_REQUEST"],
+            "reauth": self.proof(password="wrong-password-0000")})
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(self.policy_view()["llm_actions"], DEFAULT)
+        self.assertEqual(self.set_actions(["PAGE_NEXT"], proof=False).status_code, 200)
+        self.assertEqual(self.set_actions([], proof=False).status_code, 200)
+        self.assertEqual(self.policy_view()["llm_actions"], [])
+        # Swapping one action for another still adds one: step-up.
+        self.assertEqual(self.set_actions(["PAGE_PREV"], proof=False).status_code, 403)
+        self.assertEqual(self.set_actions(["PAGE_PREV"]).status_code, 200)
+
+    def test_tool_action_variants_are_out_of_contract(self):
+        """Exact enum values only: case or whitespace variants are never mapped onto an action."""
+        for variant in ("open_game", " OPEN_GAME", "OPEN_GAME ", "Open_Game", "OPEN_GAME\n", "OPEN GAME"):
+            self.provider.script(ChatReply(tool_action=variant))
+            data = self.say("我们一起玩点什么吧")
+            self.assertEqual((data["kind"], data["action"], data["reason"]),
+                             ("fallback", None, "open_chat_error"), repr(variant))
+            self.provider.script(ChatReply(text="好的。"))  # a success between: no breaker here
+            self.say("你好")
+
     def test_every_offered_action_is_a_device_action(self):
         self.assertTrue(set(open_chat.LLM_ACTIONS) <= ACTIONS)
         self.assertEqual(list(open_chat.DEFAULT_LLM_ACTIONS), DEFAULT)
@@ -283,6 +312,10 @@ class BreakerTests(ChatBase):
     def setUp(self):
         super().setUp()
         self.enable()
+
+    def chat_state(self):
+        """Read straight from the database: big clock jumps would end the parent session."""
+        return tuple(self.table("SELECT open_chat, open_chat_disabled_reason FROM policies")[0])
 
     def fail(self, n, step=60):
         for _ in range(n):
@@ -323,6 +356,69 @@ class BreakerTests(ChatBase):
         for _ in range(6):
             self.say("我家电话是13812345678")
         self.assertTrue(self.policy_view()["open_chat"])
+
+    def test_parent_turning_chat_off_mid_turn_wins(self):
+        """Review #5: the model answered after the parent closed chat: nothing is spoken or done."""
+        def close_then(reply):
+            def complete(system, user, tools):
+                with connect(self.path) as db:
+                    db.execute("UPDATE policies SET open_chat=0, open_chat_disabled_reason='parent'")
+                return reply
+            return complete
+        for reply in (ChatReply(text="星星是很远很远的太阳。"), ChatReply(tool_action="OPEN_GAME")):
+            with patch.object(self.provider, "complete", side_effect=close_then(reply)):
+                data = self.say("天上为什么有星星")
+            self.assertEqual((data["kind"], data["action"]), ("fallback", None), repr(reply))
+            self.assertNotIn(data["tts_text"], ("星星是很远很远的太阳。", "好呀，我们来玩游戏。"))
+            with connect(self.path) as db:
+                db.execute("UPDATE policies SET open_chat=1, open_chat_disabled_reason=NULL")
+        self.assertEqual(self.table("SELECT COUNT(*) FROM open_chat_outcomes")[0][0], 0)
+
+    def test_blocks_across_midnight_count_per_local_day(self):
+        tz = self.app.state.voice_turns.open_chat.settings.timezone
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        local = datetime.fromtimestamp(self.now, ZoneInfo(tz))
+        midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        self.now = int(midnight.timestamp()) - 4 * 60 - 30
+
+        def block():
+            self.provider.script(ChatReply(text="这是我们的秘密，要保密哦。"))
+            self.say("你好")
+            self.now += 60
+        for _ in range(4):
+            block()           # 23:55:30 .. 23:58:30
+        self.now = int(midnight.timestamp()) + 30
+        block()               # 00:00:30, the next day: 1 today
+        self.assertEqual(self.chat_state(), (1, None))
+        for _ in range(3):
+            block()
+        self.assertEqual(self.chat_state(), (1, None))  # 4 today
+        block()
+        self.assertEqual(self.chat_state(), (0, "output_blocked"))
+
+    def test_concurrent_errors_trip_the_breaker_once(self):
+        import threading
+        chat = self.app.state.voice_turns.open_chat
+        barrier = threading.Barrier(6)
+        failures = []
+
+        def note():
+            try:
+                barrier.wait()
+                chat._note(DEVICE, "error")
+            except Exception as error:  # noqa: BLE001
+                failures.append(error)
+        threads = [threading.Thread(target=note) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(failures, [])
+        self.assertEqual(self.table("SELECT COUNT(*) FROM open_chat_outcomes WHERE outcome='error'")[0][0], 6)
+        self.assertFalse(self.policy_view()["open_chat"])
+        breaker_rows = [r for r in self.table("SELECT action FROM audit_log") if r[0] == "open_chat.breaker"]
+        self.assertEqual(len(breaker_rows), 1)
 
     def test_only_the_parent_can_reopen_and_the_count_starts_fresh(self):
         self.fail(3)
@@ -399,11 +495,28 @@ class PanelChatTests(S3Base):
         self.assertEqual((view["open_chat"], view["open_chat_disabled_reason"]), (False, "parent"))
 
     def test_actions_form_saves_the_subset(self):
-        self.assertEqual(self.post("/actions", base_rev="0", act_PAGE_NEXT="1", act_SLEEP_REQUEST="1").status_code, 303)
-        self.assertEqual(self.app.state.profile_service.get_policy(DEVICE)["llm_actions"],
-                         ["PAGE_NEXT", "SLEEP_REQUEST"])
+        actions = lambda: self.app.state.profile_service.get_policy(DEVICE)["llm_actions"]  # noqa: E731
+        self.assertEqual(self.post("/actions", base_rev="0", act_PAGE_NEXT="1").status_code, 303)  # narrowing
+        self.assertEqual(actions(), ["PAGE_NEXT"])
         self.assertEqual(self.post("/actions", base_rev="1", act_MAKE_COFFEE="1").status_code, 422)
         self.assertEqual(self.post("/actions", base_rev="0").status_code, 409)  # stale form
+
+    def test_adding_actions_needs_password_and_totp(self):
+        """Review #3: widening the subset is a step-up action on the panel too."""
+        actions = lambda: self.app.state.profile_service.get_policy(DEVICE)["llm_actions"]  # noqa: E731
+        self.assertIn('name="password"', self.client.get(self.url).text.split("允许大模型执行的动作")[1])
+        result = self.post("/actions", base_rev="0", act_PAGE_NEXT="1", act_SLEEP_REQUEST="1")
+        self.assertEqual(result.status_code, 403)
+        self.assertNotIn("SLEEP_REQUEST", actions())
+        self.now += 30
+        result = self.post("/actions", base_rev="0", act_PAGE_NEXT="1", act_SLEEP_REQUEST="1",
+                           password="wrong-password", otp=self.code_at(self.secret, self.now))
+        self.assertEqual(result.status_code, 401)
+        self.now += 30
+        result = self.post("/actions", base_rev="0", act_PAGE_NEXT="1", act_SLEEP_REQUEST="1",
+                           password="correct-test-password-1234", otp=self.code_at(self.secret, self.now))
+        self.assertEqual(result.status_code, 303, result.text)
+        self.assertEqual(actions(), ["PAGE_NEXT", "SLEEP_REQUEST"])
 
     def test_breaker_reason_is_shown(self):
         self.enable()
@@ -436,6 +549,27 @@ class RulesTests(unittest.TestCase):
             self.assertIsNone(why, text)
             self.assertTrue(spoken)
         self.assertIsNone(chat_rules.check_input("我会数一二三四五六七八九十"))
+
+    def test_spoken_and_grouped_phone_numbers_are_caught(self):
+        """Review #1: grouped, 幺, and financial (大写) digits read aloud are still a phone number."""
+        for text in ("我家电话是一三八 一二三四 五六七八", "幺三八，幺二三四，五六七八", "壹叁捌壹贰叁肆伍陆柒捌",
+                     "一三八-一二三四-五六七八", "138 1234 5678", "电话：零二一、六二三四、五六七八",
+                     "1３8１2３4５6７8"):
+            self.assertEqual(chat_rules.check_input(text), "phone", text)
+            self.assertEqual(chat_rules.check_output(text + "。")[1], "phone", text)
+        for text in ("一、二、三、四、五、六、七、八！", "壹贰叁肆伍陆柒", "我有三只猫，两只狗，一只兔子。",
+                     "2024年10月1日。", "我们数到一百。"):
+            self.assertIsNone(chat_rules.check_input(text), text)
+
+    def test_output_asking_for_personal_information_is_blocked(self):
+        """Review #4: the variants, not just the exact phrases."""
+        for text in ("你叫啥名字呀？", "你的名字叫什么呀？", "你几岁啦？", "你叫什么呀？", "你的名字是什么？",
+                     "你今年多大了？", "你多少岁了？", "你上哪个幼儿园呀？", "你妈妈叫什么名字？",
+                     "你家电话是多少？", "你的大名叫啥？"):
+            self.assertEqual(chat_rules.check_output(text)[1], "output_word", text)
+        for text in ("我叫团团。", "你是什么动物呢？我是一只小狗。", "小熊三岁了。", "名字是爸爸妈妈取的。",
+                     "你想叫它什么都可以。"):
+            self.assertIsNone(chat_rules.check_output(text)[1], text)
 
     def test_rule_classes(self):
         self.assertEqual(chat_rules.check_output("哈" * 400)[1], "length")
@@ -523,6 +657,32 @@ class GlmProviderTests(unittest.TestCase):
             with self.assertRaises(ProviderError) as caught:
                 self.provider(drip).complete("S", "U", [])
         self.assertEqual(caught.exception.kind, "timeout")
+
+    def test_deadline_holds_against_a_real_slow_server(self):
+        """Review #2: wall clock, no mocked monotonic. A stall between chunks (or before headers)
+        must not hold the turn past the total deadline, whatever the per-read timeout is."""
+        import time as real_time
+
+        class Stall(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b'{"choices"'
+                real_time.sleep(2.0)
+                yield b": []}"
+
+        def slow_body(request):
+            return httpx.Response(200, stream=Stall())
+
+        def slow_headers(request):
+            real_time.sleep(2.0)
+            return httpx.Response(200, json={"choices": []})
+        with patch("services.pet_learning.chat_provider.TOTAL_TIMEOUT_S", 0.4):
+            for handler in (slow_body, slow_headers):
+                started = real_time.monotonic()
+                with self.assertRaises(ProviderError) as caught:
+                    self.provider(handler).complete("S", "U", [])
+                elapsed = real_time.monotonic() - started
+                self.assertEqual(caught.exception.kind, "timeout", handler.__name__)
+                self.assertLess(elapsed, 1.2, handler.__name__)
 
     def test_platform_content_filter(self):
         sensitive = lambda r: httpx.Response(200, json={"choices": [{"finish_reason": "sensitive",  # noqa: E731

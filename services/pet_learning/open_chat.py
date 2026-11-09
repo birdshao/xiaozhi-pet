@@ -125,6 +125,12 @@ class OpenChat:
                         error.kind if isinstance(error, ProviderError) else "unexpected")
             self._note(device_id, "error")
             return reply("fallback", CHAT_ERROR, "open_chat_error")
+        # The parent may have closed chat (or narrowed the subset) while the model was thinking:
+        # their switch wins, so nothing the model produced is spoken or done.
+        enabled, actions = self._state(device_id)
+        if not enabled:
+            log.info("open_chat closed_mid_turn")
+            return None
         if result.filtered == "input":
             return reply("fixed", BLOCKED, "open_chat_input_blocked")
         if result.filtered:

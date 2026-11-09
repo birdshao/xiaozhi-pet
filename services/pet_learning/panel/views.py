@@ -619,7 +619,7 @@ def create_router(app, database) -> APIRouter:
         body = render.chat_page(device, view, LLM_ACTION_LABELS, panel.tz(), csrf)
         return page(render.layout("开放问答", body, active="devices", csrf=csrf, notice=panel.notice(request)))
 
-    async def chat_update(device_id: str, request: Request, make_body, flash: str, *, step_up: bool = False):
+    async def chat_update(device_id: str, request: Request, make_body, flash: str):
         got = await write(request)
         if isinstance(got, Response):
             return got
@@ -633,8 +633,9 @@ def create_router(app, database) -> APIRouter:
             return error_page(422, ERRORS["CHAT_FORM_INVALID"], back)
 
         def reauth() -> None:
-            if not step_up:
-                return
+            # Called by the service only when the change needs it (turning chat on, adding actions).
+            if body.reauth is None:
+                raise ProfileError(403, "PARENT_REAUTH_REQUIRED")
             try:
                 request.app.state.parent_auth.reauth(account, body.reauth.password, body.reauth.otp,
                                                      client_ip(request))
@@ -654,7 +655,7 @@ def create_router(app, database) -> APIRouter:
                 raise ValueError("risk not acknowledged")
             return PolicyBody(base_rev=rev, open_chat=True,
                               reauth={"password": fields.get("password", ""), "otp": fields.get("otp", "").strip()})
-        return await chat_update(device_id, request, body, "chat_enabled", step_up=True)
+        return await chat_update(device_id, request, body, "chat_enabled")
 
     @router.post("/devices/{device_id}/chat/disable")
     async def chat_disable(device_id: str, request: Request):
@@ -667,7 +668,11 @@ def create_router(app, database) -> APIRouter:
             unknown = {k for k in fields if k.startswith("act_")} - {f"act_{a}" for a in LLM_ACTION_LABELS}
             if unknown:
                 raise ValueError("unknown action")
-            return PolicyBody(base_rev=rev, llm_actions=[a for a in LLM_ACTION_LABELS if fields.get(f"act_{a}") == "1"])
+            proof = None
+            if fields.get("password") or fields.get("otp"):  # only adding actions needs them
+                proof = {"password": fields.get("password", ""), "otp": fields.get("otp", "").strip()}
+            return PolicyBody(base_rev=rev, llm_actions=[a for a in LLM_ACTION_LABELS if fields.get(f"act_{a}") == "1"],
+                              reauth=proof)
         return await chat_update(device_id, request, body, "chat_actions_saved")
 
     # -- audit -----------------------------------------------------------

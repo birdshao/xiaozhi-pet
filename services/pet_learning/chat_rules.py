@@ -18,9 +18,12 @@ MAX_REPLY = 320
 # Unusable model output (not content): the caller counts these as model errors, not blocks.
 FORMAT_REASONS = frozenset({"control", "empty", "length"})
 
-_PHONE = re.compile(r"\d(?:[\s\-－—]?\d){6,}")
-_CN_DIGIT = {c: i for i, c in enumerate("零一二三四五六七八九")} | {"〇": 0, "幺": 1, "两": 2}
-_CN_PHONE = re.compile("[零〇一二三四五六七八九幺两]{7,}")
+# Digits read aloud: ordinary (一), financial (壹) and the phone-call forms 幺/两/〇 all map to 0-9,
+# so "幺三八，幺二三四" is checked exactly like "138 1234".
+_SPOKEN_DIGITS = str.maketrans({**{c: str(i) for i, c in enumerate("零一二三四五六七八九")},
+                                **{c: str(i) for i, c in enumerate("零壹贰叁肆伍陆柒捌玖")},
+                                "〇": "0", "幺": "1", "两": "2"})
+_PHONE = re.compile(r"\d{7,}")
 _LINK = re.compile(r"(?i)(?:https?://|www\.|[a-z0-9_.+-]+@[a-z0-9-]+\.|"
                    r"[a-z0-9-]+\.(?:com|cn|net|org|io|top|xyz|cc|me|vip|tv)\b)")
 _NUM = "[0-9一二三四五六七八九十百]+"
@@ -39,6 +42,14 @@ _OUTPUT_ONLY = (
     "你家电话", "你的电话", "电话号码是多少", "你家地址", "你的地址", "你在哪个学校", "你上哪个学校",
     "你在哪个幼儿园", "你上哪个幼儿园", "你叫什么名字", "你的全名", "爸爸叫什么", "妈妈叫什么",
 )
+# Asking the child's name / age / school / parents' names, in the ways a model phrases it.
+# Matched on the folded text (no spaces or punctuation).
+_ASKS_PERSONAL = re.compile(
+    "你叫(?:什么|啥)|你的?(?:全名|名字|大名|小名)(?:叫|是)?(?:什么|啥)"
+    "|你(?:今年)?(?:几|多少)岁|你(?:今年)?多大(?:了|啦|呀|呢)"
+    "|你(?:在|上|读)哪(?:个|所|家)?(?:学校|幼儿园|小学)"
+    "|你(?:家|的)?(?:电话|手机)(?:号码?)?(?:是)?多少"
+    "|(?:爸爸|妈妈|爷爷|奶奶|外公|外婆)(?:的名字)?(?:叫|是)(?:什么|啥)")
 _ACTION_VERBS = "(?:打开|翻到|翻页|喂|梳|播放|关掉|关上|开始|回到)"
 _ACTION_CLAIM = re.compile(rf"(?:已经(?:帮你|给你|为你)?|(?:这就|马上|现在就)(?:帮你|给你|为你)){_ACTION_VERBS}")
 _MARKUP = re.compile(r"[*#`_>~|\[\]]")
@@ -59,13 +70,13 @@ def _counting(digits: list[int]) -> bool:
 
 
 def _phone(nfkc: str) -> bool:
-    for match in _PHONE.finditer(nfkc):
-        if not _counting([int(c) for c in match.group() if c.isdigit()]):
-            return True
-    for match in _CN_PHONE.finditer(nfkc):  # contiguous only: "一、二、三" is counting aloud
-        if not _counting([_CN_DIGIT[c] for c in match.group()]):
-            return True
-    return False
+    """Seven or more digits once spoken digits are mapped and spaces/punctuation dropped.
+
+    Grouping ("一三八 一二三四", "138-1234") or pauses ("幺三八，幺二三四") do not split a
+    number; counting aloud ("一、二、三……") and round numbers are let through.
+    """
+    joined = "".join(c for c in nfkc.translate(_SPOKEN_DIGITS) if unicodedata.category(c)[0] not in "PZ")
+    return any(not _counting([int(c) for c in match.group()]) for match in _PHONE.finditer(joined))
 
 
 def _common(text: str) -> str | None:
@@ -113,7 +124,8 @@ def check_output(text: str, *, truncated: bool = False) -> tuple[str | None, str
     reason = _common(cleaned)
     if reason:
         return None, reason
-    if any(phrase in _folded(cleaned) for phrase in _OUTPUT_ONLY):
+    folded = _folded(cleaned)
+    if any(phrase in folded for phrase in _OUTPUT_ONLY) or _ASKS_PERSONAL.search(folded):
         return None, "output_word"
     if _ACTION_CLAIM.search(unicodedata.normalize("NFKC", cleaned)):
         return None, "action_claim"

@@ -309,14 +309,15 @@ class ProfileService:
         with connect(self.filename) as db:
             db.execute("BEGIN IMMEDIATE")
             self._device(db, device_id, write=True)
-            if body.open_chat:
-                # Turning chat on is a sensitive action (§6.5/§9): step-up first, then the code-level gate.
+            if body.open_chat or self._widens_actions(db, device_id, body.llm_actions):
+                # Turning chat on, or letting the model request an action it could not before, is a
+                # sensitive action (§6.5/§9, ADR-016): step-up first. Narrowing the subset is not.
                 db.commit()
                 reauth()
                 db.execute("BEGIN IMMEDIATE")
                 now = int(self.clock())  # the proof may have taken a while; the device may have changed
                 self._device(db, device_id, write=True)
-                if self.open_chat_unavailable() is not None:
+                if body.open_chat and self.open_chat_unavailable() is not None:
                     commands.audit(db, now, actor, "policy.update", device_id, "open_chat_unavailable", ip)
                     db.commit()
                     raise ProfileError(409, "OPEN_CHAT_UNAVAILABLE")
@@ -329,6 +330,15 @@ class ProfileService:
                 raise ProfileError(error.status, error.code) from None
             db.commit()
         return self._chat_view(view)
+
+    @staticmethod
+    def _widens_actions(db, device_id: str, requested: list[str] | None) -> bool:
+        """True when the requested subset holds an action the stored one does not."""
+        if requested is None:
+            return False
+        row = db.execute("SELECT llm_actions_json FROM policies WHERE device_id=?", (device_id,)).fetchone()
+        current = policy.parse_actions(row["llm_actions_json"] if row else None)
+        return bool(set(requested) - set(current))
 
     def on_snapshot(self, db, device_id: str, settings: ParentSettings, device_rev: int, now: int) -> None:
         """Hook for S2's snapshot transaction (conservative merge, §5.4)."""

@@ -85,7 +85,9 @@ services:
       XZ_TTS_MODULE: ${XZ_TTS_MODULE:-}
     env_file:
       - path: providers.env   # only provider settings: XZ__<section>__<module>__<key>=value lines
-        required: false       # (kept apart from .env so the voice container never sees other secrets)
+        required: false       # and, since S6, KID_PET_GLM_*. Kept apart from .env so this container never
+                              # sees the panel/voice/TOTP secrets, but it does see the GLM key (compose
+                              # cannot pick single lines); its own chat path is off in child mode.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8003/xiaozhi/ota/', timeout=3)"]
       interval: 15s

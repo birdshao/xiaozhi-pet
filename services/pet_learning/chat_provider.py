@@ -9,6 +9,7 @@ plus the child's single utterance, no history.
 from __future__ import annotations
 
 import json
+import threading
 from time import monotonic
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -94,28 +95,29 @@ class GlmProvider:
             body["tool_choice"] = "auto"
         if self.model.startswith(_THINKING_PREFIXES):
             body["thinking"] = {"type": "disabled"}
-        # httpx timeouts are per phase / per read; the deadline bounds the whole request so the
-        # guard (SERVICE_TIMEOUT_S = 9 s) always gets an answer before it gives up.
-        deadline = monotonic() + TOTAL_TIMEOUT_S
-        try:
-            with httpx.Client(timeout=httpx.Timeout(TIMEOUT_S, connect=2.0), follow_redirects=False,
-                              trust_env=False, transport=self._transport) as client:
-                with client.stream("POST", GLM_URL, json=body,
-                                   headers={"Authorization": "Bearer " + self._key}) as response:
-                    status = response.status_code
-                    raw = bytearray()
-                    for chunk in response.iter_bytes():
-                        raw += chunk
-                        if monotonic() > deadline:
-                            raise ProviderError("timeout")
-                        if len(raw) > MAX_RESPONSE_BYTES:
-                            raise ProviderError("format")
-        except httpx.TimeoutException:
-            raise ProviderError("timeout") from None
-        except httpx.HTTPError:
-            raise ProviderError("http") from None
-        if monotonic() > deadline:
+        # httpx timeouts are per phase / per read, so a server that stalls (or drips bytes) could
+        # hold a read for TIMEOUT_S again and again. The request runs in a worker thread and the
+        # caller waits at most TOTAL_TIMEOUT_S on the wall clock: the guard (SERVICE_TIMEOUT_S = 9 s)
+        # always gets an answer first. A late worker is abandoned; its own per-read timeouts and the
+        # deadline check between chunks end it shortly after, and its result is discarded.
+        total = TOTAL_TIMEOUT_S
+        outcome: list[Any] = []
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                outcome.append(self._post(body, monotonic() + total))
+            except BaseException as error:  # noqa: BLE001 - handed to the waiting caller
+                outcome.append(error)
+            finally:
+                done.set()
+        threading.Thread(target=run, name="glm-request", daemon=True).start()
+        if not done.wait(total):
             raise ProviderError("timeout")
+        result = outcome[0]
+        if isinstance(result, BaseException):
+            raise result
+        status, raw = result
         try:
             data = json.loads(bytes(raw))
         except ValueError:
@@ -128,6 +130,33 @@ class GlmProvider:
             return _parse(data)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise ProviderError("format") from None
+
+    def _post(self, body: dict[str, Any], deadline: float) -> tuple[int, bytes]:
+        def left() -> float:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise ProviderError("timeout")
+            return remaining
+        try:
+            # Every phase is also capped by what is left of the total.
+            budget = left()
+            timeout = httpx.Timeout(min(TIMEOUT_S, budget), connect=min(2.0, budget))
+            with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False,
+                              transport=self._transport) as client:
+                with client.stream("POST", GLM_URL, json=body,
+                                   headers={"Authorization": "Bearer " + self._key}) as response:
+                    raw = bytearray()
+                    for chunk in response.iter_bytes():
+                        raw += chunk
+                        left()
+                        if len(raw) > MAX_RESPONSE_BYTES:
+                            raise ProviderError("format")
+                    left()
+                    return response.status_code, bytes(raw)
+        except httpx.TimeoutException:
+            raise ProviderError("timeout") from None
+        except httpx.HTTPError:
+            raise ProviderError("http") from None
 
 
 def _error_code(data: Any) -> str | None:

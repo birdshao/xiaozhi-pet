@@ -347,9 +347,14 @@ def chat_page(device: dict, view: dict, labels: dict[str, str], tz: str, csrf: s
         f'<label class="check"><input type="checkbox" name="act_{e(a)}" value="1"'
         f'{" checked" if a in chosen else ""}{"" if writable else " disabled"}> {e(text)}</label>'
         for a, text in labels.items())
+    step_up = ('<fieldset><legend>新增动作时需要重新验证（只取消勾选可以不填）</legend>'
+               '<label>密码<input name="password" type="password" maxlength="256" '
+               'autocomplete="current-password"></label>'
+               '<label>动态验证码（6 位）<input name="otp" maxlength="6" inputmode="numeric" '
+               'autocomplete="one-time-code"></label></fieldset>')
     actions = (f'<form method="post" action="{action}/actions">{hidden(csrf, base_rev=view["rev"])}'
                f'{boxes}'
-               + ('<button type="submit">保存动作</button>' if writable else "") + '</form>')
+               + (step_up + '<button type="submit">保存动作</button>' if writable else "") + '</form>')
     return Safe(f"""{device_tabs(device_id, 'chat')}
 <div class="card"><h2>开放问答</h2><dl><dt>状态</dt><dd>{state}</dd>{reason}</dl>
 <div class="flash warn">{e(CHAT_RISK)}</div>{switch}</div>
