@@ -137,7 +137,7 @@ class AnswerTests(ChatBase):
         for bad in ("你家住在哪里呀？", "打电话 13812345678 吧", "去 http://x.cn 看看", "这是我们的秘密，要保密哦。",
                     "我已经帮你打开游戏啦！", "我们来讲一个僵尸的故事。"):
             self.provider.script(ChatReply(text=bad))
-            data = self.say("你好呀团团")
+            data = self.say("你今天开心吗")
             self.assertEqual((data["kind"], data["reason"], data["tts_text"]),
                              ("fallback", "open_chat_output_blocked", open_chat.BLOCKED), bad)
             self.now += 86400  # one block per day: the daily breaker is tested separately
