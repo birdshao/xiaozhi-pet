@@ -31,6 +31,7 @@ import dataclasses
 import datetime as dt
 import difflib
 import json
+import math
 import os
 import re
 import subprocess
@@ -846,91 +847,131 @@ def wake_hits(attempts: list[tuple[float, float]], xz: list, ser: list) -> list[
     return rows
 
 
+def wav_peak(path: Path) -> float:
+    import array
+    import wave
+    with wave.open(str(path), "rb") as w:
+        samples = array.array("h")
+        samples.frombytes(w.readframes(w.getnframes()))
+    return max((abs(x) for x in samples), default=0) / 32768
+
+
+def safe_gain_db(peak: float, want_db: float, ceiling: float = 0.98) -> float:
+    """The requested gain, or the largest gain that keeps the peak under `ceiling` (never clips)."""
+    if peak <= 0:
+        return want_db
+    return min(want_db, 20 * math.log10(ceiling / peak))
+
+
+def board_ready(ser_events: list, now: float, quiet_s: float = 6.0) -> bool:
+    """Serial says: dialog state idle for >= quiet_s and the power state is idle/nap (or not seen yet)."""
+    last_state, t_state = "", None
+    for ev in ser_events:
+        if ev["ev"] == "state":
+            last_state, t_state = ev["text"].lower(), ev["t"]
+    if last_state and last_state != "idle":
+        return False
+    if t_state is not None and now - t_state < quiet_s:
+        return False
+    return last_power(ser_events, now) in ("", "idle", "nap")
+
+
+def _prepare_wake_wav(args, out: Path) -> tuple[Path, str]:
+    wav = out / "wav" / "_wake.wav"
+    cache = Path(args.tts_cache) if args.tts_cache else None
+    if args.wav:
+        base, tag = Path(args.wav), f"wav:{Path(args.wav).name}"
+    else:
+        base = out / "wav" / "_wake_base.wav"
+        synth_any(WAKE_PHRASE, base, args.engine, args.voice, args_rate(args), cache)
+        tag = tts_tag(args.engine, args.voice, args_rate(args))
+    if args.gain_db:
+        peak = wav_peak(base)
+        gain = safe_gain_db(peak, args.gain_db)
+        apply_gain(base, wav, gain)
+        tag += f"+{gain:.1f}dB" + ("(限幅，原定 +%g)" % args.gain_db if gain < args.gain_db - 1e-6 else "")
+        print(f"gain {gain:+.1f} dB (peak {peak:.2f} -> {wav_peak(wav):.2f})", flush=True)
+        return wav, tag
+    return base, tag
+
+
 def cmd_wake(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    wav = out / "wav" / "_wake.wav"
-    if args.wav:  # reuse exactly the audio of an earlier run (optionally with gain)
-        src = Path(args.wav)
-        if args.gain_db:
-            peaks = apply_gain(src, wav, args.gain_db)
-            print(f"gain {args.gain_db:+.1f} dB, peak {peaks[0]:.2f} -> {peaks[1]:.2f}")
-        else:
-            wav = src
-    elif not wav.exists():
-        synth_any(WAKE_PHRASE, wav, args.engine, args.voice, args_rate(args), Path(args.tts_cache) if args.tts_cache else None)
-    print(f"wake wav level {wav_dbfs(wav):.1f} dBFS")
+    wav, tag = _prepare_wake_wav(args, out)
+    print(f"wake wav {tag} level {wav_dbfs(wav):.1f} dBFS", flush=True)
     tail = SerialTail(args.port) if args.port else None
     remote = Remote(args.ssh_host, args.ssh_key) if args.ssh_host else None
     offset = remote.clock_offset() if remote else 0.0
     if tail:
         tail.start()
         time.sleep(1.0)
-    if args.wait_active and tail:  # start only once the board reports an active power state
-        end = time.time() + args.wait_active
-        while time.time() < end and last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) != "active":
-            time.sleep(0.5)
-    attempts = []
-    live_power: list[str] = []
-    if args.until_active:  # adaptive: play whenever no session is open; label each attempt by the live power state
-        n_active = 0
-        for i in range(args.attempts):
-            if n_active >= args.until_active:
-                break
-            if remote:
-                evs = _events_from(remote.logs("xiaozhi", time.time() - 400), parse_xiaozhi_line, offset)
-                end = time.time() + args.session_wait
-                while session_open(evs, time.time()) and time.time() < end:
-                    time.sleep(5)
-                    evs = _events_from(remote.logs("xiaozhi", time.time() - 400), parse_xiaozhi_line, offset)
-                if end - time.time() < args.session_wait - 6:
-                    time.sleep(2.0)  # let the chat-end cue finish
-            pw = last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) if tail else ""
-            live_power.append(pw)
-            n_active += pw == "active"
-            t0 = time.time()
-            play_wav(wav)
-            time.sleep(args.settle)
-            attempts.append((t0, time.time()))
-            print(f"wake attempt {i + 1} power={pw or '?'} (active {n_active}/{args.until_active})", flush=True)
-            time.sleep(args.gap)
-    for i in range(0 if args.until_active else args.attempts):
-        if args.stop_when_idle and tail and last_power(_events_from(tail.snapshot(), parse_serial_line), time.time()) not in ("active", ""):
-            print("board left active state, stopping", flush=True)
-            break
+    deadline = time.time() + args.budget
+    plays: list[dict] = []   # {t0, t1, power, kind: idle|in_session|skipped}
+
+    def ready(timeout: float) -> bool:
+        end = time.time() + timeout
+        while True:
+            if not tail or board_ready(_events_from(tail.snapshot(), parse_serial_line), time.time()):
+                return True
+            if time.time() >= end or time.time() >= deadline:
+                return False
+            time.sleep(2.0)
+
+    def play_once(kind: str) -> dict:
+        ser_now = _events_from(tail.snapshot(), parse_serial_line) if tail else []
         t0 = time.time()
         play_wav(wav)
         time.sleep(args.settle)
-        attempts.append((t0, time.time()))
-        print(f"wake attempt {i + 1}/{args.attempts} done", flush=True)
+        rec = {"t0": t0, "t1": time.time(), "power": last_power(ser_now, t0), "kind": kind}
+        plays.append(rec)
+        return rec
+
+    session_done = False
+    for i in range(args.attempts):
+        if time.time() >= deadline:
+            print("budget exhausted", flush=True)
+            break
+        if not ready(args.ready_wait):
+            plays.append({"t0": time.time(), "t1": time.time(), "power": "", "kind": "skipped"})
+            print(f"attempt {i + 1}: 会话未结束，跳过", flush=True)
+            continue
+        rec = play_once("idle")
+        print(f"wake attempt {i + 1}/{args.attempts} power={rec['power'] or '?'}", flush=True)
         time.sleep(args.gap)
-        if remote:  # a hit leaves the session open (~2-3 min); wait for it to end, else later plays are just speech
-            end = time.time() + args.session_wait
-            while time.time() < end:
-                evs = _events_from(remote.logs("xiaozhi", t0 - 2), parse_xiaozhi_line, offset)
-                if not session_open(evs, time.time()):
-                    break
-                time.sleep(5)
-    xz = _events_from(remote.logs("xiaozhi", attempts[0][0] - 2), parse_xiaozhi_line, offset) if remote else []
+        if tail and args.in_session and not session_done:
+            ser_now = _events_from(tail.snapshot(), parse_serial_line)
+            if any(e["ev"] in ("wake",) and rec["t0"] <= e["t"] <= rec["t1"] + 3 for e in ser_now):
+                session_done = True
+                for j in range(args.in_session):
+                    play_once("in_session")
+                    print(f"  in-session play {j + 1}/{args.in_session}", flush=True)
+                    time.sleep(3.0)
+    attempts = [(r["t0"], r["t1"]) for r in plays]
+    xz = _events_from(remote.logs("xiaozhi", attempts[0][0] - 2), parse_xiaozhi_line, offset) if remote and attempts else []
     ser = _events_from(tail.snapshot(), parse_serial_line) if tail else []
+    lines = tail.snapshot() if tail else []
     if tail:
         tail.stop()
-        (out / "serial.log").write_text("\n".join(redact(line) for _, line in tail.snapshot()), encoding="utf-8")
+        (out / "serial.log").write_text(chr(10).join(redact(line) for _, line in lines), encoding="utf-8")
     rows = wake_hits(attempts, xz, ser)
-    det_re = re.compile(r"wake ?word|wakenet|afe|wn9", re.I)
-    for row, (t0, t1) in zip(rows, attempts):
-        row["power"] = last_power(ser, t0)
-        raw = [line for t, line in (tail.snapshot() if tail else []) if t0 <= t <= t1 + 1
-               and det_re.search(line) and "PET_WAKE_GUARD" not in line]
-        row["serial_detect_lines"] = len(raw)
-    for row, pw in zip(rows, live_power):
-        row["power"] = pw
-    delays = [r["delay_s"] for r in rows if r["delay_s"] is not None]
-    summary = {"tts": (f"wav:{Path(args.wav).name}+{args.gain_db:g}dB" if args.wav else tts_tag(args.engine, args.voice, args_rate(args))),
-               "attempts": len(rows), "hits": sum(r["hit"] for r in rows),
+    det_re = re.compile(r"wake ?word|wakenet|afe|wn9", re.I)
+    for row, rec in zip(rows, plays):
+        row["power"], row["kind"] = rec["power"], rec["kind"]
+        row["serial_detect_lines"] = len([1 for t, line in lines if rec["t0"] <= t <= rec["t1"] + 1
+                                          and det_re.search(line) and "PET_WAKE_GUARD" not in line])
+        if rec["kind"] == "skipped":
+            row["hit"], row["delay_s"] = False, None
+    counted = [r for r in rows if r["kind"] == "idle"]
+    delays = [r["delay_s"] for r in counted if r["delay_s"] is not None]
+    summary = {"tts": tag, "attempts": len(counted), "hits": sum(r["hit"] for r in counted),
+               "skipped_session_open": sum(r["kind"] == "skipped" for r in rows),
+               "in_session_plays": sum(r["kind"] == "in_session" for r in rows),
+               "in_session_detects": sum(r["serial_detect_lines"] > 0 for r in rows if r["kind"] == "in_session"),
                "delay_median_s": percentile(delays, 50), "delay_p90_s": percentile(delays, 90), "rows": rows}
     (out / "wake.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"唤醒命中 {summary['hits']}/{summary['attempts']}，延迟中位数 {summary['delay_median_s']}s "
+    print(f"唤醒命中 {summary['hits']}/{summary['attempts']}（跳过 {summary['skipped_session_open']}，会话内 "
+          f"{summary['in_session_plays']} 次检测 {summary['in_session_detects']}），延迟中位数 {summary['delay_median_s']}s "
           f"P90 {summary['delay_p90_s']}s")
     return 0
 
@@ -951,6 +992,11 @@ def cmd_run(args) -> int:
         wavs[c.id] = wavdir / f"{c.id}.wav"
         if not wavs[c.id].exists():
             synth_any(c.say, wavs[c.id], args.engine, args.voice, args_rate(args), Path(args.tts_cache) if args.tts_cache else None)
+            if args.gain_db:
+                apply_gain(wavs[c.id], wavs[c.id], safe_gain_db(wav_peak(wavs[c.id]), args.gain_db))
+    if args.gain_db and not (wavdir / "_wake.gain").exists():
+        apply_gain(wake_wav, wake_wav, safe_gain_db(wav_peak(wake_wav), args.gain_db))
+        (wavdir / "_wake.gain").write_text(str(args.gain_db))
     if args.dry_run:
         print(f"dry run: synthesised {len(wavs) + 1} wav files into {wavdir}")
         return 0
@@ -1105,6 +1151,7 @@ def main(argv=None) -> int:
     p.add_argument("--business-id", help="PetLearning device id: read its quiet flag from the server")
     p.add_argument("--repeat", type=int, default=1, help="play every case N times")
     p.add_argument("--include-skipped", action="store_true", help="also play cases marked skip")
+    p.add_argument("--gain-db", type=float, default=0.0, help="scale every played wav by this many dB (limited to never clip)")
     p.add_argument("--wake-retries", type=int, default=4, help="wake word plays per case before giving up")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("wake", help="wake-word hit rate: play the wake phrase N times, count server 'detect' events")
@@ -1122,11 +1169,10 @@ def main(argv=None) -> int:
     p.add_argument("--tts-cache", help="directory that caches generated wavs per engine/voice/rate/sentence")
     p.add_argument("--rate", type=int, default=-1)
     p.add_argument("--wav", help="reuse this wake wav instead of synthesising (e.g. the earlier run's _wake.wav)")
-    p.add_argument("--gain-db", type=float, default=0.0, help="with --wav: scale the audio by this many dB (refuses to clip)")
-    p.add_argument("--until-active", type=int, default=0, help="adaptive mode: keep playing (never during an open session) until N attempts happened in the active power state; --attempts is the cap")
-    p.add_argument("--wait-active", type=float, default=0.0, help="wait up to N s for PET_POWER state=active first")
-    p.add_argument("--stop-when-idle", action="store_true", help="stop attempts once the board leaves the active state")
-    p.add_argument("--session-wait", type=float, default=240.0, help="max seconds to wait for an open session to end")
+    p.add_argument("--gain-db", type=float, default=0.0, help="scale the wake audio by this many dB; limited so it never clips")
+    p.add_argument("--ready-wait", type=float, default=300.0, help="max seconds to wait for the board to be idle again before a play; on timeout the attempt is skipped (not counted)")
+    p.add_argument("--in-session", type=int, default=0, help="after the first hit, play the wake word N more times inside the open session (control, not counted)")
+    p.add_argument("--budget", type=float, default=3600.0, help="total seconds cap for this run")
     p.set_defaults(fn=cmd_wake)
     p = sub.add_parser("noise", help="measure ambient level with the PC microphone and print it (calibration)")
     p.add_argument("--seconds", type=float, default=2.0)

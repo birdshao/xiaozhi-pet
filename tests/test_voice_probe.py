@@ -276,3 +276,21 @@ def test_synth_any_uses_cache_and_does_not_resynthesise(tmp_path, monkeypatch):
     vp.synth_any("你好", tmp_path / "c.wav", "edge", "v1", "-10%", cache)
     assert len(calls) == 2
     assert (tmp_path / "b.wav").read_bytes() == b"RIFFfake"
+
+
+def test_safe_gain_never_clips():
+    assert vp.safe_gain_db(0.1, 6.0) == 6.0
+    g = vp.safe_gain_db(0.5, 10.0)
+    assert 0.5 * 10 ** (g / 20) <= 0.98 + 1e-9 and g < 10.0
+
+
+def test_board_ready_needs_idle_state_and_quiet_time():
+    ev = [{"t": 100.0, "ev": "state", "text": "listening"}]
+    assert not vp.board_ready(ev, 120.0)
+    ev.append({"t": 130.0, "ev": "state", "text": "idle"})
+    assert not vp.board_ready(ev, 133.0)       # < 6 s since the dialog ended
+    assert vp.board_ready(ev, 140.0)
+    ev.append({"t": 141.0, "ev": "power", "text": "active"})
+    assert not vp.board_ready(ev, 150.0)        # chat-end active window is not 'idle'
+    ev.append({"t": 190.0, "ev": "power", "text": "idle"})
+    assert vp.board_ready(ev, 200.0)
