@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -5385,14 +5386,49 @@ PET_OTA_URL = 'CONFIG_OTA_URL="http://192.168.1.110:8780/xiaozhi/ota/"'
 PET_SERVER_ORIGIN = 'CONFIG_KID_PET_SERVER_ORIGIN="https://pet.birdshao.cn:8443"'
 
 
-def patch_board_config(text: str) -> str:
-    """Append the Pet SD and OTA URL settings to the board's build (config.json)."""
+# Build-time wake word. "tuantuan" = MultiNet custom wake word "你好团团" (default);
+# "xiaozhi" = upstream default (WakeNet9 "你好小智", nothing overridden). Switch back
+# with PET_WAKE_WORD=xiaozhi, `p1_integrate.py --wake-word xiaozhi`, or by changing
+# WAKE_WORD_DEFAULT. The two detectors are mutually exclusive upstream
+# (afe_audio_engine.cc picks MultiNet when srmodels holds one, else WakeNet).
+WAKE_WORD_ENV = "PET_WAKE_WORD"
+WAKE_WORD_DEFAULT = "tuantuan"
+WAKE_WORD_PINYIN = "ni hao tuan tuan"
+WAKE_WORD_DISPLAY = "你好团团"
+WAKE_WORD_THRESHOLD = 20  # 1-99, smaller = more sensitive (and more false wakes)
+WAKE_WORD_PROFILES = {
+    "tuantuan": (
+        "CONFIG_USE_AFE_WAKE_WORD=n",
+        "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+        # Upstream sdkconfig.defaults.esp32s3 enables this WakeNet model; keep it
+        # out of srmodels.bin so only MultiNet is packed.
+        "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
+        "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
+        f'CONFIG_CUSTOM_WAKE_WORD="{WAKE_WORD_PINYIN}"',
+        f'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="{WAKE_WORD_DISPLAY}"',
+        f"CONFIG_CUSTOM_WAKE_WORD_THRESHOLD={WAKE_WORD_THRESHOLD}",
+    ),
+    "xiaozhi": (),
+}
+
+
+def resolve_wake_word(choice: "str | None" = None) -> str:
+    """Explicit argument, else $PET_WAKE_WORD, else WAKE_WORD_DEFAULT."""
+    name = (choice or os.environ.get(WAKE_WORD_ENV) or WAKE_WORD_DEFAULT).strip().lower()
+    if name not in WAKE_WORD_PROFILES:
+        raise RuntimeError(f"Unknown wake word {name!r}; choose one of {sorted(WAKE_WORD_PROFILES)}")
+    return name
+
+
+def patch_board_config(text: str, wake_word: "str | None" = None) -> str:
+    """Append the Pet SD, OTA URL and wake word settings to the board's build (config.json)."""
     config = json.loads(text)
     builds = config.get("builds") or []
     if len(builds) != 1:
         raise RuntimeError(f"Expected one board build in config.json, found {len(builds)}")
     append = builds[0].setdefault("sdkconfig_append", [])
-    for line in (*SD_LONG_FILENAMES, PET_OTA_URL, PET_SERVER_ORIGIN):
+    for line in (*SD_LONG_FILENAMES, PET_OTA_URL, PET_SERVER_ORIGIN,
+                 *WAKE_WORD_PROFILES[resolve_wake_word(wake_word)]):
         key = line.split("=", 1)[0]
         if any(item.split("=", 1)[0] == key for item in append):
             raise RuntimeError(f"Upstream board config already sets {key}")
@@ -5400,7 +5436,7 @@ def patch_board_config(text: str) -> str:
     return json.dumps(config, indent=4, ensure_ascii=False) + "\n"
 
 
-def run(source: Path) -> None:
+def run(source: Path, wake_word: "str | None" = None) -> None:
     git_head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if git_head != MANIFEST["firmware"]["commit"]:
         raise RuntimeError(f"Wrong firmware commit: {git_head}")
@@ -5431,7 +5467,7 @@ def run(source: Path) -> None:
         header: patch_display_voice_h(patch_display_h(header.read_text(encoding="utf-8"))),
         impl: patch_display_cc(impl.read_text(encoding="utf-8")),
         board: patch_power_save_timer(patch_board(board.read_text(encoding="utf-8"))),
-        board_config: patch_board_config(board_config.read_text(encoding="utf-8")),
+        board_config: patch_board_config(board_config.read_text(encoding="utf-8"), wake_word),
         audio_h: v8_mic_frame_tap_patch.patch_audio_h(v4_mic_tap_patch.patch_audio_h(
             patch_audio_h(audio_h.read_text(encoding="utf-8")))),
         audio_cc: v8_mic_frame_tap_patch.patch_audio_cc(v4_mic_tap_patch.patch_audio_cc(
@@ -5452,9 +5488,11 @@ def run(source: Path) -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", type=Path, required=True)
+    p.add_argument("--wake-word", choices=sorted(WAKE_WORD_PROFILES),
+                   help=f"default: ${WAKE_WORD_ENV} or {WAKE_WORD_DEFAULT}")
     args = p.parse_args()
     try:
-        run(args.source.resolve())
+        run(args.source.resolve(), args.wake_word)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
         print(f"P1 integration rejected: {e}", file=sys.stderr)
         sys.exit(1)

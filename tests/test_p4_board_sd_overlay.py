@@ -79,7 +79,7 @@ class WaveshareSdOverlayTests(unittest.TestCase):
             patch_board_config(json.dumps({"builds": []}))
         # The integration actually patches the board config file.
         src = (ROOT / "scripts/p1_integrate.py").read_text(encoding="utf-8")
-        self.assertIn('board_config: patch_board_config(board_config.read_text(encoding="utf-8"))', src)
+        self.assertIn('board_config: patch_board_config(board_config.read_text(encoding="utf-8"), wake_word)', src)
 
     def test_main_component_lists_sd_deps_and_source(self):
         cmake=(ROOT/"firmware/components/kid_app/CMakeLists.txt").read_text()
