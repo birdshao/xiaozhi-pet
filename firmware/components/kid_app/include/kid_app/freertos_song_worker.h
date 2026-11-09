@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kid_app/freertos_story_pcm_worker.h"
+#include "kid_app/melody_synth.h"
 #include "kid_app/story_pack_file_port.h"
 #include "kid_app/story_pack_reader.h"
 
@@ -27,6 +28,10 @@ public:
     bool Ready() const { return task_ != nullptr; }
     // Opens <book_dir>/<id>.kpb (CRC-checks every page: can take seconds).
     bool Open(const char* id);
+    // V9-3A: "opens" built-in melody `index` (melody_synth.h BuiltinMelodyAt):
+    // nothing is read from the card, the book has one page (page 1) that is
+    // synthesised and streamed through the same PCM queue.
+    bool OpenBuiltin(uint8_t index);
     // Streams one page (1-based) of the open book; the previous page is cancelled.
     bool Play(uint16_t page);
     // Cancels the audio, keeps the book open.
@@ -41,6 +46,7 @@ private:
     struct Request {
         Cmd cmd = Cmd::Stop;
         uint16_t page = 0;
+        uint8_t builtin = 0;  // Open: built-in melody index + 1, 0 = a card book
         char id[48] = {};
     };
 
@@ -53,6 +59,8 @@ private:
     StoryPackFilePort file_{};
     StoryPackReader reader_{};
     bool open_ = false;
+    uint8_t builtin_ = 0;  // task only: open built-in melody + 1, 0 = a card book
+    MelodySynth synth_{};
     StoryPcmHooks hooks_{};
     void* context_ = nullptr;
     QueueHandle_t queue_ = nullptr;

@@ -36,7 +36,13 @@ const char* SongHintName(SongHint hint) {
     return "none";
 }
 
-bool SongCatalog::Offer(const char* stem) {
+bool SongCatalog::Offer(const char* stem) { return Insert(stem, 0); }
+
+bool SongCatalog::OfferBuiltin(uint8_t index, const char* id) {
+    return index < 255 && Insert(id, static_cast<uint8_t>(index + 1));
+}
+
+bool SongCatalog::Insert(const char* stem, uint8_t builtin) {
     if (!stem || count_ >= kMaxSongs) return false;
     size_t length = 0;
     if (!ValidId(stem, &length) || length >= kSongIdBytes) return false;
@@ -54,6 +60,7 @@ bool SongCatalog::Offer(const char* stem) {
     entries_[at] = SongEntry{};
     std::memcpy(entries_[at].id, stem, length);
     entries_[at].kind = kind;
+    entries_[at].builtin = builtin;
     ++count_;
     return true;
 }

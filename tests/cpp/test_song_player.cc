@@ -289,6 +289,50 @@ int main() {
         assert(calm.SetQuiet(true).count == 1);  // ... and is no longer exempt
     }
 
+    // V9-3A built-in melodies: offered like card books, no card needed.
+    {
+        SongCatalog c;
+        assert(c.Offer("song_twinkle"));             // a card book ...
+        assert(!c.OfferBuiltin(0, "song_twinkle"));  // ... wins over the built-in
+        assert(c.OfferBuiltin(1, "song_xingxing") && c.OfferBuiltin(2, "lullaby_moon"));
+        assert(!c.OfferBuiltin(3, "forest_x") && !c.OfferBuiltin(3, nullptr));
+        assert(!c.OfferBuiltin(255, "song_zzz"));
+        assert(c.Count() == 3);
+        assert(std::strcmp(c.At(0).id, "lullaby_moon") == 0 && c.At(0).builtin == 3);
+        assert(std::strcmp(c.At(1).id, "song_twinkle") == 0 && c.At(1).builtin == 0);
+        assert(std::strcmp(c.At(2).id, "song_xingxing") == 0 && c.At(2).builtin == 2);
+        assert(c.LullabiesOnly().At(0).builtin == 3);
+        c.Clear();
+        assert(c.OfferBuiltin(0, "song_a1") && c.Count() == 1);  // Clear forgets all
+
+        // No card at all: a list of the built-ins, not the "no songs" picture.
+        SongCatalog only;
+        only.OfferBuiltin(0, "song_xingxing");
+        only.OfferBuiltin(1, "lullaby_moon");
+        SongPlayer p;
+        SongOutput o;
+        SongContext none;
+        none.card_mounted = false;
+        assert(p.Open(0, none, only, &o) && p.View(0).phase == SongPhase::List);
+        assert(p.View(0).count == 2);
+        // lullaby_moon is first: pick, 20 min, load asks for the built-in entry.
+        assert(p.Input(GameInput::Press, 1).redraw);
+        o = p.Input(GameInput::Press, 2);
+        assert(o.load == 1 && p.Chosen().builtin == 2);
+        o = p.Loaded(1, 3);  // a built-in melody is one "page", looped for bedtime
+        assert(o.play_page == 1 && p.Bedtime());
+        o = p.PageFinished(4);
+        assert(o.play_page == 1 && !o.leave);
+        // A built-in song plays once, then back to the list.
+        p.Input(GameInput::Press, 5);
+        p.Input(GameInput::Down, 6);
+        o = p.Input(GameInput::Press, 7);
+        assert(o.load == 2 && p.Chosen().builtin == 1);
+        assert(p.Loaded(1, 8).play_page == 1 && !p.Bedtime());
+        o = p.PageFinished(9);
+        assert(o.play_page == 0 && p.View(9).phase == SongPhase::List);
+    }
+
     std::cout << "song player tests passed\n";
     return 0;
 }

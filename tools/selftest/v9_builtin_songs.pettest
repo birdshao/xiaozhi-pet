@@ -1,0 +1,49 @@
+PETSELFTEST1
+# V9-3A built-in melodies without a person: the song player is opened by
+# voice command PLAY_SONG, the dial moves from the lullaby (list is sorted
+# by id) to the second tune, press plays it (synthesised, nothing read
+# from the card), a long press leaves and stops the sound. Then the list
+# is opened again and a press on the lullaby only reaches the timer
+# screen (no load). Counted from "mark begin" (tools/selftest_report.py).
+# Needs: a card WITHOUT song_ / lullaby_ books (the list is the 5 built-in
+# melodies in id order), outside the quiet hours (phase day), battery
+# above the low level.
+# expect min:PET_SONGS_OPEN 2
+# expect min:count=5 2
+# expect min:PET_SONGS_LOAD 1
+# expect min:builtin=1 1
+# expect min:PET_SONGS_PLAY 1
+# expect none:PET_SONGS_TIMER_DONE 0
+# expect none:PET_SLEEP_REQUESTED 0
+# expect none:PET_SONG_AUDIO_UNAVAILABLE 0
+# expect none:PET_SOUND_REFUSED 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect selftest_done 1
+# expect max_partial_ms 2500
+# expect max_full_ms 5000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 6000
+# Normalize restored pet state to "home, neutral".
+tap press 6000
+hold press 1500 6000
+mark begin
+# First open: lullaby_bolamusi is first, move to song_liangzhilaohu.
+vcmd PLAY_SONG
+wait 4000
+tap down 2500
+# Press plays the built-in tune: load, then play page 1.
+tap press 4000
+wait 8000
+# Long press = home, quietly.
+hold press 1500 8000
+# Second open: a press on the lullaby asks for a timer, nothing loads.
+vcmd PLAY_SONG
+wait 4000
+tap press 3000
+hold press 1500 8000
+pet
+wait 5000
+end

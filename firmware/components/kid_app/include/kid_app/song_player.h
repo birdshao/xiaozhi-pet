@@ -27,12 +27,15 @@ namespace kid_app {
 // the sleep flow; nursery rhymes and everything else stay closed.
 enum class SongKind : uint8_t { Song, Lullaby };
 
-constexpr size_t kMaxSongs = 12;
+constexpr size_t kMaxSongs = 16;  // card songs plus the built-in melodies
 constexpr size_t kSongIdBytes = 40;
 
 struct SongEntry {
     char id[kSongIdBytes] = {};
     SongKind kind = SongKind::Song;
+    // V9-3A: 0 = a KPB book on the card; n > 0 = built-in melody n - 1
+    // (melody_synth.h), synthesised, nothing on the card.
+    uint8_t builtin = 0;
 };
 
 // Collects the files the board saw in /sdcard/books: Offer() each stem.
@@ -45,10 +48,15 @@ public:
     size_t Count() const { return count_; }
     const SongEntry& At(size_t i) const { return entries_[i]; }
     void Clear() { count_ = 0; }
+    // V9-3A: adds built-in melody `index` (0-based) under `id` (same prefix and
+    // id rules as Offer; `lullaby` must match the prefix). A card book with
+    // the same id wins: the duplicate is refused. Offer the card first.
+    bool OfferBuiltin(uint8_t index, const char* id);
     // Quiet hours: only lullabies stay.
     SongCatalog LullabiesOnly() const;
 
 private:
+    bool Insert(const char* stem, uint8_t builtin);
     std::array<SongEntry, kMaxSongs> entries_{};
     size_t count_ = 0;
 };

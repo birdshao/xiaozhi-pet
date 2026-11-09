@@ -4,16 +4,17 @@ PETSELFTEST1
 # with a long press (no completion, no care record); the parrot from the
 # play menu (Sound page): opened and left by turning the dial, the dial centre
 # is never held so nothing is recorded; the song player by voice command
-# PLAY_SONG on a card WITHOUT song_ / lullaby_ books (count=0: the hint
-# picture; a card with songs shows the list instead and this scenario
-# fails on count=0). Counted from "mark begin" (tools/selftest_report.py).
+# PLAY_SONG on a card WITHOUT song_ / lullaby_ books (count=5: since V9-3A
+# the 5 built-in melodies are always listed, so there is no hint picture;
+# a card with songs lists more and this scenario fails on count=5).
+# Counted from "mark begin" (tools/selftest_report.py).
 # Needs: outside the quiet hours (phase day), battery above the low level.
 # expect min:PET_SOUND_START 3
 # expect min:kind=brush 1
 # expect min:kind=parrot 1
 # expect min:kind=songs 1
 # expect min:PET_SONGS_OPEN 1
-# expect min:count=0 1
+# expect min:count=5 1
 # Stopped early: no completion, nothing recorded, nothing recorded of a voice.
 # expect none:PET_CARE_ROUTINE 0
 # expect none:PET_PARROT_REC 0
@@ -66,7 +67,7 @@ tap press 6000
 # Turning the dial leaves the parrot.
 tap down 3000
 wait 6000
-# Songs by voice: no song books on the card, the hint picture.
+# Songs by voice: no song books on the card, the built-in list.
 vcmd PLAY_SONG
 wait 6000
 hold press 1500 8000

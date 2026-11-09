@@ -9,7 +9,7 @@
 namespace kid_app {
 namespace {
 constexpr char kTag[] = "kid_song_audio";
-constexpr uint32_t kStackBytes = 6144;
+constexpr uint32_t kStackBytes = 8192;  // the synthesiser does a little floating point
 constexpr size_t kFrameSamples = 480;  // 20 ms at 24 kHz
 }  // namespace
 
@@ -41,6 +41,15 @@ bool FreertosSongWorker::Open(const char* id) {
     Request request{};
     request.cmd = Cmd::Open;
     std::strncpy(request.id, id, sizeof(request.id) - 1);
+    event_.store(0);
+    return Send(request);
+}
+
+bool FreertosSongWorker::OpenBuiltin(uint8_t index) {
+    if (index >= BuiltinMelodyCount()) return false;
+    Request request{};
+    request.cmd = Cmd::Open;
+    request.builtin = static_cast<uint8_t>(index + 1);
     event_.store(0);
     return Send(request);
 }
@@ -98,11 +107,18 @@ void FreertosSongWorker::Run() {
         if (request.cmd == Cmd::Close) {
             if (open_) file_.Close();
             open_ = false;
+            builtin_ = 0;
             continue;
         }
         if (request.cmd == Cmd::Open) {
             if (open_) file_.Close();
             open_ = false;
+            builtin_ = 0;
+            if (request.builtin) {  // synthesised: one page, nothing to read
+                builtin_ = request.builtin;
+                Post(Event::Opened, 1);
+                continue;
+            }
             if (file_.OpenBook(book_dir_, request.id) && reader_.Open(file_)) {
                 open_ = true;
                 Post(Event::Opened, reader_.PageCount());
@@ -115,9 +131,18 @@ void FreertosSongWorker::Run() {
         }
         // Cmd::Play
         StoryPageInfo info{};
-        if (!open_ || !request.page || !reader_.Page(request.page, &info) ||
-            info.sample_rate != 24000 || info.channels != 1 || info.bits != 16 ||
-            info.pcm_bytes == 0) {
+        bool playable;
+        if (builtin_) {
+            const BuiltinMelody& tune = BuiltinMelodyAt(builtin_ - 1);
+            // Full level: the board's song volume (fade, quiet hours) scales it.
+            playable = request.page == 1 && synth_.Start(tune.melody, tune.timbre, 100);
+            info.pcm_bytes = static_cast<uint32_t>(MelodySynth::TotalSamples(tune.melody) * sizeof(int16_t));
+        } else {
+            playable = open_ && request.page && reader_.Page(request.page, &info) &&
+                       info.sample_rate == 24000 && info.channels == 1 && info.bits == 16 &&
+                       info.pcm_bytes != 0;
+        }
+        if (!playable || info.pcm_bytes == 0) {
             ESP_LOGW(kTag, "SONG_PAGE_UNPLAYABLE page=%u", static_cast<unsigned>(request.page));
             Post(Event::PageDone, request.page);  // skip it: never stuck on a bad page
             continue;
@@ -141,6 +166,7 @@ void FreertosSongWorker::Run() {
         uint32_t offset = 0;
         unsigned failed = 0;
         bool aborted = false;
+        bool rendered = false;  // synthesised chunk waiting for a free queue slot
         while (offset < total) {
             if (xQueueReceive(queue_, &queued, 0) == pdPASS) {
                 preloaded = true;
@@ -148,7 +174,15 @@ void FreertosSongWorker::Run() {
                 break;
             }
             const size_t bytes = std::min<size_t>(samples.size() * sizeof(int16_t), total - offset);
-            if (!reader_.ReadPcm(request.page, offset, samples.data(), bytes)) {
+            bool got;
+            if (builtin_) {  // sequential; a retry after a full queue reuses the chunk
+                got = rendered || synth_.Render(samples.data(), bytes / sizeof(int16_t)) ==
+                                      bytes / sizeof(int16_t);
+                rendered = got;
+            } else {
+                got = reader_.ReadPcm(request.page, offset, samples.data(), bytes);
+            }
+            if (!got) {
                 hooks_.cancel(context_);
                 ESP_LOGW(kTag, "SONG_READ_FAILED page=%u", static_cast<unsigned>(request.page));
                 aborted = true;
@@ -166,6 +200,7 @@ void FreertosSongWorker::Run() {
                 continue;
             }
             failed = 0;
+            rendered = false;
             offset += static_cast<uint32_t>(bytes);
         }
         if (!aborted) Post(Event::PageDone, request.page);
