@@ -1456,6 +1456,7 @@ BOARD_WORKER = r'''
             UpdateBattery(state);
             UpdateEnvTips(state);  // V4-03
             UpdateVoiceCommand(state);  // V6-02
+            UpdateWakeGuard(state);  // V9: after the command, see UpdateWakeGuard
             if (!pet_mode_.load() && sleep_flow_.Cancel()) {
                 sleep_active_.store(false);
                 ESP_LOGI(TAG, "PET_SLEEP_CANCELLED reason=pet_off");
@@ -2317,11 +2318,13 @@ BOARD_WORKER = r'''
                 return false;
             case kid_app::PowerEvent::EnterIdle:
                 ESP_LOGI(TAG, "PET_POWER state=idle");
+                LogWakeGuard("enter_idle", Application::GetInstance().GetDeviceState());
                 return false;
             case kid_app::PowerEvent::EnterNap:
                 napping_.store(true);
                 PublishPowerScene(true);
                 ESP_LOGI(TAG, "PET_POWER state=nap phase=%s", PhaseName(day_phase_.load()));
+                LogWakeGuard("enter_nap", Application::GetInstance().GetDeviceState());
                 return false;
             case kid_app::PowerEvent::LeaveNap:
                 napping_.store(false);
@@ -2400,6 +2403,150 @@ BOARD_WORKER = r'''
         conditions.phase_known = phase >= 0;
         if (conditions.phase_known) conditions.phase = static_cast<kid_app::DayPhase>(phase);
         HandlePowerEvent(power_.Tick(now, conditions));
+    }
+
+    // ---- V9 wake guard (voice baseline C3 / C6 / U1) ----
+    // Pet Idle and Nap only change the picture: neither touches the audio
+    // input or the AFE, and the board PowerSaveTimer is built with no sleep
+    // step (see patch_power_save_timer), so the wake word stays armed while
+    // the pet rests. This guard proves it on the serial line and re-arms the
+    // detector if anything switched it off while the board is idle. It never
+    // lowers the CPU clock or enables light sleep (either stops the AFE).
+    // The decisions (settled idle, rate limit, cue conditions) live in
+    // kid_app/wake_guard.h and are unit-tested on the host.
+    // pet_input task only.
+    static constexpr uint32_t kWakeGuardLogMs = 30000;
+    DeviceState wake_guard_prev_ = kDeviceStateIdle;
+    uint32_t wake_guard_log_ms_ = 0;
+    kid_app::WakeRepairGate wake_gate_;
+    kid_app::ChatEndCue chat_cue_;
+    std::atomic<uint8_t> chat_cue_volume_{0};
+    static constexpr uint64_t kChatEndCueSession = uint64_t{0x43554500u} << 32;
+
+    // sleep=1: Pet power state is Idle or Nap (the rest states).
+    void LogWakeGuard(const char* why, DeviceState state) {
+        auto& audio = Application::GetInstance().GetAudioService();
+        auto* codec = GetAudioCodec();
+        ESP_LOGI(TAG, "PET_WAKE_GUARD sleep=%d wakeword=%d input=%d power=%s state=%d why=%s",
+                 (power_.State() == kid_app::PowerState::Idle ||
+                  power_.State() == kid_app::PowerState::Nap) ? 1 : 0,
+                 audio.IsWakeWordRunning() ? 1 : 0,
+                 (codec && codec->input_enabled()) ? 1 : 0,
+                 kid_app::PowerStateName(power_.State()), static_cast<int>(state), why);
+    }
+
+    // C6: the server closes a chat after its no-voice timeout without saying
+    // anything, so the child sees TuanTuan simply go quiet. A short two-note
+    // bell (synthesised, no TTS, no asset) marks the end. It goes through the
+    // same local PCM queue as prompts and songs at PromptVolumePct(), so the
+    // parent volume and quiet ceilings apply (volume 0 never plays).
+    kid_app::CueConditions ChatEndCueConditions(DeviceState state) {
+        kid_app::CueConditions c;
+        const int phase = day_phase_.load();
+        c.idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
+                 state == kDeviceStateIdle && pet_mode_.load();
+        c.phase_known = phase >= 0;
+        c.night = phase == static_cast<int>(kid_app::DayPhase::Night);
+        c.sleeping = sleep_flow_.Active() || sleep_active_.load();
+        c.quiet_hours = quiet_hours_.load();
+        c.power_off = power_.State() == kid_app::PowerState::Off;
+        c.command_pending = voice_cmd_.load() != 0 ||
+                            voice_deferred_.Pending() != kid_app::VoiceCommand::Unknown;
+        c.volume_zero = PromptVolumePct() == 0;
+        // An error alert plays its own sound first; a song or prompt may run.
+        c.audio_busy = !Application::GetInstance().GetAudioService().IsIdle();
+        return c;
+    }
+
+    static bool ChatEndCuePush(const int16_t* pcm, size_t count, void*) {
+        return Application::GetInstance().GetAudioService().TryQueueLocalStoryPcm(
+            kChatEndCueSession, pcm, count);
+    }
+
+    void ChatEndCueTask() {
+        static constexpr kid_app::Note kNotes[] = {{79, 2}, {72, 4}};  // G5, C5
+        kid_app::MelodyStreamer streamer;
+        if (!streamer.Start({kNotes, 2, 120}, kid_app::Timbre::Bell, chat_cue_volume_.load())) {
+            ESP_LOGW(TAG, "PET_CHAT_END_CUE_FAILED reason=start");
+            return;
+        }
+        auto& audio = Application::GetInstance().GetAudioService();
+        bool begun = false;
+        for (int i = 0; i < 20 && !begun; ++i) {
+            if (!PromptAllowed()) return;  // sleep or not idle: stay silent
+            begun = audio.BeginLocalStoryPcm(kChatEndCueSession);
+            if (!begun) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!begun) {
+            ESP_LOGW(TAG, "PET_CHAT_END_CUE_FAILED reason=busy");
+            return;
+        }
+        for (;;) {
+            if (!PromptAllowed()) return;  // a newer state wins
+            const auto result = streamer.Step(&ChatEndCuePush, nullptr);
+            if (result == kid_app::MelodyStreamer::Result::Done) break;
+            if (result == kid_app::MelodyStreamer::Result::Stuck) {
+                ESP_LOGW(TAG, "PET_CHAT_END_CUE_FAILED reason=queue");
+                return;
+            }
+            if (streamer.Waiting()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        ESP_LOGI(TAG, "PET_CHAT_END_CUE_PLAYED volume=%u",
+                 static_cast<unsigned>(chat_cue_volume_.load()));
+    }
+
+    void StartChatEndCue() {
+        chat_cue_volume_.store(PromptVolumePct());
+        if (xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->ChatEndCueTask();
+                vTaskDelete(nullptr);
+            }, "pet_cue", 4096, this, 2, nullptr) != pdPASS)
+            ESP_LOGW(TAG, "PET_CHAT_END_CUE_FAILED reason=task");
+    }
+
+    // pet_input, every loop AFTER UpdateVoiceCommand (so a command decided
+    // this loop is already visible to the cue checks).
+    void UpdateWakeGuard(DeviceState state) {
+        const DeviceState prev = wake_guard_prev_;
+        wake_guard_prev_ = state;
+        if (!pet_mode_.load()) {
+            chat_cue_.OnState(false, false, 0);  // cancel
+            wake_gate_.Observe(false, false, true, 0);
+            return;
+        }
+        const uint32_t now = NowMs();
+        auto& app = Application::GetInstance();
+        auto& audio = app.GetAudioService();
+        const bool was_chatting = prev == kDeviceStateListening || prev == kDeviceStateSpeaking;
+        chat_cue_.OnState(was_chatting, state == kDeviceStateIdle, now);
+        if (was_chatting && state == kDeviceStateIdle) LogWakeGuard("chat_end", state);
+        if (chat_cue_.Poll(ChatEndCueConditions(state), now)) {
+            ESP_LOGI(TAG, "PET_CHAT_END_CUE sound=bell");
+            StartChatEndCue();
+        }
+        // Re-arm the wake word only for a settled "idle but not running",
+        // read live (the state of this loop pass can be a few passes old and
+        // a wake word clears RUNNING just before the main task leaves idle),
+        // then re-check on the main task right before acting.
+        if (wake_gate_.Observe(app.GetDeviceState() == kDeviceStateIdle,
+                               audio.IsWakeWordRunning(),
+                               sleep_flow_.Active() || sleep_active_.load(), now)) {
+            const int attempt = wake_gate_.Tries();
+            app.Schedule([attempt]() {
+                auto& main_app = Application::GetInstance();
+                auto& main_audio = main_app.GetAudioService();
+                if (main_app.GetDeviceState() != kDeviceStateIdle ||
+                    main_audio.IsWakeWordRunning())
+                    return;  // woke up (or came back) in the meantime
+                main_audio.EnableWakeWordDetection(true);
+                ESP_LOGW(TAG, "PET_WAKE_GUARD repair=1 try=%d wakeword=%d", attempt,
+                         main_audio.IsWakeWordRunning() ? 1 : 0);
+            });
+        }
+        if (state == kDeviceStateIdle && now - wake_guard_log_ms_ >= kWakeGuardLogMs) {
+            wake_guard_log_ms_ = now;
+            LogWakeGuard("periodic", state);
+        }
     }
 
     // Plain power-on (no trial script, no alarm): open Pet mode as soon as
@@ -5637,6 +5784,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/memory_phrases.h"\n'
         '#include "kid_app/status_bar.h"\n'
         '#include <wifi_manager.h>\n'
+        '#include "assets/lang_config.h"\n'
         '#include "esp_attr.h"\n'
         '#include "esp_system.h"\n'
         '// Alarm-wake note: kept across chip resets (e.g. the USB-JTAG reset\n'
@@ -5653,6 +5801,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/gesture_detector.h"\n'
         '#include "kid_app/rhythm_scheduler.h"\n'
         '#include "kid_app/power_manager.h"\n'
+        '#include "kid_app/wake_guard.h"\n'
         '#include "kid_app/battery_policy.h"\n'
         '#include "kid_app/env_tips.h"\n'
         '#include "kid_app/parent_menu.h"\n'
@@ -5800,7 +5949,16 @@ def patch_board(text: str) -> str:
 
 def patch_power_save_timer(text: str) -> str:
     """V3-03: in Pet mode PowerManager owns power-off (sleeping picture and
-    the RTC alarm for the next wake); XiaoZhi's 300 s timer only restarts."""
+    the RTC alarm for the next wake); XiaoZhi's 300 s timer only restarts.
+
+    V9 (voice baseline U1): the sleep step is switched off too
+    (seconds_to_sleep -1). Upstream's sleep step stops wake word detection and
+    the audio input and enables light sleep whenever cpu_max_freq is not -1;
+    this board passes -1 today so the step is inert, and this keeps it that
+    way. The 300 s shutdown (taken over above) is unchanged."""
+    text = once(text, "new PowerSaveTimer(-1, 100, 300);",
+                "new PowerSaveTimer(-1, -1, 300);  // no sleep step: AFE stays on",
+                "board PowerSaveTimer no sleep step")
     return once(text, "        power_save_timer_->OnShutdownRequest([this]() {\n",
         "        power_save_timer_->OnShutdownRequest([this]() {\n"
         "            if (pet_mode_.load()) {\n"
