@@ -20,6 +20,13 @@ enable_wakeup_words_response_cache: false
 end_prompt:
   enable: false              # the no-voice timeout ends the chat silently (no model goodbye)
 system_error_response: 现在还不能语音聊天，我们可以先用按键和小宠物玩。
+# Texts the board sends right after a wake word (CONFIG_CUSTOM_WAKE_WORD_DISPLAY / WakeNet word).
+# Listed ones are swallowed silently (enable_greeting false); anything else would go to the LLM as
+# a normal utterance. Keep in step with WAKE_WORD_DISPLAY in scripts/p1_integrate.py. Lists replace
+# upstream's, so 你好小智 stays for the one-step switch back.
+wakeup_words:
+  - "你好团团"
+  - "你好小智"
 selected_module:
   VAD: SileroVAD
   ASR: SherpaParaformerASR   # local, small enough for 3 GB; child audio stays on the box
