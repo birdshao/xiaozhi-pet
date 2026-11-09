@@ -807,27 +807,37 @@ void TestMenu() {
     assert(PlayGameOf(GameChoice::Ball) == PlayGame::None && !GameChoiceIsPlay(GameChoice::Feed));
     // The care pictures (CareArt 201..223) and the play pictures never overlap.
     for (uint16_t id = 201; id <= 223; ++id) assert(!PlayArtValid(id));
-    // Walk the play menu to the last card: every card is a valid picture, the
-    // last press returns the last game's id.
+    // V9: walk every category page of the play menu: every card is a valid
+    // picture and every game is reachable, in table order.
     GameMenu menu;
-    auto out = menu.Start(1000);
-    assert(out.redraw && menu.View().option_count == 3);
     uint32_t now = 1000;
-    const uint8_t cards = static_cast<uint8_t>(ActivityCount(ActivityGroup::Play));
-    for (uint8_t i = 1; i < cards; ++i) {
-        out = menu.Input(GameInput::Down, now += 100);
-        assert(out.redraw);
-        const GameView v = menu.View();
-        assert(v.highlight < 3);
-        for (uint16_t art : v.options)
-            assert(GameArtIsQuestion(art) || PlayArtValid(art) || MicArtValid(art) ||
-                   CareArtValid(art) || SoundArtValid(art));  // V8: sticker album card, sound rows
+    size_t reached = 0;
+    for (uint8_t top = 0; top < 4; ++top) {  // no pick set: brain, move, sound, album
+        auto out = menu.Start(now += 100, top);
+        assert(out.redraw && menu.View().option_count == 3);
+        out = menu.Input(GameInput::Press, now += 100);
+        if (out.chosen != GameChoice::None) {  // the album is a leaf
+            ++reached;
+            continue;
+        }
+        const ActivityCategory cat = menu.Category();
+        const size_t n = ActivityCountIn(cat);
+        for (size_t i = 0; i < n; ++i) {
+            if (i) assert(menu.Input(GameInput::Down, now += 100).redraw);
+            const GameView v = menu.View();
+            assert(v.highlight < 3);
+            for (uint16_t art : v.options)
+                assert(art == 0 || GameArtIsQuestion(art) || PlayArtValid(art) || MicArtValid(art) ||
+                       CareArtValid(art) || SoundArtValid(art));
+            assert(v.options[v.highlight] == ActivityInCategory(cat, i)->art);
+        }
+        out = menu.Input(GameInput::Press, now += 100);
+        assert(out.chosen == ActivityInCategory(cat, n - 1)->id);
+        reached += n;
     }
-    out = menu.Input(GameInput::Press, now += 100);
-    // The last card is the last row of the table (rows other sessions append follow the games).
-    assert(out.chosen == ActivityAt(ActivityGroup::Play, cards - 1)->id);
+    assert(reached == ActivityCount(ActivityGroup::Play));
     // A game picked from the list can be reopened on its own card.
-    menu.Start(1000, ActivityIndexOf(GameChoice::Maze));
+    menu.StartOn(1000, GameChoice::Maze);
     assert(menu.Input(GameInput::Press, 1100).chosen == GameChoice::Maze);
 }
 

@@ -8,7 +8,9 @@
 #include "kid_app/scene_model.h"
 #include "kid_app/selftest_clock.h"
 
+#include <array>
 #include <cassert>
+#include <set>
 #include <string>
 #include <cstdio>
 #include <iostream>
@@ -258,74 +260,233 @@ void TestGrowthOnlyForFinishedWins() {
     assert(!GameCompletedMemoryEvent(s.Result(), 3, 50, &e));
 }
 
-void TestMenu() {
+// V9 1A: the play menu has two levels. Level one is the categories (today's
+// pick, thinking cards, moving, sound, the sticker album); level two is the
+// games of one category. Long press: back one level, then home.
+const uint16_t kStar = static_cast<uint16_t>(GameArt::Star);
+const uint16_t kBallArt = static_cast<uint16_t>(GameArt::BallBig);
+const uint16_t kCatArt = static_cast<uint16_t>(GameArt::Cat);
+const uint16_t kCandleArt = static_cast<uint16_t>(MicArt::CandleLit);
+const uint16_t kHandArt = static_cast<uint16_t>(MicArt::Hand);
+const uint16_t kStickerArt = static_cast<uint16_t>(CareArt::Sticker);
+constexpr uint16_t M(MenuArt a) { return static_cast<uint16_t>(a); }
+
+const std::array<GameChoice, 3> kPick = {GameChoice::Shapes, GameChoice::Ball, GameChoice::Parrot};
+
+void TestMenuTopLevel() {
     GameMenu m;
     assert(!m.Active() && m.View() == GameView{});
+    // Without a pick the top level has no "today" card: four cards.
     auto out = m.Start(1000);
     assert(out.redraw && out.clip == kGameTonePrompt && m.Active());
+    assert(m.Level() == MenuLevel::Top && m.Group() == ActivityGroup::Play);
     GameView v = m.View();
-    assert(v.option_count == 3 && v.highlight == 0 && v.motion == 0 && v.rounds == 0 &&
-           v.options[0] == static_cast<uint16_t>(GameArt::Star) &&
-           v.options[1] == static_cast<uint16_t>(GameArt::BallBig) &&
-           v.options[2] == static_cast<uint16_t>(GameArt::Cat));
+    assert(v.option_count == 3 && v.highlight == 0 && v.motion == 0 && v.rounds == 0);
+    assert(v.options[0] == M(MenuArt::Brain) && v.options[1] == M(MenuArt::Move) &&
+           v.options[2] == M(MenuArt::Sound));
     out = m.Input(GameInput::Up, 1100);  // clamped
     assert(!out.redraw && !out.clip);
     out = m.Input(GameInput::Down, 1200);
-    assert(out.redraw && out.clip == GameArtTone(static_cast<uint16_t>(GameArt::BallBig)) &&
-           m.View().highlight == 1);
-    // Six cards (five games and the V8 sticker album), three at a time: the
-    // window slides with the highlight.
-    const uint16_t kStar = static_cast<uint16_t>(GameArt::Star),
-                   kBall = static_cast<uint16_t>(GameArt::BallBig),
-                   kCat = static_cast<uint16_t>(GameArt::Cat),
-                   kCandle = static_cast<uint16_t>(MicArt::CandleLit),
-                   kHand = static_cast<uint16_t>(MicArt::Hand);
-    out = m.Input(GameInput::Down, 1300);  // peekaboo: the window moves, highlight in the middle
+    assert(out.redraw && out.clip != 0 && m.View().highlight == 1);
+    m.Input(GameInput::Down, 1210);
+    out = m.Input(GameInput::Down, 1220);  // the sticker album, the window slides
     v = m.View();
-    assert(out.redraw && v.highlight == 1 && v.options[0] == kBall && v.options[1] == kCat &&
-           v.options[2] == kCandle);
-    out = m.Input(GameInput::Down, 1350);  // candles
+    assert(out.redraw && v.highlight == 2 && v.options[0] == M(MenuArt::Move) &&
+           v.options[1] == M(MenuArt::Sound) && v.options[2] == kStickerArt);
+    out = m.Input(GameInput::Down, 1230);  // clamped at the end
+    assert(!out.redraw);
+    // The album is a leaf: press picks it straight away.
+    out = m.Input(GameInput::Press, 1300);
+    assert(out.chosen == GameChoice::Stickers && !m.Active() && !out.finished);
+
+    // With a pick, "today" is the first card.
+    m.SetRecommendation(kPick);
+    m.Start(2000);
     v = m.View();
-    assert(out.redraw && out.clip != 0 && v.highlight == 1 && v.options[0] == kCat &&
-           v.options[1] == kCandle && v.options[2] == kHand);
-    out = m.Input(GameInput::Down, 1360);  // clap: the window slides on, highlight in the middle
-    v = m.View();
-    assert(out.redraw && v.highlight == 1 && v.options[0] == kCandle && v.options[1] == kHand);
-    // Walk to the last card (the V8 games follow): last window, highlight on the last card.
-    const uint8_t cards = static_cast<uint8_t>(ActivityCount(ActivityGroup::Play));
-    for (uint8_t i = 5; i < cards; ++i) out = m.Input(GameInput::Down, 1400 + i);
-    v = m.View();
-    assert(out.redraw && v.highlight == 2);
-    out = m.Input(GameInput::Down, 1500);  // clamped
-    assert(!out.redraw && m.View().highlight == 2);
-    out = m.Input(GameInput::Press, 1600);
-    assert(out.chosen == ActivityAt(ActivityGroup::Play, cards - 1)->id && !m.Active() &&
-           !out.finished);
-    // Picks map to the five games; Start can preselect (after a refusal).
-    const GameChoice want[] = {GameChoice::Quiz, GameChoice::Ball, GameChoice::Peekaboo,
-                               GameChoice::Candle, GameChoice::Clap};
-    for (uint8_t i = 0; i < kGameChoiceCount; ++i) {
-        m.Start(0, i);
-        const GameView sv = m.View();
-        assert(sv.highlight < 3 && sv.options[sv.highlight] != 0);
-        assert(m.Input(GameInput::Press, 10).chosen == want[i]);
-    }
-    m.Start(0);
-    assert(m.View().options[0] == kStar && m.View().highlight == 0);
-    // Long press and idle go home.
+    assert(v.options[0] == M(MenuArt::Today) && v.options[1] == M(MenuArt::Brain) &&
+           v.options[2] == M(MenuArt::Move) && v.highlight == 0);
+    // Start can open on another top card (index in the top list).
+    m.Start(2000, 1);
+    assert(m.View().options[m.View().highlight] == M(MenuArt::Brain));
+    // Long press at the top, and idle, go home.
     m.Start(0);
     out = m.Input(GameInput::Long, 50);
     assert(out.finished && m.End() == GameEnd::Home && !m.Active());
     m.Start(0);
-    assert(!m.Tick(59999).finished);
-    out = m.Tick(60000);
+    m.Input(GameInput::Press, 10);  // into "today"
+    assert(m.Level() == MenuLevel::Games);
+    assert(!m.Tick(10 + 59999).finished);
+    out = m.Tick(10 + 60000);  // idle also ends from level two
     assert(out.finished && m.End() == GameEnd::Idle);
-    // Interrupted by the board.
     m.Start(0);
     m.Interrupt();
     assert(!m.Active() && m.End() == GameEnd::Interrupted);
-    // Dead menu ignores everything.
     assert(m.Input(GameInput::Press, 1).chosen == GameChoice::None && !m.Tick(999999).finished);
+}
+
+void TestMenuGamesLevel() {
+    GameMenu m;
+    m.SetRecommendation(kPick);
+    m.Start(1000);
+    // Today's pick: three games, in the order given.
+    auto out = m.Input(GameInput::Press, 1100);
+    assert(out.redraw && out.level_changed && out.clip != 0 && m.Active());
+    assert(m.Level() == MenuLevel::Games && m.Category() == ActivityCategory::Today);
+    GameView v = m.View();
+    assert(v.option_count == 3 && v.highlight == 0);
+    assert(v.options[0] == FindActivity(GameChoice::Shapes)->art &&
+           v.options[1] == FindActivity(GameChoice::Ball)->art &&
+           v.options[2] == FindActivity(GameChoice::Parrot)->art);
+    // Long press: back to the top, the highlight stays on "today"; again: home.
+    out = m.Input(GameInput::Long, 1200);
+    assert(out.redraw && out.level_changed && !out.finished && m.Active());
+    assert(m.Level() == MenuLevel::Top && m.View().highlight == 0 &&
+           m.View().options[0] == M(MenuArt::Today));
+    out = m.Input(GameInput::Long, 1300);
+    assert(out.finished && m.End() == GameEnd::Home);
+    // Pick the second pick.
+    m.Start(2000);
+    m.Input(GameInput::Press, 2100);
+    m.Input(GameInput::Down, 2200);
+    assert(m.Input(GameInput::Press, 2300).chosen == GameChoice::Ball && !m.Active());
+
+    // The thinking cards: the quiz first, table order, a sliding window.
+    m.Start(3000, 1);
+    out = m.Input(GameInput::Press, 3100);
+    assert(m.Category() == ActivityCategory::Brain);
+    v = m.View();
+    assert(v.options[0] == kStar && v.highlight == 0);
+    const size_t brain = ActivityCountIn(ActivityCategory::Brain);
+    assert(brain >= 10);
+    for (size_t i = 1; i < brain; ++i) {
+        out = m.Input(GameInput::Down, 3200 + i);
+        assert(out.redraw && !out.level_changed);
+        v = m.View();
+        assert(v.highlight < 3 &&
+               v.options[v.highlight] == ActivityInCategory(ActivityCategory::Brain, i)->art);
+    }
+    out = m.Input(GameInput::Down, 3999);  // clamped at the last card
+    assert(!out.redraw && m.View().highlight == 2);
+    assert(m.Input(GameInput::Press, 4000).chosen ==
+           ActivityInCategory(ActivityCategory::Brain, brain - 1)->id);
+
+    // Moving games: the ball first, then peekaboo.
+    m.Start(5000, 2);
+    m.Input(GameInput::Press, 5100);
+    assert(m.Category() == ActivityCategory::Move);
+    v = m.View();
+    assert(v.options[0] == kBallArt && v.options[1] == kCatArt);
+    m.Input(GameInput::Down, 5200);
+    assert(m.Input(GameInput::Press, 5300).chosen == GameChoice::Peekaboo);
+    // Sound: candles, clap, then the parrot and the songs.
+    m.Start(6000, 3);
+    m.Input(GameInput::Press, 6100);
+    assert(m.Category() == ActivityCategory::Sound);
+    v = m.View();
+    assert(v.options[0] == kCandleArt && v.options[1] == kHandArt);
+    // Entering a level resets the highlight to the first card.
+    m.Input(GameInput::Down, 6150);
+    m.Input(GameInput::Long, 6200);
+    m.Input(GameInput::Press, 6300);
+    assert(m.View().highlight == 0);
+}
+
+void TestMenuStartOn() {
+    // After a refusal the menu opens on the game's own page, on its card.
+    GameMenu m;
+    m.SetRecommendation(kPick);
+    auto out = m.StartOn(1000, GameChoice::Maze);
+    assert(out.redraw && m.Active() && m.Level() == MenuLevel::Games &&
+           m.Category() == ActivityCategory::Move);
+    const GameView v = m.View();
+    assert(v.options[v.highlight] == FindActivity(GameChoice::Maze)->art);
+    assert(m.Input(GameInput::Press, 1100).chosen == GameChoice::Maze);
+    // Long press from there: the top, highlight on the category it came from.
+    m.StartOn(2000, GameChoice::Maze);
+    m.Input(GameInput::Long, 2100);
+    assert(m.Level() == MenuLevel::Top && m.View().options[m.View().highlight] == M(MenuArt::Move));
+    // The album has no page: it opens the top level on its card.
+    m.StartOn(3000, GameChoice::Stickers);
+    assert(m.Level() == MenuLevel::Top && m.View().options[m.View().highlight] == kStickerArt);
+    // Every Play row can be reopened on its own card.
+    for (size_t i = 0; i < ActivityCount(ActivityGroup::Play); ++i) {
+        const Activity* a = ActivityAt(ActivityGroup::Play, i);
+        m.StartOn(0, a->id);
+        const GameView sv = m.View();
+        assert(sv.options[sv.highlight] == a->art);
+        assert(m.Input(GameInput::Press, 1).chosen == a->id);
+    }
+    // Not a Play row: nothing opens.
+    out = m.StartOn(0, GameChoice::Feed);
+    assert(out.finished && !m.Active() && m.End() == GameEnd::Home);
+    out = m.StartOn(0, GameChoice::None);
+    assert(out.finished && !m.Active());
+}
+
+void TestMenuCareStaysFlat() {
+    // The care menu is still one flat list of cards.
+    GameMenu m;
+    auto out = m.Start(0, 0, ActivityGroup::Care);
+    assert(out.redraw && m.Level() == MenuLevel::Games && m.Group() == ActivityGroup::Care);
+    assert(m.View().options[0] == FindActivity(GameChoice::Feed)->art);
+    for (size_t i = 1; i < ActivityCount(ActivityGroup::Care); ++i)
+        assert(m.Input(GameInput::Down, 10 + i).redraw);
+    assert(m.Input(GameInput::Press, 99).chosen == GameChoice::HandWash);
+    // Long press goes straight home (no level above).
+    m.Start(0, 0, ActivityGroup::Care);
+    out = m.Input(GameInput::Long, 5);
+    assert(out.finished && m.End() == GameEnd::Home && !out.level_changed);
+}
+
+void TestMenu() {
+    TestMenuTopLevel();
+    TestMenuGamesLevel();
+    TestMenuStartOn();
+    TestMenuCareStaysFlat();
+}
+
+// The table's category column: every play row has one, care rows none, ids
+// and order are untouched.
+void TestCategories() {
+    size_t brain = 0, move = 0, sound = 0, album = 0;
+    for (const Activity& a : kActivities) {
+        if (a.group == ActivityGroup::Care) {
+            assert(a.category == ActivityCategory::None);
+            continue;
+        }
+        assert(a.category != ActivityCategory::None && a.category != ActivityCategory::Today);
+        brain += a.category == ActivityCategory::Brain;
+        move += a.category == ActivityCategory::Move;
+        sound += a.category == ActivityCategory::Sound;
+        album += a.category == ActivityCategory::Album;
+    }
+    assert(brain + move + sound + album == ActivityCount(ActivityGroup::Play));
+    assert(ActivityCountIn(ActivityCategory::Brain) == brain && brain == 14);
+    assert(move == 7 && sound == 4 && album == 1);
+    // Motion games live under "move", the album alone under "album".
+    for (const Activity& a : kActivities)
+        if (a.group == ActivityGroup::Play && a.needs == ActivityNeeds::Motion)
+            assert(a.category == ActivityCategory::Move);
+    assert(FindActivity(GameChoice::Stickers)->category == ActivityCategory::Album);
+    assert(FindActivity(GameChoice::Quiz)->category == ActivityCategory::Brain);
+    assert(FindActivity(GameChoice::Parrot)->category == ActivityCategory::Sound);
+    assert(ActivityInCategory(ActivityCategory::Brain, 0)->id == GameChoice::Quiz);
+    assert(!ActivityInCategory(ActivityCategory::Brain, brain));
+    // Ids did not move.
+    assert(static_cast<uint8_t>(GameChoice::Quiz) == 1 &&
+           static_cast<uint8_t>(GameChoice::Songs) == 32);
+    // The category pictures are valid, distinct and clear of every other range.
+    std::set<uint16_t> arts;
+    for (MenuArt a : {MenuArt::Today, MenuArt::Brain, MenuArt::Move, MenuArt::Sound}) {
+        const uint16_t id = static_cast<uint16_t>(a);
+        assert(MenuArtValid(id) && arts.insert(id).second);
+        assert(id >= 200 && id <= 299);
+        assert(!GameArtIsOption(id) && !MicArtValid(id) && !CareArtValid(id) &&
+               !PlayArtValid(id) && !SoundArtValid(id));
+    }
+    assert(!MenuArtValid(0) && !MenuArtValid(205) && !MenuArtValid(200));
+    assert(std::string(ActivityCategoryName(ActivityCategory::Brain)) == "brain" &&
+           std::string(ActivityCategoryName(ActivityCategory::None)) == "none");
 }
 
 // V8 shared activity list: the menu is driven by the table, ids are the
@@ -343,10 +504,10 @@ void TestActivityList() {
     assert(FindActivity(GameChoice::Clap)->needs == ActivityNeeds::Mic);
     assert(std::string(GameChoiceName(GameChoice::Quiz)) == "quiz");
     assert(std::string(GameChoiceName(GameChoice::None)) == "none");
-    // Every Play row is reachable from the menu, in table order.
+    // Every Play row is reachable from the menu (reopened on its own card).
     GameMenu m;
     for (size_t i = 0; i < ActivityCount(ActivityGroup::Play); ++i) {
-        m.Start(0, static_cast<uint8_t>(i));
+        m.StartOn(0, ActivityAt(ActivityGroup::Play, i)->id);
         const GameView v = m.View();
         assert(v.options[v.highlight] == ActivityAt(ActivityGroup::Play, i)->art);
         assert(m.Input(GameInput::Press, 1).chosen == ActivityAt(ActivityGroup::Play, i)->id);
@@ -469,6 +630,44 @@ void TestScenes() {
     assert(gate.Request(b));   // the ball moved: drawn
 }
 
+// The category cards draw: distinct pictures, ink only inside the card rail.
+void TestMenuArtScene() {
+    std::set<std::string> drawn;
+    for (MenuArt art : {MenuArt::Today, MenuArt::Brain, MenuArt::Move, MenuArt::Sound}) {
+        GameView g{};
+        g.option_count = 3;
+        g.highlight = 1;
+        g.question_art = static_cast<uint16_t>(GameArt::Heart);
+        g.options = {M(MenuArt::Brain), static_cast<uint16_t>(art), kStickerArt};
+        MonoFrame f;
+        SceneComposer::Render(GameScene(g), f);
+        std::string bits;
+        int ink = 0;
+        for (int y = SceneComposer::kGameRailTop; y < MonoFrame::kHeight; ++y)
+            for (int x = 0; x < MonoFrame::kWidth; ++x) {
+                const bool b = f.IsBlack(x, y);
+                ink += b;
+                bits.push_back(b ? '1' : '0');
+            }
+        assert(ink > 500);
+        drawn.insert(bits);
+        for (int y = MonoFrame::kHeight - 12; y < MonoFrame::kHeight; ++y)
+            for (int x : {0, 1, 2, 3, MonoFrame::kWidth - 4, MonoFrame::kWidth - 1})
+                assert(!f.IsBlack(x, y));
+    }
+    assert(drawn.size() == 4);  // each category card looks different
+    // Moving the highlight between two top cards touches the rail only.
+    GameView a{}, b{};
+    a.option_count = b.option_count = 3;
+    a.options = b.options = {M(MenuArt::Today), M(MenuArt::Brain), M(MenuArt::Move)};
+    a.question_art = b.question_art = static_cast<uint16_t>(GameArt::Heart);
+    b.highlight = 1;
+    int top = 0, bottom = 0;
+    assert(DiffRows(GameScene(a), GameScene(b), &top, &bottom) > 0);
+    assert(top >= SceneComposer::kGameRailTop);
+    assert(a.RailDiffers(b) && !a.QuestionDiffers(b));
+}
+
 }  // namespace
 
 int main() {
@@ -482,6 +681,8 @@ int main() {
     TestMenu();
     TestActivityList();
     TestEmptyGroup();
+    TestCategories();
+    TestMenuArtScene();
     TestScenes();
     // The holes for the hardware script (tools/selftest/v4_motion_games.pettest).
     MotionGameSession s = Started(MotionKind::Ball, 4242);

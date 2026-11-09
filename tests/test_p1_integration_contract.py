@@ -1518,6 +1518,33 @@ class DisplayOverlayTest(unittest.TestCase):
         self.assertIn('!uxQueueMessagesWaiting(prompt_queue_)', prompt)
         self.assertIn('xQueueSend(prompt_queue_, &next, 0)', prompt)
 
+    def test_v9_play_menu_two_levels_wiring(self):
+        patched = self._board()
+        self.assertIn('#include "kid_app/activity_recommend.h"', patched)
+        # Rail and voice (OPEN_GAME) both open the FIRST level (the pages).
+        self.assertIn('OpenGameMenu(0);', self._body(patched, 'void StartGame()'))
+        self.assertIn('case kid_app::VoiceProposal::OpenGame:\n                OpenGameMenu(0);', patched)
+        # Opening refreshes today's pick from the day, phase, boredom, last game, motion switch.
+        pick = self._body(patched, 'void RefreshGamePick()')
+        for needle in ('local_day_.load()', 'day_phase_.load()', 'kid_app::Need::Bored',
+                       'GameChoiceOfMemoryId(', 'motion_enabled_.load()',
+                       'game_menu_.SetRecommendation(kid_app::RecommendToday(in))'):
+            self.assertIn(needle, pick)
+        # The pick is read only, nothing is written or rewarded.
+        for forbidden in ('PostLocal', 'PostCare', 'nvs_'):
+            self.assertNotIn(forbidden, pick)
+        self.assertIn('RefreshGamePick();', self._body(patched, 'void OpenGameMenu(uint8_t start)'))
+        # A refused game reopens the menu on its own page, on its card.
+        on = self._body(patched, 'void OpenGameMenuOn(kid_app::GameChoice game)')
+        self.assertIn('game_menu_.StartOn(NowMs(), game)', on)
+        self.assertLess(on.index('EndGame("menu_empty")'), on.index('game_active_.store(true)'))
+        choice = self._body(patched, 'void HandleMenuOutput(const kid_app::GameMenuOutput& out)')
+        self.assertIn('OpenGameMenuOn(out.chosen)', choice)
+        self.assertNotIn('OpenGameMenu(kid_app::ActivityIndexOf(out.chosen))', choice)
+        self.assertIn('PET_GAME_MENU_LEVEL', choice)
+        # The care menu is still opened flat, from index 0.
+        self.assertIn('OpenCareMenu(0);', patched)
+
     def test_v4_motion_games_wiring(self):
         patched = self._board()
         self.assertIn('#include "kid_app/motion_game.h"', patched)

@@ -1,6 +1,7 @@
 PETSELFTEST1
-# V8 new mini games from the play menu: memory4 (card 8) and the tilt maze
-# (card 21, needs motion on in the parent menu). Each is entered, shown for
+# V8 new mini games from the play menu: memory4 (Brain page) and the tilt
+# maze (Move page, needs motion on in the parent menu). Each is entered,
+# shown for
 # a moment and left by a long press: this checks the entry wiring, the
 # rules are host-tested. Counted from "mark begin" (tools/selftest_report.py).
 # Games are UI only until a game completes: no completion here.
@@ -27,35 +28,22 @@ mark begin
 # Rail Story(1) -> Game(2), press: play menu.
 tap down 2500
 tap press 6000
-# memory4 is card 8.
+# V9: first level = today, brain, move, sound, album.
+# Brain page (card 1), memory4 is its 4th card.
 tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
+tap press 3000
 tap down 600
 tap down 600
 tap down 600
 tap press 6000
 wait 3000
 hold press 1500 8000
-# Menu again (the rail still sits on Game): maze is card 21.
+# Menu again (the rail still sits on Game): the Move page
+# (card 2), maze is its 7th card.
 tap press 6000
 tap down 600
 tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
-tap down 600
+tap press 3000
 tap down 600
 tap down 600
 tap down 600

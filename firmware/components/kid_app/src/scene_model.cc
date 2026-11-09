@@ -1321,12 +1321,17 @@ void MicArtIcon(MonoFrame& f, MicArt art, int cx, int cy, int r) {
 }
 
 #include "play_art_draw.inc"  // V8: PlayArt pictures and the non-card boards
+#include "menu_draw.inc"      // V9 1A: the play menu category cards
 
 void CareArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8, below
 void SoundArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r);  // V8 sound, below
 void SoundScene(MonoFrame& f, const GameView& g);
 
 void GameArtIcon(MonoFrame& f, uint16_t art, int cx, int cy, int r) {
+    if (MenuArtValid(art)) {  // V9 1A: play menu category cards
+        MenuArtIcon(f, art, cx, cy, r);
+        return;
+    }
     if (SoundArtValid(art)) {  // V8 sound activities
         SoundArtIcon(f, art, cx, cy, r);
         return;

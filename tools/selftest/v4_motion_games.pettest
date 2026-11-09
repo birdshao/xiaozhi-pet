@@ -57,9 +57,11 @@ tap down 2000
 game 4242
 tap press 6000
 hold press 1500 8000
-# Menu again: the second card is the ball.
+# Menu again: Move page (card 2), its first card is the ball.
 tap press 6000
 tap down 1500
+tap down 1500
+tap press 3000
 tap press 8000
 # Ball round 1: hole at cell 6. Shaking and face down are no part of it.
 gesture hard
@@ -82,9 +84,12 @@ gesture tiltright
 wait 900
 gesture tiltright
 wait 9000
-# Peekaboo: the third card. Flipping back after 0.6 s is too early.
+# Peekaboo: the second card of the Move page.
+# Flipping back after 0.6 s is too early.
 tap press 6000
 tap down 1500
+tap down 1500
+tap press 3000
 tap down 1500
 tap press 8000
 gesture facedown

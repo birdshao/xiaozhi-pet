@@ -3347,7 +3347,26 @@ BOARD_WORKER = r'''
         OpenGameMenu(0);
     }
 
+    // pet_input: today's pick, the play menu's first card (V9 1A,
+    // activity_recommend.h). A pure function of the day, the day phase, the
+    // boredom on the home face, the game played last and the parent's motion
+    // switch; the age band stays "all" until the parent age setting exists.
+    void RefreshGamePick() {
+        kid_app::RecommendInput in{};
+        in.day = local_day_.load();
+        const int phase = day_phase_.load();
+        in.evening = phase == static_cast<int>(kid_app::DayPhase::Evening) ||
+                     phase == static_cast<int>(kid_app::DayPhase::Night);
+        const auto look = kid_app::UnpackLook(home_look_.load());
+        in.bored = look.need == static_cast<uint8_t>(kid_app::Need::Bored) ? look.need_level : 0;
+        in.last_game = kid_app::GameChoiceOfMemoryId(pet_service_.MemoryNow().Today().last_game);
+        in.motion_ok = motion_enabled_.load();
+        game_menu_.SetRecommendation(kid_app::RecommendToday(in));
+    }
+
+    // Opens the play menu's first level (the pages); `start` is the top card.
     void OpenGameMenu(uint8_t start) {
+        RefreshGamePick();
         const auto out = game_menu_.Start(NowMs(), start);
         if (out.finished) {  // an empty activity group: leave the game frame, never stick in it
             ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
@@ -3366,6 +3385,31 @@ BOARD_WORKER = r'''
             PublishGameSceneLocked();
         }
         ESP_LOGI(TAG, "PET_GAME_MENU highlight=%u", static_cast<unsigned>(start));
+        PostGameClip(out.clip);
+    }
+
+    // After a refusal (motion off, no handler): the play menu again, on the
+    // game's own page with the highlight on its card.
+    void OpenGameMenuOn(kid_app::GameChoice game) {
+        RefreshGamePick();
+        const auto out = game_menu_.StartOn(NowMs(), game);
+        if (out.finished) {  // not a play row: leave the game frame, never stick in it
+            ESP_LOGW(TAG, "PET_GAME_MENU_EMPTY");
+            EndGame("menu_empty");
+            return;
+        }
+        {
+            SceneStateLock lock(scene_state_mutex_);
+            game_active_.store(true);
+            game_mode_ = GameMode::Menu;
+            pet_mailbox_.game_only.store(true);
+            {
+                SceneStateLock anim_lock(anim_mutex_);
+                anim_director_.Reset(NowMs());
+            }
+            PublishGameSceneLocked();
+        }
+        ESP_LOGI(TAG, "PET_GAME_MENU reopen=%s", kid_app::GameChoiceName(game));
         PostGameClip(out.clip);
     }
 
@@ -3388,7 +3432,7 @@ BOARD_WORKER = r'''
                        out.chosen == kid_app::GameChoice::Peekaboo) {
                 if (!motion_enabled_.load()) {  // parents switched motion off
                     ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
-                    OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                    OpenGameMenuOn(out.chosen);
                 } else {
                     StartMotion(out.chosen == kid_app::GameChoice::Ball
                                     ? kid_app::MotionKind::Ball
@@ -3399,7 +3443,7 @@ BOARD_WORKER = r'''
                 const kid_app::Activity* row = kid_app::FindActivity(out.chosen);
                 if (row && row->needs == kid_app::ActivityNeeds::Motion && !motion_enabled_.load()) {
                     ESP_LOGI(TAG, "PET_GAME_REFUSED reason=motion_off");
-                    OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                    OpenGameMenuOn(out.chosen);
                 } else {
                     StartPlayGame(game);
                 }
@@ -3420,7 +3464,7 @@ BOARD_WORKER = r'''
                     if (row->group == kid_app::ActivityGroup::Care)
                         OpenCareMenu(kid_app::ActivityIndexOf(out.chosen));
                     else
-                        OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                        OpenGameMenuOn(out.chosen);
                 } else {
                     StartCare(CareKindOf(out.chosen));
                 }
@@ -3428,11 +3472,15 @@ BOARD_WORKER = r'''
                 // A row without a handler in this build: stay in the menu.
                 ESP_LOGW(TAG, "PET_GAME_REFUSED reason=no_handler game=%s",
                          kid_app::GameChoiceName(out.chosen));
-                OpenGameMenu(kid_app::ActivityIndexOf(out.chosen));
+                OpenGameMenuOn(out.chosen);
             }
             return;
         }
         if (!out.redraw) return;
+        if (out.level_changed)  // V9 1A: into a page, or back to the pages
+            ESP_LOGI(TAG, "PET_GAME_MENU_LEVEL level=%s page=%s",
+                     game_menu_.Level() == kid_app::MenuLevel::Top ? "top" : "games",
+                     kid_app::ActivityCategoryName(game_menu_.Category()));
         ESP_LOGI(TAG, "PET_GAME_MENU_SELECT index=%u",
                  static_cast<unsigned>(game_menu_.View().highlight));
         SceneStateLock lock(scene_state_mutex_);
@@ -5199,6 +5247,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/play_game.h"\n'
         '#include "kid_app/play_content.h"\n'
         '#include "kid_app/activity_list.h"\n'
+        '#include "kid_app/activity_recommend.h"\n'
         '#include "kid_app/care_session.h"\n'
         '#include "kid_app/care_calendar.h"\n'
         '#include "kid_app/care_phrases.h"\n'

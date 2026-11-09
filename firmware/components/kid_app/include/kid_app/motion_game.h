@@ -5,6 +5,7 @@
 #include "kid_app/mini_game.h"
 #include "kid_app/motion_stats.h"
 
+#include <array>
 #include <cstdint>
 
 namespace kid_app {
@@ -117,43 +118,76 @@ private:
 
 // ---- Game menu: which game? / which care? ----
 // The home rail's Game item opens this on the Play group of the activity
-// table (activity_list.h): the quiz (star), the tilt ball, peekaboo (cat),
-// the V4-08 candles and the clap rhythm, then whatever later rows append.
-// Three picture cards at a time (a window that slides with the highlight).
-// Dial up/down to pick, press to start, long press home. Drawn by the V4-06
-// answer-card scene. The V8 care menu is the same menu on the Care group.
+// table (activity_list.h). V9 1A: two levels. Level one (Top) is the pages:
+// today's pick (when SetRecommendation gave one), thinking cards, moving,
+// sound and the sticker album (a leaf: its card opens the album). Level two
+// (Games) is the games of one page. Three picture cards at a time (a window
+// that slides with the highlight). Dial up/down to pick, press to open or
+// start, long press back one level, then home. Drawn by the V4-06
+// answer-card scene. The V8 care menu is the same menu on the Care group,
+// still one flat list (it starts at level Games and has no level above).
 // GameChoice now lives in activity_list.h.
 constexpr uint8_t kGameChoiceCount = 5;  // the V4 built-in games (ids 1..5)
 const char* GameChoiceName(GameChoice choice);
+
+enum class MenuLevel : uint8_t { Top, Games };
 
 struct GameMenuOutput {
     bool redraw = false;
     uint16_t clip = 0;
     GameChoice chosen = GameChoice::None;  // set when a card was pressed
     bool finished = false;                 // home or idle: back to the home screen
+    bool level_changed = false;            // moved between the pages and a page's games
 };
 
 class GameMenu {
 public:
     static constexpr uint32_t kIdleExitMs = 60000;
+    static constexpr uint8_t kPickCount = 3;
 
-    // start: the card highlighted first (0-based index in the group). A
-    // group without rows does not open: finished (end Home), not Active().
+    // Today's pick (activity_recommend.h), shown as the first top card and
+    // as its page. Empty (all None, the default) hides that card. Survives
+    // Start; a stale pick is the board's to refresh before opening.
+    void SetRecommendation(const std::array<GameChoice, kPickCount>& pick) { pick_ = pick; }
+
+    // Play group: opens level one, highlight on top card `start` (0-based;
+    // the first card is today's pick when there is one). Care group: opens
+    // the flat list on card `start` (index in the group). A group without
+    // rows does not open: finished (end Home), not Active().
     GameMenuOutput Start(uint32_t now_ms, uint8_t start = 0,
                          ActivityGroup group = ActivityGroup::Play);
+    // Play group: reopen on `game`'s own page with the highlight on its card
+    // (after a refusal). The album has no page: level one on its card. Not a
+    // Play row: does not open (finished).
+    GameMenuOutput StartOn(uint32_t now_ms, GameChoice game);
     GameMenuOutput Input(GameInput input, uint32_t now_ms);
     GameMenuOutput Tick(uint32_t now_ms);
     void Interrupt();
 
     bool Active() const { return active_; }
     ActivityGroup Group() const { return group_; }
+    MenuLevel Level() const { return level_; }
+    // The page shown at level Games (None for the Care group and level Top).
+    ActivityCategory Category() const {
+        return level_ == MenuLevel::Games ? page_ : ActivityCategory::None;
+    }
     GameEnd End() const { return end_; }
     GameView View() const;
 
 private:
     uint8_t Count() const;
-    uint8_t index_ = 0;  // 0-based card in group_
+    uint16_t ArtAt(uint8_t i) const;
+    GameChoice ChoiceAt(uint8_t i) const;  // level Games: the game; Top: None (a page)
+    ActivityCategory TopCategoryAt(uint8_t i) const;
+    uint8_t TopIndexOf(ActivityCategory page) const;
+    void OpenPage(ActivityCategory page, uint8_t index);
+    bool HasPick() const;
+
+    std::array<GameChoice, kPickCount> pick_{};
+    uint8_t index_ = 0;  // 0-based card in the current list
     ActivityGroup group_ = ActivityGroup::Play;
+    MenuLevel level_ = MenuLevel::Top;
+    ActivityCategory page_ = ActivityCategory::None;  // level Games, Play group
     bool active_ = false;
     GameEnd end_ = GameEnd::None;
     uint32_t last_input_ms_ = 0;
