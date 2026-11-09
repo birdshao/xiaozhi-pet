@@ -1,0 +1,49 @@
+PETSELFTEST1
+# V9 bookshelf: Story opens the shelf first, the dial picks, press opens.
+# Card: TWO OR MORE books in /books (forest_friends.kpb plus reader_test.kpb
+#   from: python -m tools.make_reader_test_book --output build/reader-test).
+# No "book" step on purpose: that step keeps the direct open (v4_book_reader).
+# 1 Story press: shelf (full), dial moves the ring (partials), press opens
+#   the picked book; hold = home. 2 Story again: the shelf comes back on the
+#   book read last; hold on the shelf = home. Counted from "mark begin".
+# expect min:PET_SHELF_OPEN 2
+# expect min:PET_SHELF_VIEW 5
+# expect min:PET_SHELF_PICK 1
+# expect min:ok=1 1
+# expect none:ok=0 0
+# expect min:PET_BOOK_OPEN 1
+# expect min:PET_BOOK_HOME 1
+# expect min:PET_SHELF_HOME 1
+# expect none:PET_BOOK_DRAW_FAILED 0
+# expect none:PET_BOOK_MISSING 0
+# expect none:PET_SHELF_NO_MEMORY 0
+# expect none:PET_SELFTEST_ABORT 0
+# expect commits 4
+# expect selftest_done 1
+# expect max_partial_ms 3000
+# expect max_full_ms 12000
+phase day
+volume 15
+waitidle 60000
+pet
+wait 7000
+# Normalize to home: press opens the preselected Story, hold returns home.
+tap press 9000
+hold press 1500 7000
+mark begin
+# Story: the shelf (full refresh), ring on the first book.
+tap press 9000
+# Ring moves: next, next, back (partials; the row may flip on a big card).
+tap down 2500
+tap down 2500
+tap up 2500
+# Press opens the picked book (page 1, full refresh), then hold goes home.
+tap press 14000
+hold press 1500 7000
+# Story again: the shelf, ring on the book read last; hold = home.
+tap press 9000
+tap down 2500
+hold press 1500 7000
+pet
+wait 5000
+end

@@ -7,6 +7,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -29,6 +30,10 @@ class FreertosStoryPcmWorker {
 public:
     bool Start(const char* book_dir, const char* book_id,
                StoryPcmHooks hooks, void* context);
+    // V9 bookshelf: the next requests play from another book of the same
+    // folder. Non-blocking; the worker task reopens it before its next
+    // request (and stops what is playing). Start() may be given no book.
+    bool RequestBook(const char* book_id);
     // Non-blocking last-wins page change. Zero means cancel/stop.
     bool RequestPage(uint16_t page);
     bool Stop() { return RequestPage(0); }
@@ -59,6 +64,11 @@ private:
     QueueHandle_t queue_ = nullptr;
     TaskHandle_t task_ = nullptr;
     uint64_t next_token_ = 0;
+    char book_dir_[64]{};
+    // RequestBook writer (odd sequence while writing) and the task reader.
+    char pending_book_[64]{};
+    std::atomic<uint32_t> pending_seq_{0};
+    std::atomic<bool> book_pending_{false};
 };
 
 }  // namespace kid_app

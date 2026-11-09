@@ -2550,6 +2550,8 @@ void SoundScene(MonoFrame& f, const GameView& g) {
     }
 }
 
+#include "shelf_draw.inc"  // V9: the bookshelf picture
+
 }  // namespace
 
 void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
@@ -2566,6 +2568,8 @@ void SceneComposer::Render(const SceneModel& model, MonoFrame& output) {
         GameScene(output, model.game);
     } else if (model.kind == SceneKind::Care) {
         CareScene(output, model.care);  // V8
+    } else if (model.kind == SceneKind::Shelf) {
+        ShelfPicture(output, model.shelf);  // V9
     } else {
         HomeScene(output, model);
     }

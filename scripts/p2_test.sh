@@ -537,3 +537,8 @@ PYTHONPATH="$ROOT" python3 -m tools.make_branch_test_book --output "$BUILD/branc
 # care, diary and album scenes stay in their ePaper regions.
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/care_session.cc"   "$ROOT/firmware/components/kid_app/src/care_store.cc"   "$ROOT/firmware/components/kid_app/src/care_phrases.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/rtc_clock.cc"   "$ROOT/tests/cpp/test_care_scene.cc"   -o "$BUILD/test_care_scene"
 "$BUILD/test_care_scene"
+
+# V9 bookshelf (1B): book file filter and order, dial, paging, thumbnails,
+# the Shelf picture and its refresh rules.
+"$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$INC"   "$ROOT/firmware/components/kid_app/src/book_shelf.cc"   "$ROOT/firmware/components/kid_app/src/scene_model.cc"   "$ROOT/firmware/components/kid_app/src/refresh_planner.cc"   "$ROOT/firmware/components/kid_app/src/icon_choice.cc"   "$ROOT/firmware/components/kid_app/src/memory_store.cc"   "$ROOT/firmware/components/kid_app/src/pet_controller.cc"   "$ROOT/firmware/components/kid_app/src/sound_view.cc"   "$ROOT/tests/cpp/test_book_shelf.cc"   -o "$BUILD/test_book_shelf"
+"$BUILD/test_book_shelf"

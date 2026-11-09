@@ -339,8 +339,11 @@ BOARD_WORKER = r'''
     static uint32_t PackPetScene(const kid_app::SceneModel& scene) {
         return kid_app::PackScene(scene);
     }
-    static kid_app::SceneModel UnpackPetScene(uint32_t bits) {
-        return kid_app::UnpackScene(bits);
+    kid_app::SceneModel UnpackPetScene(uint32_t bits) const {
+        auto scene = kid_app::UnpackScene(bits);
+        // V9: the shelf's covers are not in the packed word.
+        if (scene.kind == kid_app::SceneKind::Shelf) scene.shelf = shelf_view_;
+        return scene;
     }
 
     // Guards pet_event_mode_ + last_pet_scene_ + home_selection_ + the
@@ -747,19 +750,36 @@ BOARD_WORKER = r'''
             book_outline_.next_book_present =
                 book_outline_.series_next != 0 &&
                 story_sd_.ContentBookPresent(book_outline_.series_next);
+            // V9 bookshelf: the books on the card (not when a self-test names
+            // its book: that keeps the old direct open).
+            if (!selftest_book_fixed_ && story_sd_.Mounted()) ScanShelf();
             book_outline_ready_.store(true);
             // Restored in Story without a readable book (no card, empty or
             // broken pack): go home instead of opening an empty reader. If
             // even that cannot be saved, PetCommitted escapes to home.
             if (kid_app::RestoredStoryNeedsHome(pet_event_mode_.load(),
-                                                story_sd_.Ready() && book_outline_.pages > 0)) {
+                                                (story_sd_.Ready() && book_outline_.pages > 0) ||
+                                                    shelf_.UseShelf())) {
                 ESP_LOGI(TAG, "PET_STORY_RESTORE_HOME reason=no_book");
                 if (!pet_service_.PostLocal(kid_app::PetAction::StopStory))
                     EscapeStoryHome("no_book");
             }
         }
+        // V9: a card whose only book is not the default one (see ScanShelf).
+        if (story_sd_.Ready() && shelf_book_[0] && !story_pcm_.Ready() &&
+            !story_pcm_.Start("/sdcard/books", shelf_book_,
+                              {&StoryAudioBegin, &StoryAudioPush,
+                               &StoryAudioCancel}, this))
+            ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
         if (story_sd_.Ready() && !story_pcm_.Ready() &&
             !story_pcm_.Start("/sdcard/books", story_book_,
+                              {&StoryAudioBegin, &StoryAudioPush,
+                               &StoryAudioCancel}, this))
+            ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
+        // V9: the default book is not on the card but the shelf has books:
+        // the narration worker starts without one and the pick gives it one.
+        if (!story_sd_.Ready() && shelf_.UseShelf() && !story_pcm_.Ready() &&
+            !story_pcm_.Start("/sdcard/books", nullptr,
                               {&StoryAudioBegin, &StoryAudioPush,
                                &StoryAudioCancel}, this))
             ESP_LOGW(TAG, "PET_STORY_AUDIO_UNAVAILABLE");
@@ -937,6 +957,21 @@ BOARD_WORKER = r'''
         if (pet_event_mode_.load() == kid_app::PetMode::Story && book_.Active()) {
             ApplyBookStep(book_.OnInput(event.kind, NowMs()), "input");
             return;
+        }
+        // V9: the bookshelf takes the dial until a book is picked.
+        if (pet_event_mode_.load() == kid_app::PetMode::Story && !book_.Active()) {
+            const auto story_phase = static_cast<StoryPhase>(story_phase_.load());
+            if (story_phase == StoryPhase::Shelf) {
+                HandleShelfInput(event.kind);
+                return;
+            }
+            if (story_phase == StoryPhase::Opening || story_phase == StoryPhase::Leaving) {
+                // The book is opening: only a long press does anything (home).
+                if (story_phase == StoryPhase::Opening &&
+                    event.kind == kid_app::InputKind::DialLong)
+                    ShelfGoHome();
+                return;
+            }
         }
         kid_app::PetInputDecision decision{};
         bool begin_sleep = false;
@@ -1249,7 +1284,10 @@ BOARD_WORKER = r'''
                 if (!pet_service_.PostLocal(kid_app::PetAction::StartStory)) result = "rejected";
                 break;
             case kid_app::VoiceAction::PageNext:
-                if (!book_.Active() || book_.Asking()) {
+                if (!book_.Active() &&
+                    static_cast<StoryPhase>(story_phase_.load()) == StoryPhase::Shelf) {
+                    HandleShelfInput(kid_app::InputKind::DialDown);  // V9: next book
+                } else if (!book_.Active() || book_.Asking()) {
                     result = "busy";  // still opening / answer the question first
                 } else if (book_.Missing() != kid_app::BookMissing::None) {
                     result = "no_book";
@@ -1258,7 +1296,10 @@ BOARD_WORKER = r'''
                 }
                 break;
             case kid_app::VoiceAction::PagePrev:  // the dial's "up" in the reader
-                if (!book_.Active() || book_.Asking()) {
+                if (!book_.Active() &&
+                    static_cast<StoryPhase>(story_phase_.load()) == StoryPhase::Shelf) {
+                    HandleShelfInput(kid_app::InputKind::DialUp);  // V9: previous book
+                } else if (!book_.Active() || book_.Asking()) {
                     result = "busy";
                 } else if (book_.Missing() != kid_app::BookMissing::None) {
                     result = "no_book";
@@ -1445,6 +1486,200 @@ BOARD_WORKER = r'''
     // page's 1-bit fallback instead (format and reader stay the same).
     static constexpr bool kBookGreyEnabled = true;
     char story_book_[16] = "forest_friends";  // self-test "book" may change it
+    // V9 bookshelf (docs/V9_MENU_DEEPENING_PROPOSAL.md B1). Story opens the
+    // shelf first when the card holds two or more books; one book (or none)
+    // opens at once like before, and so does a self-test "book" step.
+    // story_phase_ is pet_input's: Pick (not decided yet this visit), Shelf
+    // (covers on the panel), Opening (the pick task is switching the card),
+    // Leaving (home was asked for, the durable StopStory is on its way),
+    // Book (a book is chosen or opening).
+    enum class StoryPhase : uint8_t { Pick, Shelf, Opening, Leaving, Book };
+    kid_app::BookShelf shelf_;                 // filled once before ready
+    kid_app::ShelfView shelf_view_{};          // scene_state_mutex_
+    uint8_t* shelf_thumbs_ = nullptr;          // PSRAM, kMaxBooks thumbnails
+    bool selftest_book_fixed_ = false;         // the "book" step named a book
+    std::atomic<uint8_t> story_phase_{0};      // StoryPhase
+    char shelf_last_[64] = {};                 // book read last (RAM only)
+    char shelf_pick_[64] = {};                 // the book the pick task opens
+    char shelf_book_[64] = {};                 // the book picked from the shelf
+    std::atomic<bool> shelf_pick_busy_{false};  // one pet_shelf task at a time
+    // Log name of the open book: the shelf's pick, else the default / self-test one.
+    const char* BookLogId() const { return shelf_book_[0] ? shelf_book_ : story_book_; }
+
+    void ScanShelf() {
+        shelf_thumbs_ = static_cast<uint8_t*>(heap_caps_malloc(
+            kid_app::BookShelf::kMaxBooks * kid_app::ShelfView::kThumbBytes,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!shelf_thumbs_) {
+            ESP_LOGW(TAG, "PET_SHELF_NO_MEMORY");
+            return;
+        }
+        const uint32_t started = NowMs();
+        const size_t count = story_sd_.ScanShelf(&shelf_, shelf_thumbs_);
+        ESP_LOGI(TAG, "PET_SHELF_SCAN books=%u ms=%u", static_cast<unsigned>(count),
+                 static_cast<unsigned>(NowMs() - started));
+        // A card whose only book is not the default one opens that book.
+        if (count == 1 && !story_sd_.Ready() && story_sd_.SelectBook(shelf_.At(0).id)) {
+            std::snprintf(shelf_book_, sizeof(shelf_book_), "%s", shelf_.At(0).id);
+            if (kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_)) {
+                book_missing_ = kid_app::BookMissing::None;
+                book_outline_.next_book_present =
+                    book_outline_.series_next != 0 &&
+                    story_sd_.ContentBookPresent(book_outline_.series_next);
+            }
+        }
+    }
+
+    // pet_input. Rebuild the shelf picture (ring, read ticks, moon) and show it.
+    void PublishShelf(const char* why) {
+        const int phase = day_phase_.load();
+        const bool bedtime =
+            phase >= 0 && kid_app::BedtimeAvailable(static_cast<kid_app::DayPhase>(phase));
+        uint16_t recent[kid_app::MemoryStore::kRecentBookCapacity] = {};
+        size_t recent_count = 0;
+        {
+            const auto memory = pet_service_.MemoryNow();
+            recent_count = memory.RecentBookCount();
+            for (size_t i = 0; i < recent_count && i < kid_app::MemoryStore::kRecentBookCapacity; ++i)
+                recent[i] = memory.RecentBookAt(i);
+        }
+        SceneStateLock lock(scene_state_mutex_);
+        shelf_view_ = shelf_.View(recent, recent_count, bedtime);
+        const auto scene = kid_app::ShelfScene(shelf_view_);
+        const uint32_t packed = PackPetScene(scene);
+        book_scene_.store(packed);
+        last_pet_scene_.store(packed);
+        if (!sleep_active_.load()) pet_mailbox_.Publish(scene);
+        ESP_LOGI(TAG, "PET_SHELF_VIEW sel=%u first=%u count=%u bedtime=%d why=%s",
+                 static_cast<unsigned>(shelf_view_.selected),
+                 static_cast<unsigned>(shelf_view_.first),
+                 static_cast<unsigned>(shelf_view_.count), bedtime ? 1 : 0, why);
+    }
+
+    // pet_input, Story mode with no book open: decide between the shelf and
+    // the old direct open. True while the shelf is on (or being left).
+    bool UpdateShelfPhase() {
+        const auto phase = static_cast<StoryPhase>(story_phase_.load());
+        if (phase == StoryPhase::Pick) {
+            if (!shelf_.UseShelf()) {
+                story_phase_.store(static_cast<uint8_t>(StoryPhase::Book));
+                return false;
+            }
+            shelf_.Enter(shelf_last_);
+            story_phase_.store(static_cast<uint8_t>(StoryPhase::Shelf));
+            ESP_LOGI(TAG, "PET_SHELF_OPEN count=%u sel=%u",
+                     static_cast<unsigned>(shelf_.Count()),
+                     static_cast<unsigned>(shelf_.Selected()));
+            PublishShelf("open");
+            return true;
+        }
+        return phase == StoryPhase::Shelf || phase == StoryPhase::Opening ||
+               phase == StoryPhase::Leaving;
+    }
+
+    // Phase changes that can race the pick task (Leaving, the reset to Pick,
+    // the task's result) are made under scene_state_mutex_, like every other
+    // piece of Story state; MoveStoryPhase only moves if the phase still is
+    // `from` (a long press or a new visit in between wins).
+    void SetStoryPhase(StoryPhase to) {
+        SceneStateLock lock(scene_state_mutex_);
+        story_phase_.store(static_cast<uint8_t>(to));
+    }
+    bool MoveStoryPhase(StoryPhase from, StoryPhase to) {
+        SceneStateLock lock(scene_state_mutex_);
+        if (story_phase_.load() != static_cast<uint8_t>(from)) return false;
+        story_phase_.store(static_cast<uint8_t>(to));
+        return true;
+    }
+
+    // pet_input: home from the shelf (also while a book is opening). The phase
+    // stays Leaving until Story is left (UpdateBook resets it): going back to
+    // Pick here would reopen the shelf before StopStory commits.
+    void ShelfGoHome() {
+        ESP_LOGI(TAG, "PET_SHELF_HOME");
+        SetStoryPhase(StoryPhase::Leaving);
+        if (!pet_service_.PostLocal(kid_app::PetAction::StopStory)) {
+            ESP_LOGW(TAG, "PET_INPUT_REJECTED");
+            EscapeStoryHome("rejected");  // a long press always gets home
+        }
+    }
+
+    // pet_input: a dial event while the shelf is on.
+    void HandleShelfInput(kid_app::InputKind kind) {
+        const kid_app::ShelfStep step = shelf_.OnInput(kind);
+        if (step.publish) PublishShelf("dial");
+        if (step.home) ShelfGoHome();
+        if (step.pick) {
+            ESP_LOGI(TAG, "PET_SHELF_PICKED index=%u", static_cast<unsigned>(step.index));
+            OpenShelfBook(step.index);
+        }
+    }
+
+    // pet_input: the picked book. Never reads the card here (the input task
+    // stays off the SD): a short task switches it, meanwhile the shelf stays
+    // on the panel and the dial does nothing.
+    void OpenShelfBook(uint8_t index) {
+        if (index >= shelf_.Count()) return;
+        if (shelf_pick_busy_.exchange(true)) return;  // an earlier pick is still running
+        std::snprintf(shelf_pick_, sizeof(shelf_pick_), "%s", shelf_.At(index).id);
+        story_phase_.store(static_cast<uint8_t>(StoryPhase::Opening));
+        // 12 KiB: the outline (a few KiB) is built on this task's stack.
+        if (xTaskCreate([](void* context) {
+                static_cast<WaveshareEsp32s3ePaper3inch97*>(context)->ShelfPickWork();
+                vTaskDelete(nullptr);
+            }, "pet_shelf", 12288, this, 2, nullptr) != pdPASS) {
+            ESP_LOGW(TAG, "PET_SHELF_PICK_TASK_FAILED");
+            story_phase_.store(static_cast<uint8_t>(StoryPhase::Shelf));
+            shelf_pick_busy_.store(false);
+        }
+    }
+
+    // pet_shelf task. The card is switched while holding the ePaper task's
+    // screen lock (it reads pages from the same reader); the narration worker
+    // reopens it on its own task. On a failure the shelf stays, nothing is
+    // read aloud or remembered.
+    void ShelfPickWork() {
+        char id[sizeof(shelf_pick_)];
+        std::snprintf(id, sizeof(id), "%s", shelf_pick_);
+        if (story_pcm_.Ready()) {
+            StoryAudioCancel(this);
+            story_pcm_.RequestBook(id);
+        }
+        bool opened = false;
+        if (pet_screen_mutex_ &&
+            xSemaphoreTake(pet_screen_mutex_, pdMS_TO_TICKS(15000)) == pdTRUE) {
+            opened = story_sd_.SelectBook(id);
+            book_outline_ = kid_app::BookOutline{};
+            book_missing_ = story_sd_.Missing();
+            if (opened &&
+                !kid_app::BuildBookOutline(story_sd_.Reader()->Content(), &book_outline_)) {
+                ESP_LOGW(TAG, "PET_BOOK_OUTLINE_FAILED");
+                book_missing_ = kid_app::BookMissing::BadBook;
+                opened = false;
+            }
+            if (opened) {
+                book_outline_.next_book_present =
+                    book_outline_.series_next != 0 &&
+                    story_sd_.ContentBookPresent(book_outline_.series_next);
+                book_missing_ = kid_app::BookMissing::None;
+            }
+            book_panel_valid_ = false;
+            xSemaphoreGive(pet_screen_mutex_);
+        }
+        ESP_LOGI(TAG, "PET_SHELF_PICK book=%s ok=%d", id, opened ? 1 : 0);
+        if (opened) {
+            std::snprintf(shelf_book_, sizeof(shelf_book_), "%s", id);
+            std::snprintf(shelf_last_, sizeof(shelf_last_), "%s", id);
+            book_shown_.store(0);
+            SceneStateLock lock(scene_state_mutex_);
+            book_scene_.store(0);
+        }
+        // pet_input opens the reader (or shows the shelf again) from here. Only
+        // if the child is still waiting: after a long press (Leaving) or a
+        // fresh visit (Pick) the phase is not ours to change.
+        MoveStoryPhase(StoryPhase::Opening, opened ? StoryPhase::Book : StoryPhase::Shelf);
+        shelf_pick_busy_.store(false);
+    }
     kid_app::BookOutline book_outline_;        // written once before ready
     kid_app::BookMissing book_missing_ = kid_app::BookMissing::NoCard;  // with it
     std::atomic<bool> book_outline_ready_{false};
@@ -1472,6 +1707,8 @@ BOARD_WORKER = r'''
     void UpdateBook() {
         const uint32_t now = NowMs();
         if (pet_event_mode_.load() != kid_app::PetMode::Story) {
+            if (story_phase_.load() != static_cast<uint8_t>(StoryPhase::Pick))
+                SetStoryPhase(StoryPhase::Pick);  // V9: the next visit starts on the shelf
             if (book_.Active()) {
                 book_.Close();
                 SceneStateLock lock(scene_state_mutex_);
@@ -1486,6 +1723,7 @@ BOARD_WORKER = r'''
             return;
         if (!book_.Active()) {
             if (!book_outline_ready_.load()) return;
+            if (UpdateShelfPhase()) return;  // V9: the shelf is on, the dial picks
             // V8 bedtime story: entering the story in the evening day phase
             // (RTC, offline) starts the quiet mode: low-contrast pages that
             // turn by themselves, no questions, then the normal sleep flow.
@@ -1498,7 +1736,7 @@ BOARD_WORKER = r'''
             ESP_LOGI(TAG,
                      "PET_BOOK_OPEN book=%s pages=%u grey=%u questions=%u kpb2=%d branching=%d "
                      "series=%u:%u/%u bedtime=%d",
-                     story_book_, static_cast<unsigned>(book_outline_.pages),
+                     BookLogId(), static_cast<unsigned>(book_outline_.pages),
                      static_cast<unsigned>(book_outline_.GreyPages()),
                      static_cast<unsigned>(book_outline_.QuestionTotal()),
                      book_outline_.kpb2 ? 1 : 0, book_outline_.branching ? 1 : 0,
@@ -1510,7 +1748,7 @@ BOARD_WORKER = r'''
             // press goes home; nothing is read aloud or remembered.
             if (book_.Missing() != kid_app::BookMissing::None)
                 ESP_LOGW(TAG, "PET_BOOK_MISSING reason=%s book=%s",
-                         kid_app::BookMissingName(book_.Missing()), story_book_);
+                         kid_app::BookMissingName(book_.Missing()), BookLogId());
             kid_app::BookStep open{};
             open.publish = true;
             ApplyBookStep(open, "open");
@@ -5061,6 +5299,7 @@ BOARD_WORKER = r'''
                         ESP_LOGW(TAG, "PET_SELFTEST_BOOK_IGNORED id=%s", step.name);
                     } else {
                         std::memcpy(story_book_, step.name, sizeof(story_book_));
+                        selftest_book_fixed_ = true;  // V9: keeps the direct open
                         ESP_LOGI(TAG, "PET_SELFTEST_BOOK id=%s", story_book_);
                     }
                     break;
@@ -5259,6 +5498,7 @@ def patch_board(text: str) -> str:
         '#include "kid_app/waveshare_story_sd.h"\n'
         '#include "kid_app/freertos_story_pcm_worker.h"\n'
         '#include "kid_app/book_reader.h"\n'
+        '#include "kid_app/book_shelf.h"\n'
         '#include "kid_app/memory_store.h"\n'
         '#include "kid_app/sound_view.h"\n'
         '#include "kid_app/parrot_session.h"\n'

@@ -24,6 +24,9 @@ RefreshMode RefreshPlanner::Plan(const SceneModel& next) const {
     if (!has_shown_ || next.kind != shown_.kind) return RefreshMode::Full;
     // Book pages are content: always the clean full waveform.
     if (next.kind == SceneKind::Reader) return RefreshMode::Full;
+    // V9 bookshelf: moving the ring is partial, the next row of covers is clean.
+    if (next.kind == SceneKind::Shelf && next.shelf.first != shown_.shelf.first)
+        return RefreshMode::Full;
     if (TouchesRail(shown_, next) && rail_ >= hard_) return RefreshMode::Full;
     if (TouchesPet(shown_, next) && pet_ >= hard_) return RefreshMode::Full;
     if (TouchesStatus(shown_, next) && status_ >= status_hard_) return RefreshMode::Full;
