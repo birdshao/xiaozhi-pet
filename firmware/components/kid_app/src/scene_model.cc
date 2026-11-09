@@ -2516,7 +2516,7 @@ void SoundScene(MonoFrame& f, const GameView& g) {
             GameDots(f, std::max<int>(1, g.sd), 400, 392, 56);
         } else if (g.sa == static_cast<uint8_t>(SongPhase::List)) {
             // One dot per song, the chosen one big and ringed.
-            const int n = std::min<int>(g.option_count, 12);
+            const int n = std::min<int>(g.option_count, static_cast<int>(kMaxSongs));
             const int pitch = n > 1 ? std::min(64, 640 / n) : 0;
             const int x0 = 400 - pitch * (n - 1) / 2;
             for (int i = 0; i < n; ++i) {

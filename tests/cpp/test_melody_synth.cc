@@ -1,3 +1,5 @@
+// Asserts carry real calls in places: they must never compile away.
+#undef NDEBUG
 #include "kid_app/melody_synth.h"
 #include "kid_app/song_player.h"
 
@@ -12,7 +14,9 @@ using namespace kid_app;
 namespace {
 std::vector<int16_t> RenderAll(const Melody& m, Timbre t, uint8_t vol, size_t chunk) {
     MelodySynth s;
-    assert(s.Start(m, t, vol));
+    const bool started = s.Start(m, t, vol);
+    assert(started);
+    (void)started;
     std::vector<int16_t> out;
     std::vector<int16_t> buf(chunk);
     for (;;) {
@@ -60,6 +64,9 @@ int main() {
         assert(!s.Start(Melody{a4_sec, 1, kMaxBpm + 1}, Timbre::Soft, 100));
         const Note low[] = {{kMinPitch - 1, 4}};
         const Note high[] = {{kMaxPitch + 1, 4}};
+        const Note top[] = {{kMaxPitch, 4}};
+        assert(kMaxPitch <= 96);  // above C7 the table lookup turns gritty
+        assert(s.Start(Melody{top, 1, 100}, Timbre::Bell, 100));
         const Note silent[] = {{kRestPitch, 0}};
         assert(!s.Start(Melody{low, 1, 100}, Timbre::Soft, 100));
         assert(!s.Start(Melody{high, 1, 100}, Timbre::Soft, 100));
@@ -154,11 +161,151 @@ int main() {
         assert(s.Start(a4, Timbre::Soft, 100) && s.Render(b, 480) == 480 && b[0] == 0);
     }
 
+    // The melody streamer (the song worker's synthesised path, no RTOS): frames
+    // of 20 ms, a refused frame is offered again and never re-rendered, a sink
+    // that stays busy gives up, an interrupt is just "stop calling".
+    {
+        struct Sink {
+            std::vector<int16_t> got;
+            unsigned refuse_next = 0;   // refuse this many pushes, then accept
+            unsigned refused = 0;
+            bool always_refuse = false;
+        };
+        const auto push = [](const int16_t* pcm, size_t n, void* ctx) {
+            auto* s = static_cast<Sink*>(ctx);
+            if (s->always_refuse) return false;
+            if (s->refuse_next) {
+                --s->refuse_next;
+                ++s->refused;
+                return false;
+            }
+            assert(n >= 1 && n <= MelodyStreamer::kFrameSamples);
+            s->got.insert(s->got.end(), pcm, pcm + n);
+            return true;
+        };
+        const BuiltinMelody& tune = BuiltinMelodyAt(1);
+        const auto want = RenderAll(tune.melody, tune.timbre, 100, 480);
+
+        // Plain run: the same samples as rendering directly, then Done.
+        {
+            Sink sink;
+            MelodyStreamer st;
+            assert(st.Start(tune.melody, tune.timbre));
+            size_t steps = 0;
+            while (st.Step(push, &sink) == MelodyStreamer::Result::Continue) ++steps;
+            assert(sink.got == want && st.SamplesPushed() == want.size());
+            assert(steps == (want.size() + 479) / 480);
+        }
+        // A busy queue every few frames: nothing lost, nothing repeated.
+        {
+            Sink sink;
+            MelodyStreamer st;
+            assert(st.Start(tune.melody, tune.timbre));
+            unsigned n = 0, waits = 0;
+            for (;;) {
+                if (++n % 7 == 0) sink.refuse_next = 3;
+                const auto r = st.Step(push, &sink);
+                if (r == MelodyStreamer::Result::Done) break;
+                assert(r == MelodyStreamer::Result::Continue);
+                if (st.Waiting()) ++waits;
+            }
+            assert(sink.refused > 10 && waits == sink.refused);
+            assert(sink.got == want);
+        }
+        // A sink that never takes a frame: Stuck after exactly kMaxFailures
+        // refusals, the stream is over (Done on the next call), and a restart works.
+        {
+            Sink sink;
+            sink.always_refuse = true;
+            MelodyStreamer st;
+            assert(st.Start(tune.melody, tune.timbre));
+            for (unsigned i = 1; i < MelodyStreamer::kMaxFailures; ++i) {
+                assert(st.Step(push, &sink) == MelodyStreamer::Result::Continue && st.Waiting());
+            }
+            assert(st.Step(push, &sink) == MelodyStreamer::Result::Stuck);
+            assert(st.Step(push, &sink) == MelodyStreamer::Result::Done);
+            sink.always_refuse = false;
+            assert(st.Start(tune.melody, tune.timbre));
+            while (st.Step(push, &sink) == MelodyStreamer::Result::Continue) {}
+            assert(sink.got == want);
+        }
+        // One success resets the failure count: 100 refusals twice is no problem.
+        {
+            Sink sink;
+            MelodyStreamer st;
+            assert(st.Start(tune.melody, tune.timbre));
+            for (int round = 0; round < 2; ++round) {
+                sink.refuse_next = 100;
+                for (int i = 0; i < 100; ++i)
+                    assert(st.Step(push, &sink) == MelodyStreamer::Result::Continue);
+                assert(st.Step(push, &sink) == MelodyStreamer::Result::Continue && !st.Waiting());
+            }
+        }
+        // Interrupt: stop calling, start another tune, the first leaves no trace.
+        {
+            Sink sink;
+            MelodyStreamer st;
+            assert(st.Start(tune.melody, tune.timbre));
+            for (int i = 0; i < 5; ++i) st.Step(push, &sink);
+            assert(sink.got.size() == 5 * 480);
+            Sink other;
+            const BuiltinMelody& next = BuiltinMelodyAt(0);
+            assert(st.Start(next.melody, next.timbre));
+            while (st.Step(push, &other) == MelodyStreamer::Result::Continue) {}
+            assert(other.got == RenderAll(next.melody, next.timbre, 100, 480));
+        }
+        // An invalid melody never starts; a null sink counts as refusing.
+        MelodyStreamer st;
+        assert(!st.Start(Melody{}, Timbre::Soft));
+        assert(st.Step(push, nullptr) == MelodyStreamer::Result::Done);
+    }
+
+    // The tunes do not change by accident: the first notes of each, and the
+    // bar structure of the 3/4 lullaby (one beat of pickup, then whole bars).
+    {
+        const auto first = [](const char* id, std::vector<int> want) {
+            for (size_t i = 0; i < BuiltinMelodyCount(); ++i) {
+                const BuiltinMelody& b = BuiltinMelodyAt(i);
+                if (std::strcmp(b.id, id) != 0) continue;
+                assert(b.melody.count >= want.size());
+                for (size_t k = 0; k < want.size(); ++k) assert(b.melody.notes[k].pitch == want[k]);
+                return;
+            }
+            assert(false && "tune missing");
+        };
+        first("song_xiaoxingxing", {60, 60, 67, 67, 69, 69, 67, 65});   // Twinkle
+        first("song_liangzhilaohu", {60, 62, 64, 60, 60, 62, 64, 60});  // Two Tigers
+        first("song_xiaoyanggao", {64, 62, 60, 62, 64, 64, 64, 62});    // Mary's lamb
+        first("song_xiaoyazi", {60, 62, 64, 65, 67, 67, 69, 69});       // Little ducks
+        first("lullaby_bolamusi", {64, 64, 67, 64, 64, 67, 64, 67});    // Brahms
+        // Every tune starts and ends on the tonic C.
+        for (size_t i = 0; i < BuiltinMelodyCount(); ++i) {
+            const Melody& m = BuiltinMelodyAt(i).melody;
+            assert(m.notes[m.count - 1].pitch % 12 == 0);
+        }
+        // Brahms: 4 ticks of pickup, then bars of 12 ticks (a phrase may end in
+        // a short bar that the next pickup of 4 completes).
+        for (size_t i = 0; i < BuiltinMelodyCount(); ++i) {
+            const BuiltinMelody& b = BuiltinMelodyAt(i);
+            if (!b.lullaby) continue;
+            // Pickup, 3 whole bars, a short bar of 8; again; then pickup + 2 bars.
+            const unsigned bars[] = {4, 12, 12, 12, 8, 4, 12, 12, 12, 8, 4, 12, 12};
+            size_t j = 0;
+            unsigned acc = 0;
+            for (size_t k = 0; k < b.melody.count; ++k) {
+                acc += b.melody.notes[k].ticks;
+                assert(j < sizeof(bars) / sizeof(bars[0]) && acc <= bars[j]);  // no note crosses a bar
+                if (acc == bars[j]) { acc = 0; ++j; }
+            }
+            assert(acc == 0 && j == sizeof(bars) / sizeof(bars[0]));
+        }
+    }
+
     // The built-in songs: 4..6 tunes, valid ids, public-domain source noted,
     // audible, not clipped, a sensible length, at least one lullaby.
     {
         const size_t n = BuiltinMelodyCount();
-        assert(n >= 4 && n <= 6);
+        assert(n >= 4 && n <= kMaxBuiltinSongs);
         int lullabies = 0;
         SongCatalog catalog;
         for (size_t i = 0; i < n; ++i) {

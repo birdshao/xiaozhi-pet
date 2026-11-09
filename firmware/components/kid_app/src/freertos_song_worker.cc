@@ -89,6 +89,11 @@ void FreertosSongWorker::TaskEntry(void* context) {
     static_cast<FreertosSongWorker*>(context)->Run();
 }
 
+bool FreertosSongWorker::SynthPush(const int16_t* pcm, size_t count, void* context) {
+    auto* self = static_cast<FreertosSongWorker*>(context);
+    return self->hooks_.push(self->synth_token_, pcm, count, self->context_);
+}
+
 void FreertosSongWorker::Run() {
     Request request{};
     Request queued{};
@@ -135,8 +140,8 @@ void FreertosSongWorker::Run() {
         if (builtin_) {
             const BuiltinMelody& tune = BuiltinMelodyAt(builtin_ - 1);
             // Full level: the board's song volume (fade, quiet hours) scales it.
-            playable = request.page == 1 && synth_.Start(tune.melody, tune.timbre, 100);
-            info.pcm_bytes = static_cast<uint32_t>(MelodySynth::TotalSamples(tune.melody) * sizeof(int16_t));
+            playable = request.page == 1 && streamer_.Start(tune.melody, tune.timbre, 100);
+            info.pcm_bytes = 1;  // streamed frame by frame, the length is not needed here
         } else {
             playable = open_ && request.page && reader_.Page(request.page, &info) &&
                        info.sample_rate == 24000 && info.channels == 1 && info.bits == 16 &&
@@ -162,11 +167,32 @@ void FreertosSongWorker::Run() {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         if (!begun) continue;
+        if (builtin_) {  // synthesised: same cancel / retry rules as a card page
+            synth_token_ = token;
+            bool stopped = false;
+            for (;;) {
+                if (xQueueReceive(queue_, &queued, 0) == pdPASS) {
+                    preloaded = true;  // a newer command always wins
+                    stopped = true;
+                    break;
+                }
+                const MelodyStreamer::Result r = streamer_.Step(&SynthPush, this);
+                if (r == MelodyStreamer::Result::Done) break;
+                if (r == MelodyStreamer::Result::Stuck) {
+                    ESP_LOGW(kTag, "SONG_QUEUE_STUCK page=%u", static_cast<unsigned>(request.page));
+                    hooks_.cancel(context_);
+                    stopped = true;
+                    break;
+                }
+                if (streamer_.Waiting()) vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (!stopped) Post(Event::PageDone, request.page);
+            continue;
+        }
         const uint32_t total = info.pcm_bytes;
         uint32_t offset = 0;
         unsigned failed = 0;
         bool aborted = false;
-        bool rendered = false;  // synthesised chunk waiting for a free queue slot
         while (offset < total) {
             if (xQueueReceive(queue_, &queued, 0) == pdPASS) {
                 preloaded = true;
@@ -174,15 +200,7 @@ void FreertosSongWorker::Run() {
                 break;
             }
             const size_t bytes = std::min<size_t>(samples.size() * sizeof(int16_t), total - offset);
-            bool got;
-            if (builtin_) {  // sequential; a retry after a full queue reuses the chunk
-                got = rendered || synth_.Render(samples.data(), bytes / sizeof(int16_t)) ==
-                                      bytes / sizeof(int16_t);
-                rendered = got;
-            } else {
-                got = reader_.ReadPcm(request.page, offset, samples.data(), bytes);
-            }
-            if (!got) {
+            if (!reader_.ReadPcm(request.page, offset, samples.data(), bytes)) {
                 hooks_.cancel(context_);
                 ESP_LOGW(kTag, "SONG_READ_FAILED page=%u", static_cast<unsigned>(request.page));
                 aborted = true;
@@ -200,7 +218,6 @@ void FreertosSongWorker::Run() {
                 continue;
             }
             failed = 0;
-            rendered = false;
             offset += static_cast<uint32_t>(bytes);
         }
         if (!aborted) Post(Event::PageDone, request.page);

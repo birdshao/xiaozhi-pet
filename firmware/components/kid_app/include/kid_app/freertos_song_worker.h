@@ -52,6 +52,7 @@ private:
 
     static void TaskEntry(void* ctx);
     void Run();
+    static bool SynthPush(const int16_t* pcm, size_t count, void* self);
     void Post(Event event, uint16_t value);
     bool Send(const Request& request);
 
@@ -60,7 +61,8 @@ private:
     StoryPackReader reader_{};
     bool open_ = false;
     uint8_t builtin_ = 0;  // task only: open built-in melody + 1, 0 = a card book
-    MelodySynth synth_{};
+    MelodyStreamer streamer_{};   // built-in melodies (host-tested core)
+    uint64_t synth_token_ = 0;    // token of the melody being streamed
     StoryPcmHooks hooks_{};
     void* context_ = nullptr;
     QueueHandle_t queue_ = nullptr;

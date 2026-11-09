@@ -104,6 +104,37 @@ int main() {
     SongView next = list;
     next.selected = 2;
     assert(SongGameView(list) != SongGameView(next) && Diff(SongGameView(list), SongGameView(next)) > 50);
+    // A full list (kMaxSongs = 16 dots, 40 px apart): every dot is drawn, the
+    // cursor on the last one is visible, and neighbours do not touch the ring.
+    {
+        static_assert(kMaxSongs > 12, "the list draws more than the old 12 dots");
+        SongView full;
+        full.phase = SongPhase::List;
+        full.count = static_cast<uint8_t>(kMaxSongs);
+        const int pitch = 640 / static_cast<int>(kMaxSongs);
+        const int x0 = 400 - pitch * (static_cast<int>(kMaxSongs) - 1) / 2;
+        assert(pitch >= 26 + 8 + 4);  // ring radius + neighbour dot + a gap
+        for (uint8_t sel = 0; sel < kMaxSongs; ++sel) {
+            full.selected = sel;
+            MonoFrame f;
+            SceneComposer::Render(GameModel(SongGameView(full)), f);
+            for (int i = 0; i < static_cast<int>(kMaxSongs); ++i) {
+                const int x = x0 + i * pitch;
+                assert(f.IsBlack(x, 392));                       // every dot is there
+                if (i != sel) assert(!f.IsBlack(x, 392 - 20));   // only the chosen one is ringed
+                if (i == sel) assert(f.IsBlack(x, 392 - 26 + 3));
+            }
+            if (sel > 0) {
+                SongView prev = full;
+                prev.selected = static_cast<uint8_t>(sel - 1);
+                assert(Diff(SongGameView(prev), SongGameView(full)) > 50);
+            }
+        }
+        // More options than the list holds never draw past the last dot.
+        SongView over = full;
+        over.count = 200;
+        assert(Diff(SongGameView(over), SongGameView(full)) == 0);
+    }
     SongView timer;
     timer.phase = SongPhase::Timer;
     timer.kind = SongKind::Lullaby;

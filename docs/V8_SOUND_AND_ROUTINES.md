@@ -253,9 +253,11 @@
 
 ## 11. V9-3A 内置旋律（卡里没有歌也能唱）
 
-- 播放器列表里永远有 5 首合成旋律，和卡里的 `song_*` / `lullaby_*` 并排按 id 排序；卡里有同 id 的书时，以卡为准（内置的不再加入）。`kMaxSongs` 从 12 升到 16。
+- 播放器列表里永远有 5 首合成旋律，和卡里的 `song_*` / `lullaby_*` 并排按 id 排序；卡里有同 id 的书时，以卡为准（内置的不再加入）。那本书如果读不出来，播放器改用同 id 的内置旋律重试一次。`kMaxSongs` 从 12 升到 16，其中给内置曲留 6 个位置（`kMaxBuiltinSongs`），卡里的歌最多收 10 首（`kMaxCardSongs`），所以安静时段唯一的摇篮曲不会被挤掉。列表圆点最多画 `kMaxSongs` 个。
 - 内置曲目：`song_xiaoxingxing`（小星星）、`song_liangzhilaohu`（两只老虎）、`song_xiaoyanggao`（玛丽有只小羊）、`song_xiaoyazi`（小鸭子）、`lullaby_bolamusi`（勃拉姆斯摇篮曲）。全部是公有领域曲调，只用曲调不用歌词；每首的出处写在 `melody_synth.cc` 的音符表旁边和 `BuiltinMelody::source`。
 - 合成器 `melody_synth.{h,cc}`：音符（MIDI 音高 + 时值，4 tick = 1 拍）、音色（`Timbre`：Sine / Soft / Pluck / Bell）、音量（0–100）。24 kHz 单声道 PCM16，分块渲染，同输入同输出，与分块大小无关。3B 节奏乐队复用这个接口。
 - 板端：`FreertosSongWorker::OpenBuiltin(index)` 把内置旋律当成“只有 1 页的书”，`Play(1)` 时边合成边推进同一条 PCM 队列。淡出、安静时段低音量、摇篮曲定时循环、到点睡觉都沿用现有逻辑。
 - 安静时段：只留摇篮曲（内置的也一样）。
+- 音量：合成器满音量的峰值约为满量程的 35%（-9 dBFS），比卡里的歌轻约 9 dB；`kMaxPitch` 收在 C7（96），再高查表会发毛、混叠。
+- 推流逻辑（渲染一帧、队列满了重试同一帧、连续 150 次放弃、被打断就停）在 `MelodyStreamer`，不依赖 FreeRTOS，主机测试覆盖；worker 只做循环和 `vTaskDelay`。正弦表是编译期常量，多线程安全。
 - 曲谱是手写音符表，**需要成人听一遍确认旋律对不对**，改音符只动 `melody_synth.cc` 里的数据表。

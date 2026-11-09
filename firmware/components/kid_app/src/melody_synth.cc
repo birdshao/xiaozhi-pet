@@ -7,24 +7,45 @@ namespace kid_app {
 namespace {
 constexpr size_t kTableBits = 10;
 constexpr size_t kTableSize = size_t{1} << kTableBits;
-constexpr int64_t kPeak = 11500;      // ~35% of full scale at volume 100
+constexpr int32_t kPeak = 11500;      // ~35% of full scale at volume 100
 constexpr uint32_t kAttackMs = 6;
 constexpr uint32_t kReleaseMs = 25;   // fade at the note end: no clicks
 constexpr uint32_t kGapMs = 12;       // silence that separates repeated notes
 
-const int16_t* SineTable() {
-    static int16_t table[kTableSize];
-    static bool ready = false;
-    if (!ready) {
-        for (size_t i = 0; i < kTableSize; ++i)
-            table[i] = static_cast<int16_t>(std::lround(
-                32767.0 * std::sin(6.283185307179586 * static_cast<double>(i) / kTableSize)));
-        ready = true;
+// Sine by Taylor series, evaluated at compile time: the table is a constant,
+// so there is no lazy initialisation to race on when several tasks (the song
+// worker, the rhythm band) synthesise at once.
+constexpr double kPi = 3.14159265358979323846;
+
+constexpr double TaylorSin(double x) {  // |x| <= pi/2, error < 1e-9
+    const double x2 = x * x;
+    double term = x, sum = x;
+    for (int k = 1; k <= 8; ++k) {
+        term = -term * x2 / ((2 * k) * (2 * k + 1));
+        sum += term;
     }
-    return table;
+    return sum;
 }
 
-int32_t Sine(uint32_t phase) { return SineTable()[phase >> (32 - kTableBits)]; }
+constexpr double SinTurn(double turns) {  // turns in [0, 1)
+    double t = turns;  // fold into [-1/4, 1/4] turns
+    if (t > 0.75) t -= 1.0;
+    else if (t > 0.25) t = 0.5 - t;
+    return TaylorSin(2.0 * kPi * t);
+}
+
+struct SineLut {
+    int16_t v[kTableSize];
+    constexpr SineLut() : v() {
+        for (size_t i = 0; i < kTableSize; ++i) {
+            const double x = 32767.0 * SinTurn(static_cast<double>(i) / kTableSize);
+            v[i] = static_cast<int16_t>(x >= 0 ? x + 0.5 : x - 0.5);
+        }
+    }
+};
+constexpr SineLut kSine{};
+
+int32_t Sine(uint32_t phase) { return kSine.v[phase >> (32 - kTableBits)]; }
 
 uint32_t PhaseInc(double hz) {
     return static_cast<uint32_t>(hz * 4294967296.0 / kSynthSampleRate);
@@ -69,6 +90,7 @@ bool MelodySynth::Start(const Melody& melody, Timbre timbre, uint8_t volume_pct)
     melody_ = melody;
     timbre_ = timbre;
     volume_ = volume_pct > 100 ? 100 : volume_pct;
+    amp_ = kPeak * volume_ / 100;
     index_ = 0;
     tick_ = 0;
     phase_ = phase2_ = 0;
@@ -90,6 +112,12 @@ void MelodySynth::BeginNote() {
     level_ = 32768;
     rest_ = n.pitch == kRestPitch;
     if (rest_) return;
+    // Envelope shape of this note, so Sample() needs no division.
+    const uint32_t gap = kGapMs * kSynthSampleRate / 1000;
+    body_ = len_ > gap + 2 ? len_ - gap : 0;
+    tail_ = kReleaseMs * kSynthSampleRate / 1000;
+    if (tail_ > body_ / 2) tail_ = body_ / 2;
+    rel_inc_ = tail_ ? (32768u << 8) / tail_ : 0;
     const double hz = 440.0 * std::pow(2.0, (static_cast<int>(n.pitch) - 69) / 12.0);
     inc_ = PhaseInc(hz);
     inc2_ = 0;
@@ -103,16 +131,15 @@ void MelodySynth::BeginNote() {
 }
 
 int16_t MelodySynth::Sample() {
-    const uint32_t gap = kGapMs * kSynthSampleRate / 1000;
-    const uint32_t attack = kAttackMs * kSynthSampleRate / 1000;
-    uint32_t tail = kReleaseMs * kSynthSampleRate / 1000;
-    if (rest_ || len_ <= gap + 2) return 0;
-    const uint32_t body = len_ - gap;
-    if (pos_ >= body) return 0;
-    if (tail > body / 2) tail = body / 2;
-    uint64_t env = level_;  // Q15
-    if (pos_ < attack) env = env * pos_ / attack;
-    if (pos_ + tail > body) env = env * (body - pos_) / tail;
+    constexpr uint32_t kAttack = kAttackMs * kSynthSampleRate / 1000;
+    constexpr uint32_t kAttackInc = 32768 / kAttack;  // Q15 per sample
+    if (rest_ || pos_ >= body_) return 0;
+    // Envelope in Q15: decay level, attack ramp, release ramp. Only shifts and
+    // 32-bit multiplies (no division) per sample.
+    int32_t env = static_cast<int32_t>(level_);
+    if (pos_ < kAttack) env = (env * static_cast<int32_t>(pos_ * kAttackInc)) >> 15;
+    const uint32_t left = body_ - pos_;
+    if (left < tail_) env = (env * static_cast<int32_t>((left * rel_inc_) >> 8)) >> 15;
     int32_t wave;
     switch (timbre_) {
         case Timbre::Sine:
@@ -121,19 +148,18 @@ int16_t MelodySynth::Sample() {
         case Timbre::Soft:
         case Timbre::Pluck:
             // 1 : 0.30 : 0.10, weights sum to 256 (183 + 55 + 18).
-            wave = (183 * Sine(phase_) + 55 * Sine(phase_ * 2) + 18 * Sine(phase_ * 3)) / 256;
+            wave = (183 * Sine(phase_) + 55 * Sine(phase_ * 2) + 18 * Sine(phase_ * 3)) >> 8;
             break;
         case Timbre::Bell:
         default:
-            wave = (190 * Sine(phase_) + 66 * Sine(phase2_)) / 256;
+            wave = (190 * Sine(phase_) + 66 * Sine(phase2_)) >> 8;
             break;
     }
     phase_ += inc_;
     phase2_ += inc2_;
     level_ = (level_ * decay_) >> 15;
-    const int64_t v = static_cast<int64_t>(wave) * static_cast<int64_t>(env) / 32768 * kPeak /
-                      32767 * volume_ / 100;
-    return static_cast<int16_t>(v);
+    // wave (+-32767) * env (Q15) >> 15 stays +-32767; times amp_ (<= 11500) >> 15.
+    return static_cast<int16_t>((((wave * env) >> 15) * amp_) >> 15);
 }
 
 size_t MelodySynth::Render(int16_t* out, size_t max) {
@@ -149,6 +175,33 @@ size_t MelodySynth::Render(int16_t* out, size_t max) {
         ++pos_;
     }
     return n;
+}
+
+bool MelodyStreamer::Start(const Melody& melody, Timbre timbre, uint8_t volume_pct) {
+    frame_len_ = 0;
+    failures_ = 0;
+    pushed_ = 0;
+    return synth_.Start(melody, timbre, volume_pct);
+}
+
+MelodyStreamer::Result MelodyStreamer::Step(PushFn push, void* context) {
+    if (frame_len_ == 0) {
+        frame_len_ = synth_.Render(frame_, kFrameSamples);
+        if (frame_len_ == 0) return Result::Done;
+    }
+    if (!push || !push(frame_, frame_len_, context)) {
+        if (++failures_ >= kMaxFailures) {
+            frame_len_ = 0;
+            failures_ = 0;
+            synth_.Reset();
+            return Result::Stuck;
+        }
+        return Result::Continue;  // the same frame is offered again
+    }
+    pushed_ += static_cast<uint32_t>(frame_len_);
+    frame_len_ = 0;
+    failures_ = 0;
+    return Result::Continue;
 }
 
 // ---- built-in songs ---------------------------------------------------------
@@ -204,15 +257,17 @@ constexpr Note kLittleDucks[] = {
 
 // Brahms' Lullaby (Wiegenlied, op. 49 no. 4): Johannes Brahms, 1868; he died
 // in 1897, public domain. 3/4, simplified and moved from E-flat to C: two
-// phrases and the home cadence. Slow, Soft timbre.
+// phrases and the home cadence (a pickup, then whole 3/4 bars; a phrase end is
+// a short bar that the next pickup completes). Slow, Soft timbre.
 constexpr Note kBrahms[] = {
-    {E4, 2}, {E4, 2},
-    {G4, 8}, {E4, 2}, {E4, 2}, {G4, 8}, {E4, 2}, {G4, 2},
-    {C5, 6}, {B4, 2}, {A4, 4}, {A4, 8}, {G4, 4},
-    {D4, 2}, {D4, 2},
+    {E4, 2}, {E4, 2},                                      // pickup (1 beat)
+    {G4, 8}, {E4, 2}, {E4, 2}, {G4, 8}, {E4, 2}, {G4, 2},  // 3/4 bars of 12 ticks
+    {C5, 6}, {B4, 2}, {A4, 4}, {A4, 8},
+    {D4, 2}, {D4, 2},                                      // pickup
     {F4, 8}, {D4, 2}, {D4, 2}, {F4, 8}, {D4, 2}, {F4, 2},
-    {B4, 6}, {A4, 2}, {G4, 4}, {G4, 4}, {F4, 4}, {E4, 4},
-    {E4, 2}, {E4, 2}, {G4, 8}, {D4, 4}, {C4, 12},
+    {B4, 6}, {A4, 2}, {G4, 4}, {G4, 4}, {F4, 4},
+    {E4, 2}, {E4, 2},                                      // pickup into the cadence
+    {G4, 8}, {D4, 4}, {C4, 12},
 };
 
 template <size_t N>

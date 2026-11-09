@@ -146,10 +146,11 @@ class BoardWiring(unittest.TestCase):
         songs = SOUND[SOUND.index("void ApplySongOutput("):SOUND.index("// ---- brushing / washing ----")]
         self.assertIn("song_worker_.OpenBuiltin(", songs)
         self.assertIn("song_worker_.Open(id)", songs)
-        # The synthesised stream goes through the same volume path as the card songs.
+        # The synthesised stream is pushed through the same hooks (volume path) as the
+        # card songs; its retry / give-up / interrupt rules are host-tested in
+        # tests/cpp/test_melody_synth.cc (MelodyStreamer), not matched here.
         worker = (KID / "src/freertos_song_worker.cc").read_text(encoding="utf-8")
-        self.assertIn("hooks_.push(token,", worker)
-        self.assertIn("BuiltinMelodyAt(builtin_ - 1)", worker)
+        self.assertIn("hooks_.push(self->synth_token_,", worker)
 
     def test_routine_record_is_device_sourced_and_never_from_voice(self):
         routine = SOUND[SOUND.index("void ApplyRoutineOutput("):SOUND.index("// pet_input: the dial while a sound activity runs.")]

@@ -23,7 +23,9 @@ namespace kid_app {
 constexpr uint32_t kSynthSampleRate = 24000;
 constexpr uint8_t kRestPitch = 0;      // Note::pitch of a silence
 constexpr uint8_t kMinPitch = 21;      // A0
-constexpr uint8_t kMaxPitch = 108;     // C8
+// C7. Above this the 1024-entry table lookup (no interpolation) and the
+// overtones turn gritty and alias; songs for small children stay far below.
+constexpr uint8_t kMaxPitch = 96;
 constexpr uint8_t kTicksPerBeat = 4;   // a quarter note = 4 ticks, an eighth = 2
 constexpr uint16_t kMinBpm = 30;
 constexpr uint16_t kMaxBpm = 240;
@@ -82,6 +84,10 @@ private:
     uint32_t inc2_ = 0;
     uint32_t decay_ = 32768;  // Q15 per-sample decay multiplier
     uint32_t level_ = 32768;  // Q15 decay envelope
+    int32_t amp_ = 0;         // peak sample value for the chosen volume
+    uint32_t body_ = 0;       // samples of sound in the note (the rest is the gap)
+    uint32_t tail_ = 0;       // release length in samples
+    uint32_t rel_inc_ = 0;    // release ramp per sample, Q23
     bool rest_ = true;
 };
 
@@ -93,6 +99,41 @@ struct BuiltinMelody {
     const char* source;  // where the tune comes from (public domain)
     Melody melody;
     Timbre timbre;
+};
+
+// Streams a melody into a sink in 20 ms frames without any RTOS: this is the
+// part of the song worker that can be tested on the host. The caller loops:
+//
+//   streamer.Start(tune.melody, tune.timbre);
+//   for (;;) {
+//     if (a newer command arrived) break;     // interrupt: just stop calling
+//     Result r = streamer.Step(push, ctx);
+//     if (r == Done || r == Stuck) break;     // Stuck: the sink stayed busy
+//     if (streamer.Waiting()) sleep(10 ms);   // the sink refused, try again
+//   }
+//
+// A frame the sink refused is kept and offered again (never re-rendered, so
+// the stream has no gap or repeat); after kMaxFailures refusals in a row the
+// stream is given up (Stuck), like a card page in the song worker.
+class MelodyStreamer {
+public:
+    static constexpr size_t kFrameSamples = 480;   // 20 ms at 24 kHz
+    static constexpr unsigned kMaxFailures = 150;  // about 1.5 s of busy / voice
+    enum class Result : uint8_t { Continue, Done, Stuck };
+    using PushFn = bool (*)(const int16_t* pcm, size_t count, void* context);
+
+    bool Start(const Melody& melody, Timbre timbre, uint8_t volume_pct = 100);
+    Result Step(PushFn push, void* context);
+    // True when the last Step was refused by the sink (wait a little, retry).
+    bool Waiting() const { return failures_ != 0; }
+    uint32_t SamplesPushed() const { return pushed_; }
+
+private:
+    MelodySynth synth_{};
+    int16_t frame_[kFrameSamples] = {};
+    size_t frame_len_ = 0;  // > 0: a rendered frame is waiting for the sink
+    unsigned failures_ = 0;
+    uint32_t pushed_ = 0;
 };
 
 size_t BuiltinMelodyCount();
