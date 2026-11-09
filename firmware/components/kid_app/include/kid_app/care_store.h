@@ -23,8 +23,18 @@ uint32_t CareMinute(const CivilTime& now, bool clock_ok);
 constexpr uint32_t CareDay(uint32_t minute) { return minute / 1440u; }
 
 // ---- Foods and taste ----
-enum class Food : uint8_t { None, Fish, Milk, Apple, Carrot, Cookie, RiceBall };
-constexpr uint8_t kFoodCount = 6;
+enum class Food : uint8_t {
+    None, Fish, Milk, Apple, Carrot, Cookie, RiceBall,
+    // V9 C4 seasonal foods, on the menu only around their festival
+    // (care_calendar.h SeasonOn): 7 dumplings (Spring Festival .. Lantern),
+    // 8 the festival treat (zongzi at Dragon Boat, mooncake at Mid-Autumn:
+    // one id, the picture follows the season). Today's mask and last food
+    // carry them; the per-food counts ("most fed") do not.
+    Dumpling, FestiveTreat,
+};
+constexpr uint8_t kFoodCount = 6;      // everyday foods: always on the menu, counted
+constexpr uint8_t kAllFoodCount = 8;   // + the two seasonal ones (fit today's 8-bit mask)
+constexpr bool SeasonalFood(Food f) { return f == Food::Dumpling || f == Food::FestiveTreat; }
 // No "dislike": every food is at least Okay.
 enum class Taste : uint8_t { Okay, Like, Love };
 Taste TasteOf(Temperament t, Food food);

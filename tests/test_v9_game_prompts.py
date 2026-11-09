@@ -122,13 +122,14 @@ class PackCatalogueTests(unittest.TestCase):
 
     def test_clip_limit_leaves_room_and_matches_the_reader(self):
         # A pack over the limit is refused whole: every line would fall back
-        # to a tone. Keep room for the V9 care lines merged next to this.
+        # to a tone. The V9 care lines (slice 1C, ids 1300..1499) this room
+        # was kept for are in the catalogue now; still keep room to grow.
         header = (ROOT / "firmware/components/kid_app/include/kid_app/"
                   "sound_pack_reader.h").read_text(encoding="utf-8")
         m = re.search(r"kMaxClips = (\d+);", header)
         self.assertIsNotNone(m)
         self.assertEqual(int(m.group(1)), sound_pack.MAX_CLIPS)
-        self.assertGreaterEqual(sound_pack.MAX_CLIPS, len(sound_pack.catalog()) + 64)
+        self.assertGreaterEqual(sound_pack.MAX_CLIPS, len(sound_pack.catalog()) + 32)
 
     def test_sound_pack_checklist_names_them(self):
         text = sound_pack.checklist()

@@ -83,6 +83,7 @@ uint32_t CareMinute(const CivilTime& now, bool clock_ok) {
 Taste TasteOf(Temperament t, Food food) {
     const uint8_t i = static_cast<uint8_t>(t);
     if (i > static_cast<uint8_t>(Temperament::Lively) || food == Food::None) return Taste::Okay;
+    if (SeasonalFood(food)) return Taste::Like;  // V9 C4: a festival treat, liked by all
     if (kTaste[i].love == food) return Taste::Love;
     if (kTaste[i].like == food) return Taste::Like;
     return Taste::Okay;
@@ -97,6 +98,8 @@ const char* FoodName(Food food) {
         case Food::Carrot: return "carrot";
         case Food::Cookie: return "cookie";
         case Food::RiceBall: return "riceball";
+        case Food::Dumpling: return "dumpling";
+        case Food::FestiveTreat: return "festive_treat";
     }
     return "none";
 }
@@ -214,14 +217,14 @@ CareResult CareStore::Apply(const CareEvent& e) {
     };
     switch (e.kind) {
         case CareEventKind::Fed: {
-            if (e.slot || e.option < 1 || e.option > kFoodCount) return CareResult::Rejected;
+            if (e.slot || e.option < 1 || e.option > kAllFoodCount) return CareResult::Rejected;
             next.RollTo(day);
             if (next.CountsToday(day)) {
                 next.today_.foods = static_cast<uint8_t>(next.today_.foods | (1u << (e.option - 1)));
                 next.today_.last_food = static_cast<uint8_t>(e.option);
                 Count(&next.today_.feeds);
             }
-            Saturate(&next.food_counts_[e.option - 1]);
+            if (e.option <= kFoodCount) Saturate(&next.food_counts_[e.option - 1]);  // V9 C4
             Saturate(&next.totals_.feeds);
             if (dated) next.fed_at_ = e.minute;
             next.SeedAnchors(e.minute);
@@ -490,7 +493,7 @@ bool CareStore::Decode(const uint8_t* b, size_t size, CareStore* out) {
     const auto& t = c.today_;
     const uint8_t cap = kTodayCap;
     if (t.feeds > cap || t.baths > cap || t.brushes > cap || t.tickles > cap || t.lulls > cap ||
-        t.last_food > kFoodCount || (t.foods & ~0x3Fu) || (t.foods == 0) != (t.last_food == 0) ||
+        t.last_food > kAllFoodCount || (t.foods == 0) != (t.last_food == 0) ||
         (t.last_food && !(t.foods & (1u << (t.last_food - 1)))) ||
         (t.habit_done && (!t.day || h.last_day != t.day)))
         return false;

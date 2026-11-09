@@ -81,6 +81,8 @@ enum class CareArt : uint16_t {
     Bubbles = 601, Comb = 602, Feather = 603, Hanger = 604, Check = 605, Sticker = 606,
     // Foods (FoodId 1..6 -> 611..616).
     Fish = 611, Milk = 612, Apple = 613, Carrot = 614, Cookie = 615, RiceBall = 616,
+    // V9 seasonal foods (FoodId 7, 8; the treat's picture follows the season).
+    Dumpling = 617, FestiveTreat = 618,
     // Toys for the bedtime tidy-up.
     ToyBlock = 621, ToyBall = 622, ToyBear = 623,
     // Wardrobe cards: 631 + index in the wardrobe table (care_store.cc).
@@ -90,7 +92,7 @@ enum class CareArt : uint16_t {
     Lock = 660,  // nothing unlocked yet
 };
 constexpr bool CareArtValid(uint16_t id) {
-    return (id >= 601 && id <= 606) || (id >= 611 && id <= 616) || (id >= 621 && id <= 623) ||
+    return (id >= 601 && id <= 606) || (id >= 611 && id <= 618) || (id >= 621 && id <= 623) ||
            (id >= 631 && id <= 642) || (id >= 651 && id <= 658) || id == 660;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kid_app/care_calendar.h"
 #include "kid_app/care_store.h"
 
 #include <cstddef>
@@ -20,7 +21,25 @@ enum class CareLine : uint8_t {
     FoodReact, FeedPrompt, BathStart, BathRinse, BathDone, BrushStart, BrushDone,
     TickleStart, TickleDone, LullStart, LullDone, TidyStart, TidyDone, StickerNew, DressDone,
     GentlePlease,
+    // V9 (docs/V9_MENU_DEEPENING_PROPOSAL.md slice 1C). BathDone / BrushDone
+    // / TickleDone also gain args 1..3 (CheerArg: the line of the day, one
+    // set per temperament); arg 0 stays the shared V8 line.
+    TickleSeek,      // dated tickle: dial the feather to the itch, then shake
+    TickleLaugh,     // the most ticklish spot (TicklishSpot)
+    DiaryGameNamed,  // arg = growth memory id of today's last game
+    BoredGone,       // a game finished while TuanTuan was bored (level >= 2)
+    SongAsk,         // bedtime: "a lullaby?" (two cards)
+    GrowMorning,     // C3: arg = the stage reached (good morning after it)
+    GrowDiary,       // C3: arg = the stage reached today (before good night)
+    WishHit,         // C4: fed today's wish (three hearts)
+    // C4 also adds DiaryFood args 7 (dumplings), 8 (zongzi), 9 (mooncake).
 };
+
+// V9 lines (ids kFirstDraftCareId..) are TTS drafts until an adult has
+// listened to each one; tools/care_phrases.py marks them in the checklist.
+// The firmware treats them like any line: no clip in the pack -> the chime.
+constexpr uint16_t kFirstDraftCareId = 1300;
+constexpr bool CarePhraseDraft(uint16_t id) { return id >= kFirstDraftCareId; }
 
 // How the room feels in the morning (SHTC3 reading).
 enum class Feel : uint8_t { Unknown, Hot, Cold, Dry, Humid, Comfy };
@@ -48,9 +67,12 @@ struct DiaryPage {
     uint32_t day = 0;
     uint8_t last_food = 0;   // Food
     uint8_t books = 0, games = 0;
+    uint16_t last_game = 0;  // V9 G5: growth memory id of today's last game
     uint16_t cares = 0;      // feeds + baths + brushes + tickles + lulls
     Habit habit = Habit::None;
     bool habit_done = false;
+    uint8_t grew = 0;        // V9 C3: growth stage reached today (GrewOn), 0 = none
+    Treat treat = Treat::None;  // V9 C4: today's festival treat (food 8's picture / name)
     bool Empty() const { return !last_food && !books && !games && !cares && !habit_done; }
 };
 DiaryPage MakeDiaryPage(const CareStore& care, const MemoryStore& memory, uint32_t day);
@@ -61,8 +83,12 @@ constexpr size_t kMaxDiaryLines = 8;
 // Clip ids to read out, in order: opening, food, book, game, care count,
 // habit, closing (or opening, "quiet day", closing). Returns the count.
 size_t ComposeDiary(const DiaryPage& page, Temperament t, uint16_t* out, size_t max);
+// V9 G5: after a finished game, "not bored any more" when the bored need
+// was at level >= 2 before it; 0 otherwise.
+uint16_t BoredReliefClip(uint8_t bored_level, Temperament t);
 // Good morning: hello, room feeling, festival, habit reminder.
+// grew: the growth stage reached yesterday or today (GrewOn), 0 = none.
 size_t ComposeMorning(Temperament t, Feel feel, Festival festival, Habit habit, uint16_t* out,
-                      size_t max);
+                      size_t max, uint8_t grew = 0);
 
 }  // namespace kid_app
